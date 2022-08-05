@@ -94,7 +94,7 @@ jobs:
 
       - name: Download RoadRunner
         run: |
-          vendor/bin/rr get --no-interaction --stability=stable
+          vendor/bin/rr get --no-interaction
 
       - name: Run Tests
         run: vendor/bin/phpunit --testsuite=Unit --testdox --verbose
@@ -151,7 +151,7 @@ jobs:
 
       - name: Download RoadRunner
         run: |
-          vendor/bin/rr get --no-interaction --stability=stable
+          vendor/bin/rr get --no-interaction
 
       - name: Run Tests
         run: vendor/bin/phpunit --testsuite=Feature --testdox --verbose
@@ -205,7 +205,7 @@ jobs:
 
       - name: Download RoadRunner
         run: |
-          vendor/bin/rr get --no-interaction --stability=stable
+          vendor/bin/rr get --no-interaction
 
       - name: Run Tests
         run: |
