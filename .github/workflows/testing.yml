@@ -45,7 +45,7 @@ jobs:
 
 
   unit:
-    name: Unit Testing (PHP ${{ matrix.php }}, OS ${{ matrix.os }}, Stability ${{ matrix.stability }})
+    name: Unit Testing (PHP ${{ matrix.php }}, OS ${{ matrix.os }}, ${{ matrix.prefer-lowest }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -102,7 +102,7 @@ jobs:
 
   feature:
     timeout-minutes: 20
-    name: Feature Testing (PHP ${{ matrix.php }}, OS ${{ matrix.os }}, Stability ${{ matrix.stability }})
+    name: Feature Testing (PHP ${{ matrix.php }}, OS ${{ matrix.os }}, ${{ matrix.prefer-lowest }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: true
@@ -157,7 +157,7 @@ jobs:
         run: vendor/bin/phpunit --testsuite=Feature --testdox --verbose
 
   functional:
-    name: Functional Testing (PHP ${{ matrix.php }}, OS ${{ matrix.os }}, Stability ${{ matrix.stability }})
+    name: Functional Testing (PHP ${{ matrix.php }}, OS ${{ matrix.os }}, ${{ matrix.prefer-lowest }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
