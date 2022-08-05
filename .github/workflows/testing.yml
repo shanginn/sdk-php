@@ -52,7 +52,7 @@ jobs:
       matrix:
         php: [7.4, 8.0]
         os: [ubuntu-latest, windows-latest]
-        stability: [prefer-lowest, prefer-stable]
+        lowest: [0, 1]
 
     steps:
       - name: Set Git To Use LF
@@ -90,8 +90,8 @@ jobs:
         with:
           timeout_minutes: 5
           max_attempts: 5
-          command: composer update --${{ matrix.stability }} --prefer-dist --no-interaction --no-progress
-      
+          command: composer update --prefer-lowest=${{ matrix.lowest }} --prefer-dist --no-interaction --no-progress
+
       - name: Download RoadRunner
         run: |
           vendor/bin/rr get --no-interaction
@@ -109,7 +109,7 @@ jobs:
       matrix:
         php: [7.4, 8.0]
         os: [ubuntu-latest, windows-latest]
-        stability: [prefer-lowest, prefer-stable]
+        lowest: [0, 1]
 
     steps:
       - name: Set Git To Use LF
@@ -147,8 +147,8 @@ jobs:
         with:
           timeout_minutes: 5
           max_attempts: 5
-          command: composer update --${{ matrix.stability }} --prefer-dist --no-interaction --no-progress
-      
+          command: composer update --prefer-lowest=${{ matrix.lowest }} --prefer-dist --no-interaction --no-progress
+
       - name: Download RoadRunner
         run: |
           vendor/bin/rr get --no-interaction
