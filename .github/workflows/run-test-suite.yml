@@ -40,25 +40,25 @@ jobs:
       - name: Validate composer.json and composer.lock
         run: composer validate --strict
 
-      - name: Get Composer Cache Directory
-        id: composer-cache
-        run: |
-          echo "::set-output name=dir::$(composer config cache-files-dir)"
-
-      - uses: actions/cache@v3
-        with:
-          path: ${{ steps.composer-cache.outputs.dir }}
-          key: php-${{ matrix.php }}-${{ matrix.os }}-composer-${{ hashFiles('**/composer.lock') }}
-          restore-keys: |
-            php-${{ matrix.php }}-${{ matrix.os }}-composer-
+#      - name: Get Composer Cache Directory
+#        id: composer-cache
+#        run: |
+#          echo "::set-output name=dir::$(composer config cache-files-dir)"
+#
+##      - uses: actions/cache@v3
+##        with:
+##          path: ${{ steps.composer-cache.outputs.dir }}
+##          key: php-${{ matrix.php }}-${{ matrix.os }}-composer-${{ hashFiles('**/composer.lock') }}
+##          restore-keys: |
+##            php-${{ matrix.php }}-${{ matrix.os }}-composer-
 
       - name: Install lowest dependencies from composer.json
         if: matrix.dependencies == 'lowest'
-        run: composer update --no-interaction --no-progress --no-suggest --prefer-lowest
+        run: composer update --no-interaction --no-progress --prefer-lowest
 
       - name: Install highest dependencies from composer.json
         if: matrix.dependencies == 'highest'
-        run: composer update --no-interaction --no-progress --no-suggest
+        run: composer update --no-interaction --no-progress
 
       - name: Cache roadrunner binary
         uses: actions/cache@v3
