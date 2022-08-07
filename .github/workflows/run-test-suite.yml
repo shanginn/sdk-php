@@ -18,7 +18,7 @@ jobs:
       matrix:
         php: [ 7.4 ] #, 8.0]
         os: [ ubuntu-latest ] #, windows-latest]
-        dependencies: [ lowest, highest ]
+        dependencies: [ lowest ] #, highest ]
     steps:
       - name: Set Git To Use LF
         run: |
@@ -69,7 +69,7 @@ jobs:
 
       - name: Download RoadRunner
         run: |
-          vendor/bin/rr get --no-interaction --stability=stable
+          vendor/bin/rr get-binary --no-interaction
 
       - name: Run Tests
         run: vendor/bin/phpunit --testsuite=${{ inputs.test-suite }} --testdox --verbose
