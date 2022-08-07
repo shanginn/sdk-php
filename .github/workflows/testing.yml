@@ -45,14 +45,14 @@ jobs:
 
   unit:
     name: Unit Testing
-    uses: .github/workflows/run-test-suite.yml
+    uses: ./.github/workflows/run-test-suite.yml
     with:
       fail-fast: false
       test-suite: Unit
 
   feature:
     name: Feature Testing
-    uses: .github/workflows/run-test-suite.yml
+    uses: ./.github/workflows/run-test-suite.yml
     with:
       fail-fast: true
       test-suite: Feature
@@ -60,7 +60,7 @@ jobs:
 
   functional:
     name: Functional Testing
-    uses: .github/workflows/run-test-suite.yml
+    uses: ./.github/workflows/run-test-suite.yml
     with:
       fail-fast: false
       test-suite: Functional
