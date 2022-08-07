@@ -1,0 +1,65 @@
+name: Setup Project (PHP ${{ inputs.php }}, OS ${{ inputs.os }})
+
+on:
+  workflow_call:
+    inputs:
+      php:
+        required: true
+        type: string
+      os:
+        required: true
+        type: string
+      prefer-lowest:
+        required: false
+        type: string
+
+jobs:
+  setup:
+    name: Setup Project (PHP ${{ inputs.php }}, OS ${{ inputs.os }})
+    runs-on: ${{ inputs.os }}
+    steps:
+      - name: Set Git To Use LF
+        run: |
+          git config --global core.autocrlf false
+          git config --global core.eol lf
+
+      - name: Setup PHP ${{ inputs.php }}
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ inputs.php }}
+          tools: composer:v2
+          extensions: dom, sockets, grpc, curl
+
+      - name: Check Out Code
+        uses: actions/checkout@v2
+        with:
+          fetch-depth: 1
+
+      - name: Get Composer Cache Directory
+        id: composer-cache
+        run: |
+          echo "::set-output name=dir::$(composer config cache-files-dir)"
+
+      - uses: actions/cache@v3
+        with:
+          path: ${{ steps.composer-cache.outputs.dir }}
+          key: ${{ runner.os }}-composer-${{ hashFiles('**/composer.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-composer-
+
+      - name: Install Composer Dependencies
+        uses: nick-invision/retry@v1
+        with:
+          timeout_minutes: 5
+          max_attempts: 5
+          command: |
+            composer update
+              ${{ inputs.prefer-lowest }}
+              --prefer-stable
+              --prefer-dist
+              --no-interaction
+              --no-progress
+
+      - name: Download RoadRunner
+        run: |
+          vendor/bin/rr get --no-interaction --stability=stable
