@@ -1,32 +1,34 @@
-name: Setup Project (PHP ${{ inputs.php }}, OS ${{ inputs.os }})
-
 on:
   workflow_call:
     inputs:
-      php:
+      test-suite:
         required: true
         type: string
-      os:
+      fail-fast:
         required: true
-        type: string
-      prefer-lowest:
-        required: false
-        type: string
+        type: boolean
+        default: true
 
 jobs:
-  setup:
-    name: Setup Project (PHP ${{ inputs.php }}, OS ${{ inputs.os }})
-    runs-on: ${{ inputs.os }}
+  test:
+    name: Testing ${{ input.test-suite }} (PHP ${{ matrix.php }}, OS ${{ matrix.os }}, ${{ matrix.prefer-lowest }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: ${{ input.fail-fast }}
+      matrix:
+        php: [ 7.4 ] #, 8.0]
+        os: [ ubuntu-latest ] #, windows-latest]
+        prefer-lowest: [ --prefer-lowest, '' ]
     steps:
       - name: Set Git To Use LF
         run: |
           git config --global core.autocrlf false
           git config --global core.eol lf
 
-      - name: Setup PHP ${{ inputs.php }}
+      - name: Setup PHP ${{ matrix.php }}
         uses: shivammathur/setup-php@v2
         with:
-          php-version: ${{ inputs.php }}
+          php-version: ${{ matrix.php }}
           tools: composer:v2
           extensions: dom, sockets, grpc, curl
 
@@ -54,7 +56,7 @@ jobs:
           max_attempts: 5
           command: |
             composer update
-              ${{ inputs.prefer-lowest }}
+              ${{ matrix.prefer-lowest }}
               --prefer-stable
               --prefer-dist
               --no-interaction
@@ -63,3 +65,6 @@ jobs:
       - name: Download RoadRunner
         run: |
           vendor/bin/rr get --no-interaction --stability=stable
+
+      - name: Run Tests
+        run: vendor/bin/phpunit --testsuite=${{ input.test-suite }} --testdox --verbose

@@ -45,24 +45,10 @@ jobs:
 
   unit:
     name: Unit Testing (PHP ${{ matrix.php }}, OS ${{ matrix.os }}, ${{ matrix.prefer-lowest }}
-    runs-on: ${{ matrix.os }}
-    strategy:
+    uses: ./.github/workflows/setup-project.yml
+    with:
       fail-fast: false
-      matrix:
-        php: [7.4, 8.0]
-        os: [ubuntu-latest, windows-latest]
-        prefer-lowest: [--prefer-lowest, '']
-
-    steps:
-      - name: Setup Project
-        uses: ./.github/workflows/setup-project.yml
-        with:
-          php-version: ${{ matrix.php }}
-          os: ${{ matrix.os }}
-          prefer-lowest: ${{ matrix.prefer-lowest }}
-
-      - name: Run Tests
-        run: vendor/bin/phpunit --testsuite=Unit --testdox --verbose
+      test-suite: Unit
 #
 #
 #  feature:
