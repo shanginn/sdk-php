@@ -11,10 +11,10 @@ on:
 
 jobs:
   test:
-    name: Testing ${{ input.test-suite }} (PHP ${{ matrix.php }}, OS ${{ matrix.os }}, ${{ matrix.prefer-lowest }}
+    name: Testing ${{ inputs.test-suite }} (PHP ${{ matrix.php }}, OS ${{ matrix.os }}, ${{ matrix.prefer-lowest }}
     runs-on: ${{ matrix.os }}
     strategy:
-      fail-fast: ${{ input.fail-fast }}
+      fail-fast: ${{ inputs.fail-fast }}
       matrix:
         php: [ 7.4 ] #, 8.0]
         os: [ ubuntu-latest ] #, windows-latest]
@@ -67,4 +67,4 @@ jobs:
           vendor/bin/rr get --no-interaction --stability=stable
 
       - name: Run Tests
-        run: vendor/bin/phpunit --testsuite=${{ input.test-suite }} --testdox --verbose
+        run: vendor/bin/phpunit --testsuite=${{ inputs.test-suite }} --testdox --verbose
