@@ -15,7 +15,7 @@ on:
 
 jobs:
   test:
-    name: Testing ${{ inputs.test-suite }} (PHP ${{ matrix.php }}, OS ${{ matrix.os }}, with ${{ matrix.dependencies }} deps
+    name: (PHP ${{ matrix.php }}, OS ${{ matrix.os }}, with ${{ matrix.dependencies }} deps
     runs-on: ${{ matrix.os }}
     timeout-minutes: ${{ inputs.test-timeout }}
     strategy:
