@@ -16,9 +16,9 @@ jobs:
     strategy:
       fail-fast: ${{ inputs.fail-fast }}
       matrix:
-        php: [ 8.0 ] #, 7.4]
-        os: [ ubuntu-latest ] #, windows-latest]
-        dependencies: [ lowest ] #, highest ]
+        php: [ 7.4, 8.0, 8.1 ]
+        os: [ ubuntu-latest , windows-latest]
+        dependencies: [ lowest , highest ]
     steps:
       - name: Set Git To Use LF
         run: |
@@ -63,13 +63,6 @@ jobs:
       - name: Install highest dependencies from composer.json
         if: matrix.dependencies == 'highest'
         run: composer update --no-interaction --no-progress
-
-      - name: Cache roadrunner binary
-        uses: actions/cache@v3
-        with:
-          path: rr
-          key: php-${{ matrix.php }}-${{ matrix.os }}-roadrunner-${{ hashFiles('rr') }}
-          restore-keys: php-${{ matrix.php }}-${{ matrix.os }}-roadrunner-
 
       - name: Download RoadRunner
         run: |
