@@ -45,7 +45,7 @@ jobs:
 
   unit:
     name: Unit Testing (PHP ${{ matrix.php }}, OS ${{ matrix.os }}, ${{ matrix.prefer-lowest }}
-    uses: ./.github/workflows/setup-project.yml
+    uses: ./.github/workflows/run-test-suite.yml
     with:
       fail-fast: false
       test-suite: Unit
