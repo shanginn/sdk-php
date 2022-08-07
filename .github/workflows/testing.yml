@@ -44,7 +44,7 @@ jobs:
 #        run: composer require --dev roave/security-advisories:dev-latest
 
   unit:
-    name: Unit Testing (PHP ${{ matrix.php }}, OS ${{ matrix.os }}, ${{ matrix.prefer-lowest }}
+    name: Unit Testing
     uses: ./.github/workflows/run-test-suite.yml
     with:
       fail-fast: false
