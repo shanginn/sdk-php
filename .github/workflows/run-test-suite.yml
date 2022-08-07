@@ -8,11 +8,16 @@ on:
         required: true
         type: boolean
         default: true
+      test-timeout:
+        required: false
+        type: number
+        default: 10
 
 jobs:
   test:
     name: Testing ${{ inputs.test-suite }} (PHP ${{ matrix.php }}, OS ${{ matrix.os }}, with ${{ matrix.dependencies }} deps
     runs-on: ${{ matrix.os }}
+    timeout-minutes: ${{ inputs.test-timeout }}
     strategy:
       fail-fast: ${{ inputs.fail-fast }}
       matrix:

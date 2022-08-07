@@ -51,9 +51,13 @@ jobs:
       test-suite: Unit
 #
 #
-#  feature:
-#    timeout-minutes: 20
-#    name: Feature Testing (PHP ${{ matrix.php }}, OS ${{ matrix.os }}, ${{ matrix.prefer-lowest }}
+  feature:
+    #timeout-minutes: 20
+    name: Feature Testing
+    uses: ./.github/workflows/run-test-suite.yml
+    with:
+      fail-fast: true
+      test-suite: Feature
 #    runs-on: ${{ matrix.os }}
 #    strategy:
 #      fail-fast: true
