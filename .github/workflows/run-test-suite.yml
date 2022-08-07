@@ -16,7 +16,7 @@ jobs:
     strategy:
       fail-fast: ${{ inputs.fail-fast }}
       matrix:
-        php: [ 7.4 ] #, 8.0]
+        php: [ 8.0 ] #, 7.4]
         os: [ ubuntu-latest ] #, windows-latest]
         dependencies: [ lowest ] #, highest ]
     steps:
@@ -56,6 +56,10 @@ jobs:
         if: matrix.dependencies == 'lowest'
         run: composer update --no-interaction --no-progress --prefer-lowest
 
+      - name: Checkout lowest dependencies from composer.json
+        if: matrix.dependencies == 'lowest'
+        run: vendor/bin/validate-prefer-lowest
+
       - name: Install highest dependencies from composer.json
         if: matrix.dependencies == 'highest'
         run: composer update --no-interaction --no-progress
@@ -69,7 +73,7 @@ jobs:
 
       - name: Download RoadRunner
         run: |
-          vendor/bin/rr get-binary --no-interaction
+          vendor/bin/rr get --no-interaction
 
       - name: Run Tests
         run: vendor/bin/phpunit --testsuite=${{ inputs.test-suite }} --testdox --verbose
