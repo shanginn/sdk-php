@@ -12,6 +12,10 @@ on:
         required: false
         type: number
         default: 10
+      run-temporal-test-server:
+        required: true
+        type: boolean
+        default: true
 
 jobs:
   test:
@@ -75,3 +79,5 @@ jobs:
 
       - name: Run Tests
         run: vendor/bin/phpunit --testsuite=${{ inputs.test-suite }} --testdox --verbose
+        env:
+          RUN_TEMPORAL_TEST_SERVER: ${{ inputs.run-temporal-test-server }}
