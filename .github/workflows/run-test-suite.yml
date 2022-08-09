@@ -15,7 +15,7 @@ on:
       run-temporal-test-server:
         required: false
         type: boolean
-        default: 1
+        default: true
 
 jobs:
   test:
