@@ -9,7 +9,6 @@ jobs:
     with:
       fail-fast: false
       test-suite: Unit
-      run-temporal-test-server: false
 
   feature:
     name: Feature Testing
@@ -18,6 +17,7 @@ jobs:
       fail-fast: true
       test-suite: Feature
       test-timeout: 20
+      run-temporal-test-server: true
 
   functional:
     name: Functional Testing
@@ -25,3 +25,4 @@ jobs:
     with:
       fail-fast: false
       test-suite: Functional
+      run-temporal-test-server: true
