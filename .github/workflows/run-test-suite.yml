@@ -14,7 +14,8 @@ on:
         default: 10
       run-temporal-test-server:
         required: false
-        type: boolean
+        type: string
+        default: ''
 
 jobs:
   test:
@@ -79,7 +80,7 @@ jobs:
         if: inputs.run-temporal-test-server == true
         with:
           path: |
-            ./rr
+            ./rr*
             .rr.yaml
           key: ${{ matrix.os }}-roadrunner-${{ hashFiles('**/rr') }}
           restore-keys: |
