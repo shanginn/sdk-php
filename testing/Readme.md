@@ -20,8 +20,8 @@ register_shutdown_function(fn () => $environment->stop());
 You can start them separately if you need to customize the configuration:
 
 ```php
-$this->startTemporalTestServer(); // starts Temporal server
-$this->startRoadRunner(); // starts RoadRunner worker
+$environment->startTemporalTestServer(); // starts Temporal server
+$environment->startRoadRunner(); // starts RoadRunner worker
 ```
 
 So if, for example, you only need roadrunner worker and not the server you can
@@ -31,7 +31,7 @@ set condition to start it only if `RUN_TEMPORAL_TEST_SERVER` environment variabl
 $environment = Environment::create();
 
 if (getenv('RUN_TEMPORAL_TEST_SERVER') !== false) {
-    $this->startTemporalTestServer();
+    $environment->startTemporalTestServer();
 }
 
 $environment->startRoadRunner('./rr serve -c .rr.silent.yaml -w tests');
