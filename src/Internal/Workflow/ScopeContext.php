@@ -11,11 +11,12 @@ declare(strict_types=1);
 
 namespace Temporal\Internal\Workflow;
 
-use React\Promise\Deferred;
-use React\Promise\PromiseInterface;
+use Amp\Future;
 use Temporal\Exception\Failure\CanceledFailure;
 use Temporal\Internal\Transport\CompletableResult;
+use Temporal\Internal\Workflow\Process\Fiber\FiberScope;
 use Temporal\Internal\Workflow\Process\Scope;
+use Temporal\Promise;
 use Temporal\Worker\Transport\Command\RequestInterface;
 use Temporal\Workflow\CancellationScopeInterface;
 use Temporal\Workflow\ScopedContextInterface;
@@ -24,16 +25,22 @@ use Temporal\Workflow\UpdateContext;
 class ScopeContext extends WorkflowContext implements ScopedContextInterface
 {
     private WorkflowContext $parent;
-    private Scope $scope;
+    private $scope;
     private \Closure $onRequest;
     private ?UpdateContext $updateContext = null;
 
     /**
      * Creates scope specific context.
+     * 
+     * @param WorkflowContext $context
+     * @param Scope|FiberScope $scope
+     * @param \Closure $onRequest
+     * @param UpdateContext|null $updateContext
+     * @return self
      */
     public static function fromWorkflowContext(
         WorkflowContext $context,
-        Scope $scope,
+        $scope,
         \Closure $onRequest,
         ?UpdateContext $updateContext,
     ): self {
@@ -69,7 +76,7 @@ class ScopeContext extends WorkflowContext implements ScopedContextInterface
         RequestInterface $request,
         bool $cancellable = true,
         bool $waitResponse = true,
-    ): PromiseInterface {
+    ): Promise {
         $cancellable && $this->scope->isCancelled() && throw new CanceledFailure(
             'Attempt to send request to cancelled scope',
         );
@@ -97,36 +104,5 @@ class ScopeContext extends WorkflowContext implements ScopedContextInterface
     public function resolveConditions(): void
     {
         $this->parent->resolveConditions();
-    }
-
-    public function resolveConditionGroup(string $conditionGroupId): void
-    {
-        $this->parent->resolveConditionGroup($conditionGroupId);
-    }
-
-    public function rejectConditionGroup(string $conditionGroupId): void
-    {
-        $this->parent->rejectConditionGroup($conditionGroupId);
-    }
-
-    #[\Override]
-    public function destroy(): void
-    {
-        parent::destroy();
-        unset($this->scope, $this->parent, $this->onRequest);
-    }
-
-    protected function addCondition(string $conditionGroupId, callable $condition): PromiseInterface
-    {
-        $deferred = new Deferred();
-        $this->parent->awaits[$conditionGroupId][] = [$condition, $deferred];
-        $this->scope->onAwait($deferred);
-
-        return new CompletableResult(
-            $this,
-            $this->services->loop,
-            $deferred->promise(),
-            $this->scope->getLayer(),
-        );
     }
 }

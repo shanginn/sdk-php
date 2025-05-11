@@ -11,11 +11,13 @@ declare(strict_types=1);
 
 namespace Temporal\DataConverter;
 
+use Amp\Future;
 use ArrayAccess;
 use Countable;
 use React\Promise\PromiseInterface;
 use Temporal\Api\Common\V1\Payload;
 use Temporal\Api\Common\V1\Payloads;
+use Temporal\Promise;
 use Temporal\Workflow\ReturnType;
 use Traversable;
 
@@ -75,17 +77,25 @@ class EncodedValues implements ValuesInterface
      * Decode promise response upon returning it to the domain layer.
      *
      * @param string|\ReflectionClass|\ReflectionType|Type|null $type
+     * @return Promise<mixed>
      */
-    public static function decodePromise(PromiseInterface $promise, $type = null): PromiseInterface
+    public static function decodePromise(Promise|Future|PromiseInterface $promise, $type = null): Promise
     {
-        return $promise->then(
+        // Convert different promises to our Promise type
+        if ($promise instanceof PromiseInterface) {
+            $promise = Promise::fromReactPromise($promise);
+        } elseif ($promise instanceof Future && !$promise instanceof Promise) {
+            $promise = new Promise($promise->state);
+        }
+        
+        return $promise->map(
             static function (mixed $value) use ($type) {
                 if (!$value instanceof ValuesInterface || $value instanceof \Throwable) {
                     return $value;
                 }
 
                 return $value->getValue(0, $type);
-            },
+            }
         );
     }
 

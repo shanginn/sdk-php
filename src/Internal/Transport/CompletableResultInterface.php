@@ -11,15 +11,18 @@ declare(strict_types=1);
 
 namespace Temporal\Internal\Transport;
 
-use React\Promise\PromiseInterface;
+use Temporal\Promise;
 
 /**
  * @template T
- * @extends PromiseInterface<T>
+ * @extends Promise<T>
  * @yield T
  */
-interface CompletableResultInterface extends PromiseInterface
+interface CompletableResultInterface extends Promise
 {
+    /**
+     * @return bool
+     */
     public function isComplete(): bool;
 
     /**

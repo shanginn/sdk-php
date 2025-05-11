@@ -23,7 +23,7 @@ use Temporal\Internal\Declaration\Instantiator\WorkflowInstantiator;
 use Temporal\Internal\Declaration\Prototype\WorkflowPrototype;
 use Temporal\Internal\ServiceContainer;
 use Temporal\Internal\Workflow\Input;
-use Temporal\Internal\Workflow\Process\Process;
+use Temporal\Internal\Workflow\Process\ProcessFactory;
 use Temporal\Internal\Workflow\WorkflowContext;
 use Temporal\Worker\FeatureFlags;
 use Temporal\Worker\Transport\Command\ServerRequestInterface;
@@ -99,7 +99,7 @@ final class StartWorkflow extends Route
             $runId,
         ): void {
             $context = $context->withInput(new Input($input->info, $input->arguments, $input->header));
-            $process = new Process($this->services, $context, $runId);
+            $process = ProcessFactory::create($this->services, $context, $runId);
             $this->services->running->add($process);
             $resolver->resolve(EncodedValues::fromValues([null]));
 

@@ -41,6 +41,7 @@ use Temporal\Internal\Transport\RouterInterface;
 use Temporal\Internal\Transport\Server;
 use Temporal\Internal\Transport\ServerInterface;
 use Temporal\Internal\Workflow\Logger;
+use Temporal\Internal\Workflow\Process\ProcessFactory;
 use Temporal\Worker\Environment\Environment;
 use Temporal\Worker\Environment\EnvironmentInterface;
 use Temporal\Worker\Logger\StderrLogger;
@@ -104,13 +105,21 @@ class WorkerFactory implements WorkerFactoryInterface, LoopInterface
     protected MarshallerInterface $marshaller;
 
     protected EnvironmentInterface $env;
+    
+    /**
+     * Whether to use fiber-based implementation.
+     */
+    protected bool $useFibers = false;
 
     public function __construct(
         DataConverterInterface $dataConverter,
         protected RPCConnectionInterface $rpc,
         ?ServiceCredentials $credentials = null,
+        bool $useFibers = false,
     ) {
         $this->converter = $dataConverter;
+        $this->useFibers = $useFibers && \PHP_VERSION_ID >= 80100; // Fibers require PHP 8.1+
+        ProcessFactory::useFibers($this->useFibers);
         $this->boot($credentials ?? ServiceCredentials::create());
     }
 
@@ -118,11 +127,13 @@ class WorkerFactory implements WorkerFactoryInterface, LoopInterface
         ?DataConverterInterface $converter = null,
         ?RPCConnectionInterface $rpc = null,
         ?ServiceCredentials $credentials = null,
+        bool $useFibers = false,
     ): static {
         return new static(
             $converter ?? DataConverter::createDefault(),
             $rpc ?? Goridge::create(),
             $credentials,
+            $useFibers,
         );
     }
 
@@ -185,6 +196,24 @@ class WorkerFactory implements WorkerFactoryInterface, LoopInterface
     public function getEnvironment(): EnvironmentInterface
     {
         return $this->env;
+    }
+    
+    /**
+     * Whether fiber-based implementation is enabled.
+     */
+    public function useFibers(): bool
+    {
+        return $this->useFibers;
+    }
+    
+    /**
+     * Enable or disable fiber-based implementation.
+     */
+    public function setUseFibers(bool $useFibers): self
+    {
+        $this->useFibers = $useFibers && \PHP_VERSION_ID >= 80100; // Fibers require PHP 8.1+
+        ProcessFactory::useFibers($this->useFibers);
+        return $this;
     }
 
     public function run(?HostConnectionInterface $host = null): int
@@ -305,7 +334,7 @@ class WorkerFactory implements WorkerFactoryInterface, LoopInterface
         return $this->codec->encode($this->responses);
     }
 
-    private function onRequest(ServerRequestInterface $request, array $headers): PromiseInterface
+    private function onRequest(ServerRequestInterface $request, array $headers): Promise
     {
         if (!isset($headers[self::HEADER_TASK_QUEUE])) {
             return $this->router->dispatch($request, $headers);

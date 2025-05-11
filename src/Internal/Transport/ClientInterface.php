@@ -11,7 +11,7 @@ declare(strict_types=1);
 
 namespace Temporal\Internal\Transport;
 
-use React\Promise\PromiseInterface;
+use Temporal\Promise;
 use Temporal\Worker\Transport\Command\CommandInterface;
 use Temporal\Worker\Transport\Command\RequestInterface;
 use Temporal\Workflow\WorkflowContextInterface;
@@ -20,11 +20,13 @@ interface ClientInterface
 {
     /**
      * Send a request and return a promise.
+     * 
+     * @return Promise<mixed>
      */
-    public function request(RequestInterface $request, ?WorkflowContextInterface $context = null): PromiseInterface;
+    public function request(RequestInterface $request, ?WorkflowContextInterface $context = null): Promise;
 
     /**
-     * Sena a request without tracking the response.
+     * Send a request without tracking the response.
      */
     public function send(CommandInterface $request): void;
 
@@ -33,6 +35,9 @@ interface ClientInterface
      */
     public function isQueued(CommandInterface $command): bool;
 
+    /**
+     * Cancel a sent command.
+     */
     public function cancel(CommandInterface $command): void;
 
     /**

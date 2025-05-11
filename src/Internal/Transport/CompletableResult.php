@@ -11,8 +11,11 @@ declare(strict_types=1);
 
 namespace Temporal\Internal\Transport;
 
-use React\Promise\Deferred;
-use React\Promise\PromiseInterface;
+use Amp\Cancellation;
+use Amp\DeferredFuture;
+use Amp\Future;
+use Temporal\Internal\Promise\DeferredPromise;
+use Temporal\Promise;
 use Temporal\Worker\LoopInterface;
 use Temporal\Workflow;
 use Temporal\Workflow\WorkflowContextInterface;
@@ -32,8 +35,8 @@ class CompletableResult implements CompletableResultInterface
 
     private WorkflowContextInterface $context;
     private LoopInterface $loop;
-    private PromiseInterface $promise;
-    private Deferred $deferred;
+    private Future $future;
+    private DeferredPromise $deferred;
     private string $layer;
 
     /**
@@ -42,18 +45,18 @@ class CompletableResult implements CompletableResultInterface
     public function __construct(
         WorkflowContextInterface $context,
         LoopInterface $loop,
-        PromiseInterface $promise,
+        Future $future,
         string $layer,
     ) {
         $this->context = $context;
         $this->loop = $loop;
-        $this->deferred = new Deferred();
+        $this->deferred = new DeferredPromise();
         $this->layer = $layer;
 
-        $this->promise = $promise->then(
-            $this->onFulfilled(...),
-            $this->onRejected(...),
-        );
+        $this->future = $future
+            ->map(fn($value) => $this->onFulfilled($value))
+            ->catch(fn(\Throwable $e) => $this->onRejected($e))
+            ->ignore();
     }
 
     public function isComplete(): bool
@@ -72,84 +75,128 @@ class CompletableResult implements CompletableResultInterface
     /**
      * @param (callable(mixed): mixed)|null $onFulfilled
      * @param (callable(\Throwable): mixed)|null $onRejected
+     * @return Promise<mixed>
      */
     public function then(
         ?callable $onFulfilled = null,
         ?callable $onRejected = null,
         ?callable $onProgress = null,
-    ): PromiseInterface {
+    ): Promise {
         return $this->promise()
             ->then($this->wrapContext($onFulfilled), $this->wrapContext($onRejected));
-        //return new Future($promise, $this->worker);
     }
 
     /**
-     * @return PromiseInterface<T>
+     * @return Promise<T>
      */
-    public function promise(): PromiseInterface
+    public function promise(): Promise
     {
         return $this->deferred->promise();
     }
 
-    public function catch(callable $onRejected): PromiseInterface
+    /**
+     * @param callable(\Throwable): mixed $onRejected
+     * @return Promise<mixed>
+     */
+    public function catch(callable $onRejected): Promise
     {
         return $this->promise()
             ->catch($this->wrapContext($onRejected));
     }
 
-    public function finally(callable $onFulfilledOrRejected): PromiseInterface
+    /**
+     * @param callable(): void $onFulfilledOrRejected
+     * @return Promise<mixed>
+     */
+    public function finally(callable $onFulfilledOrRejected): Promise
     {
         return $this->promise()
             ->finally($this->wrapContext($onFulfilledOrRejected));
     }
 
+    /**
+     * Cancels the underlying operation if possible.
+     */
     public function cancel(): void
     {
-        Workflow::setCurrentContext($this->context);
-        $this->promise()->cancel();
+        // For now, we don't have a direct cancellation mechanism
+        // but we'll mark the operation as rejected with cancellation
+        if (!$this->resolved) {
+            $this->resolved = true;
+            $this->loop->once(
+                $this->layer,
+                function (): void {
+                    Workflow::setCurrentContext($this->context);
+                    $this->deferred->reject(new \Temporal\Exception\Failure\CanceledFailure('Operation cancelled'));
+                },
+            );
+        }
     }
 
     /**
-     * @deprecated
+     * @deprecated Use catch() instead
+     * @param callable(\Throwable): mixed $onRejected
+     * @return Promise<mixed>
      */
-    public function otherwise(callable $onRejected): PromiseInterface
+    public function otherwise(callable $onRejected): Promise
     {
         return $this->catch($this->wrapContext($onRejected));
     }
 
     /**
-     * @deprecated
+     * @deprecated Use finally() instead
+     * @param callable(): void $onFulfilledOrRejected
+     * @return Promise<mixed>
      */
-    public function always(callable $onFulfilledOrRejected): PromiseInterface
+    public function always(callable $onFulfilledOrRejected): Promise
     {
         return $this->finally($this->wrapContext($onFulfilledOrRejected));
     }
 
-    private function onFulfilled(mixed $result): void
+    /**
+     * @return Future<mixed>
+     */
+    public function getFuture(): Future
+    {
+        return $this->deferred->promise();
+    }
+
+    /**
+     * @param T $result
+     * @return T
+     */
+    private function onFulfilled(mixed $result): mixed
     {
         $this->resolved = true;
         $this->value = $result;
 
         $this->loop->once(
-            $this->layer,//LoopInterface::ON_CALLBACK,
+            $this->layer,
             function (): void {
                 Workflow::setCurrentContext($this->context);
                 $this->deferred->resolve($this->value);
             },
         );
+        
+        return $result;
     }
 
-    private function onRejected(\Throwable $e): void
+    /**
+     * @throws \Throwable
+     */
+    private function onRejected(\Throwable $e): never
     {
         $this->resolved = true;
 
         $this->loop->once(
-            $this->layer,//  LoopInterface::ON_CALLBACK,
+            $this->layer,
             function () use ($e): void {
                 Workflow::setCurrentContext($this->context);
                 $this->deferred->reject($e);
             },
         );
+        
+        throw $e;
     }
 
     /**

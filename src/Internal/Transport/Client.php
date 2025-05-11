@@ -11,11 +11,11 @@ declare(strict_types=1);
 
 namespace Temporal\Internal\Transport;
 
-use React\Promise\Deferred;
-use React\Promise\PromiseInterface;
 use Temporal\Exception\Failure\CanceledFailure;
+use Temporal\Internal\Promise\DeferredPromise;
 use Temporal\Internal\Queue\QueueInterface;
 use Temporal\Internal\Transport\Request\UndefinedResponse;
+use Temporal\Promise;
 use Temporal\Worker\Transport\Command\CommandInterface;
 use Temporal\Worker\Transport\Command\FailureResponseInterface;
 use Temporal\Worker\Transport\Command\RequestInterface;
@@ -37,7 +37,7 @@ final class Client implements ClientInterface
         'a request with that identifier was not sent';
 
     /**
-     * @var array<int, array{Deferred, WorkflowContextInterface|null}>
+     * @var array<int, array{DeferredPromise, WorkflowContextInterface|null}>
      */
     private array $requests = [];
 
@@ -78,7 +78,10 @@ final class Client implements ClientInterface
         }
     }
 
-    public function request(RequestInterface $request, ?WorkflowContextInterface $context = null): PromiseInterface
+    /**
+     * @return Promise<mixed>
+     */
+    public function request(RequestInterface $request, ?WorkflowContextInterface $context = null): Promise
     {
         $this->queue->push($request);
 
@@ -88,7 +91,7 @@ final class Client implements ClientInterface
             \sprintf(self::ERROR_REQUEST_ID_DUPLICATION, $id),
         );
 
-        $deferred = new Deferred();
+        $deferred = new DeferredPromise();
         $this->requests[$id] = [$deferred, $context];
 
         return $deferred->promise();
@@ -116,7 +119,7 @@ final class Client implements ClientInterface
         $this->fetch($command->getID())->reject($reason);
     }
 
-    private function fetch(int $id): Deferred
+    private function fetch(int $id): DeferredPromise
     {
         $request = $this->get($id);
 
@@ -127,7 +130,7 @@ final class Client implements ClientInterface
         }
     }
 
-    private function get(int $id): Deferred
+    private function get(int $id): DeferredPromise
     {
         if (!isset($this->requests[$id])) {
             throw new \UnderflowException(\sprintf(self::ERROR_REQUEST_NOT_FOUND, $id));

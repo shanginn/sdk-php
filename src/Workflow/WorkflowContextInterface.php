@@ -11,17 +11,18 @@ declare(strict_types=1);
 
 namespace Temporal\Workflow;
 
+use Amp\Future;
 use Psr\Log\LoggerInterface;
 use Ramsey\Uuid\UuidInterface;
-use React\Promise\PromiseInterface;
 use Temporal\Activity\ActivityOptions;
 use Temporal\Activity\ActivityOptionsInterface;
 use Temporal\Common\SearchAttributes\SearchAttributeUpdate;
 use Temporal\DataConverter\Type;
 use Temporal\DataConverter\ValuesInterface;
 use Temporal\Internal\Support\DateInterval;
-use Temporal\Worker\Transport\Command\RequestInterface;
+use Temporal\Promise;
 use Temporal\Worker\Environment\EnvironmentInterface;
+use Temporal\Worker\Transport\Command\RequestInterface;
 use Temporal\Workflow;
 
 /**
@@ -128,19 +129,21 @@ interface WorkflowContextInterface extends EnvironmentInterface
      * Exchanges data between worker and host process.
      *
      * @internal This is an internal method
+     * @return Promise<mixed>
      */
     public function request(
         RequestInterface $request,
         bool $cancellable = true,
         bool $waitResponse = true,
-    ): PromiseInterface;
+    ): Promise;
 
     /**
      * Updates the behavior of an existing workflow to resolve inconsistency errors during replay.
      *
      * @see Workflow::getVersion()
+     * @return Promise<int>
      */
-    public function getVersion(string $changeId, int $minSupported, int $maxSupported): PromiseInterface;
+    public function getVersion(string $changeId, int $minSupported, int $maxSupported): Promise;
 
     /**
      * Isolates non-pure data to ensure consistent results during workflow replays.
@@ -149,19 +152,21 @@ interface WorkflowContextInterface extends EnvironmentInterface
      *
      * @template TReturn
      * @param callable(): TReturn $context
-     * @return PromiseInterface<TReturn>
+     * @return Promise<TReturn>
      */
-    public function sideEffect(callable $context): PromiseInterface;
+    public function sideEffect(callable $context): Promise;
 
     /**
      * @internal This is an internal method
+     * @return Promise<void>
      */
-    public function complete(?array $result = null, ?\Throwable $failure = null): PromiseInterface;
+    public function complete(?array $result = null, ?\Throwable $failure = null): Promise;
 
     /**
      * @internal This is an internal method
+     * @return Promise<void>
      */
-    public function panic(?\Throwable $failure = null): PromiseInterface;
+    public function panic(?\Throwable $failure = null): Promise;
 
     /**
      * Stops workflow execution work for a specified period.
@@ -170,19 +175,21 @@ interface WorkflowContextInterface extends EnvironmentInterface
      *
      * @param DateIntervalValue $interval
      * @see DateInterval
+     * @return Promise<void>
      */
-    public function timer($interval): PromiseInterface;
+    public function timer($interval): Promise;
 
     /**
      * Completes the current workflow execution atomically and starts a new execution with the same Workflow Id.
      *
      * @see Workflow::continueAsNew()
+     * @return Promise<void>
      */
     public function continueAsNew(
         string $type,
         array $args = [],
         ?ContinueAsNewOptions $options = null,
-    ): PromiseInterface;
+    ): Promise;
 
     /**
      * Creates client stub that can be used to continue this workflow as new.
@@ -201,13 +208,14 @@ interface WorkflowContextInterface extends EnvironmentInterface
      * @see Workflow::executeChildWorkflow()
      *
      * @param Type|string|\ReflectionType|\ReflectionClass|null $returnType
+     * @return Promise<mixed>
      */
     public function executeChildWorkflow(
         string $type,
         array $args = [],
         ?ChildWorkflowOptions $options = null,
         $returnType = null,
-    ): PromiseInterface;
+    ): Promise;
 
     /**
      * Creates a proxy for a workflow class to execute as a child workflow.
@@ -260,15 +268,15 @@ interface WorkflowContextInterface extends EnvironmentInterface
      * @see Workflow::executeActivity()
      *
      * @param ActivityOptions|null $options
-     *
-     * @return PromiseInterface<mixed>
+     * @param Type|string|\ReflectionClass|\ReflectionType|null $returnType
+     * @return Promise<mixed>
      */
     public function executeActivity(
         string $type,
         array $args = [],
         ?ActivityOptionsInterface $options = null,
         Type|string|\ReflectionClass|\ReflectionType|null $returnType = null,
-    ): PromiseInterface;
+    ): Promise;
 
     /**
      * The method returns a proxy over the class containing the activity, which
@@ -302,9 +310,10 @@ interface WorkflowContextInterface extends EnvironmentInterface
      *
      * @see Workflow::await()
      *
-     * @param callable|Mutex|PromiseInterface ...$conditions
+     * @param callable|Mutex|Promise|Future ...$conditions
+     * @return Promise<mixed>
      */
-    public function await(callable|Mutex|PromiseInterface ...$conditions): PromiseInterface;
+    public function await(callable|Mutex|Promise|Future ...$conditions): Promise;
 
     /**
      * Checks if any conditions were met or the timeout was reached.
@@ -315,10 +324,10 @@ interface WorkflowContextInterface extends EnvironmentInterface
      * @see Workflow::awaitWithTimeout()
      *
      * @param DateIntervalValue $interval
-     * @param callable|Mutex|PromiseInterface ...$conditions
-     * @return PromiseInterface<bool>
+     * @param callable|Mutex|Promise|Future ...$conditions
+     * @return Promise<bool>
      */
-    public function awaitWithTimeout($interval, callable|Mutex|PromiseInterface ...$conditions): PromiseInterface;
+    public function awaitWithTimeout($interval, callable|Mutex|Promise|Future ...$conditions): Promise;
 
     /**
      * Returns a complete trace of the last calls (for debugging).
@@ -410,18 +419,18 @@ interface WorkflowContextInterface extends EnvironmentInterface
      *
      * @see Workflow::uuid()
      *
-     * @return PromiseInterface<UuidInterface>
+     * @return Promise<UuidInterface>
      */
-    public function uuid(): PromiseInterface;
+    public function uuid(): Promise;
 
     /**
      * Generate a UUID version 4 (random).
      *
      * @see Workflow::uuid4()
      *
-     * @return PromiseInterface<UuidInterface>
+     * @return Promise<UuidInterface>
      */
-    public function uuid4(): PromiseInterface;
+    public function uuid4(): Promise;
 
     /**
      * Generate a UUID version 7 (Unix Epoch time).
@@ -432,9 +441,9 @@ interface WorkflowContextInterface extends EnvironmentInterface
      *     to create the version 7 UUID. If not provided, the UUID is generated
      *     using the current date/time.
      *
-     * @return PromiseInterface<UuidInterface>
+     * @return Promise<UuidInterface>
      */
-    public function uuid7(?\DateTimeInterface $dateTime = null): PromiseInterface;
+    public function uuid7(?\DateTimeInterface $dateTime = null): Promise;
 
     /**
      * Get logger to use inside the Workflow.

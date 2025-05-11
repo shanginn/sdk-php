@@ -32,4 +32,11 @@ interface ScopedContextInterface extends WorkflowContextInterface
      * @see Workflow::asyncDetached()
      */
     public function asyncDetached(callable $handler): CancellationScopeInterface;
+    
+    /**
+     * Returns the current update context if this scope was created for an update.
+     * 
+     * @return UpdateContext|null
+     */
+    public function getUpdateContext(): ?UpdateContext;
 }

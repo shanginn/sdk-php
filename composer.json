@@ -52,6 +52,7 @@
         }
     },
     "require-dev": {
+        "amphp/amp": "^3",
         "buggregator/trap": "^1.13.0",
         "composer/composer": "^2.8.4",
         "dereuromark/composer-prefer-lowest": "^0.1.10",
