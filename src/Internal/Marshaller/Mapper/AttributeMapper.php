@@ -135,7 +135,7 @@ class AttributeMapper implements MapperInterface
     {
         return function () use ($name, $type) {
             try {
-                $result = $this->$name;
+                $result = $this->$name ?? null;
             } catch (\Error $_) {
                 return null;
             }
@@ -148,7 +148,7 @@ class AttributeMapper implements MapperInterface
     {
         return function ($value) use ($name, $type): void {
             try {
-                $source = $this->$name;
+                $source = $this->$name ?? null;
             } catch (\Error $_) {
                 $source = null;
             }
