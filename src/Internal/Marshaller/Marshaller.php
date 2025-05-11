@@ -43,22 +43,28 @@ class Marshaller implements MarshallerInterface
      */
     public function marshal(object $from): array
     {
-        $mapper = $this->getMapper(\get_class($from));
+        try {
+            $mapper = $this->getMapper(\get_class($from));
 
-        $result = [];
+            $result = [];
 
-        foreach ($mapper->getGetters() as $field => $getter) {
-            try {
-                $result[$field] = $getter->call($from);
-            } catch (\Throwable $e) {
-                throw new MarshallerException(
-                    \sprintf('Unable to marshal field `%s` of class %s.', $field, $from::class),
-                    previous: $e,
-                );
+            foreach ($mapper->getGetters() as $field => $getter) {
+                try {
+                    $result[$field] = $getter->call($from);
+                } catch (\Throwable $e) {
+                    throw new MarshallerException(
+                        \sprintf('Unable to marshal field `%s` of class %s.', $field, $from::class),
+                        previous: $e,
+                    );
+                }
             }
-        }
 
-        return $result;
+            return $result;
+        } catch (\Throwable $e) {
+            dump('marshal', $from, $e);
+
+            throw $e;
+        }
     }
 
     /**
@@ -66,35 +72,41 @@ class Marshaller implements MarshallerInterface
      */
     public function unmarshal(array $from, object $to): object
     {
-        $class = $to::class;
+        try {
+            $class = $to::class;
 
-        if ($class === \stdClass::class) {
-            foreach ($from as $key => $value) {
-                $to->{$key} = $value;
+            if ($class === \stdClass::class) {
+                foreach ($from as $key => $value) {
+                    $to->{$key} = $value;
+                }
+
+                return $to;
             }
 
-            return $to;
+            $mapper = $this->getMapper($class);
+            $result = $mapper->isCopyOnWrite() ? clone $to : $to;
+
+            foreach ($mapper->getSetters() as $field => $setter) {
+                if (!\array_key_exists($field, $from)) {
+                    continue;
+                }
+
+                try {
+                    $setter->call($result, $from[$field] ?? null);
+                } catch (\Throwable $e) {
+                    throw new MarshallerException(
+                        \sprintf('Unable to unmarshal field `%s` of class %s', $field, $to::class),
+                        previous: $e,
+                    );
+                }
+            }
+
+            return $result;
+        } catch (\Throwable $e) {
+            dump('unmarshal', $from, $to, $e);
+
+            throw $e;
         }
-
-        $mapper = $this->getMapper($class);
-        $result = $mapper->isCopyOnWrite() ? clone $to : $to;
-
-        foreach ($mapper->getSetters() as $field => $setter) {
-            if (!\array_key_exists($field, $from)) {
-                continue;
-            }
-
-            try {
-                $setter->call($result, $from[$field] ?? null);
-            } catch (\Throwable $e) {
-                throw new MarshallerException(
-                    \sprintf('Unable to unmarshal field `%s` of class %s', $field, $to::class),
-                    previous: $e,
-                );
-            }
-        }
-
-        return $result;
     }
 
     /**
