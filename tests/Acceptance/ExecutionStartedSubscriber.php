@@ -30,6 +30,8 @@ use Temporal\Tests\Acceptance\App\Runtime\State;
 use Temporal\Tests\Acceptance\App\Runtime\TemporalStarter;
 use Temporal\Tests\Acceptance\App\RuntimeBuilder;
 use Temporal\Tests\Acceptance\App\Support;
+use Temporal\Tests\Acceptance\Extra\Nexus\NexusEndpoints;
+use Temporal\Tests\Acceptance\Extra\Nexus\NexusHttpClient;
 use Temporal\Worker\Logger\StderrLogger;
 
 final class ExecutionStartedSubscriber implements ExecutionStartedSubscriberInterface

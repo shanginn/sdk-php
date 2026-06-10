@@ -128,6 +128,7 @@ class WorkerFactory implements WorkerFactoryInterface, LoopInterface
     protected EnvironmentInterface $env;
     protected PluginRegistry $pluginRegistry;
     protected RPCConnectionInterface $rpc;
+    protected ?WorkflowClient $workflowClient = null;
 
     /** @var array<non-empty-string, NativeWorkerRuntime> */
     private array $nativeRuntimes = [];
@@ -157,6 +158,7 @@ class WorkerFactory implements WorkerFactoryInterface, LoopInterface
         }
 
         $this->rpc = $rpc ?? new NullRpcConnection();
+        $this->workflowClient = $client;
         $this->pluginRegistry = new PluginRegistry();
 
         // Propagate worker plugins from the client first.
@@ -279,6 +281,7 @@ class WorkerFactory implements WorkerFactoryInterface, LoopInterface
                     $options->enableLoggingInReplay,
                     $taskQueue,
                 ),
+                $this->workflowClient,
             ),
             $workerRpc,
         );

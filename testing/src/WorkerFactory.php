@@ -89,7 +89,6 @@ class WorkerFactory extends \Temporal\WorkerFactory
         \assert($worker instanceof \Temporal\Worker\DispatcherInterface);
 
         return new WorkerMock($worker, $this->activityCache);
-    }
 
     private static function environmentValue(string $name): ?string
     {
