@@ -17,8 +17,10 @@ Thumbs.db
 # Other
 /.rr.yaml
 *.exe
-rr
-temporal
-temporal-test-server
+# Downloaded dev binaries (dload.xml); anchored to repo root so they do not
+# match source paths such as resources/proto/temporal/.
+/rr
+/temporal
+/temporal-test-server
 .ai
 .context
