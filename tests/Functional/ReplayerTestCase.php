@@ -254,7 +254,7 @@ final class ReplayerTestCase extends TestCase
         $history = $this->workflowClient->getWorkflowHistory(
             execution: $run->getExecution(),
             historyEventFilterType: HistoryEventFilterType::HISTORY_EVENT_FILTER_TYPE_CLOSE_EVENT,
-            skipArchival: true
+            skipArchival: true,
         )->getHistory();
 
         $this->assertCount(1, \iterator_to_array($history->getEvents(), false));
@@ -328,10 +328,21 @@ final class ReplayerTestCase extends TestCase
         (new WorkflowReplayer())->replayHistory($history);
     }
 
+    protected function setUp(): void
+    {
+        $this->workflowClient = new WorkflowClient(
+            ServiceClient::create('127.0.0.1:7233'),
+        );
+
+        parent::setUp();
+    }
+
     private function createAwaitsUpdateUntypedStub(WorkflowClient $client): WorkflowStubInterface
     {
-        return $client->newWorkflowStub(AwaitsUpdateWorkflow::class, WorkflowOptions::new()
-            ->withWorkflowRunTimeout('10 seconds')
+        return $client->newWorkflowStub(
+            AwaitsUpdateWorkflow::class,
+            WorkflowOptions::new()
+                ->withWorkflowRunTimeout('10 seconds'),
         )->__getUntypedStub();
     }
 }
