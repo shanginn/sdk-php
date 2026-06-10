@@ -253,6 +253,33 @@ abstract class BaseClient implements ServiceClientInterface
     }
 
     /**
+     * Perform a single wire call and return the decoded response message.
+     *
+     * This is the one transport seam: {@see call()} keeps the retry loop,
+     * deadline handling and exception mapping, and delegates the actual RPC to
+     * this method. Alternative transports (e.g. the TrueAsync Rust core) override
+     * only this, inheriting everything else.
+     *
+     * @param non-empty-string $method
+     *
+     * @throws ServiceClientException on a non-OK status.
+     */
+    protected function performCall(string $method, object $arg, ContextInterface $ctx, array $options): object
+    {
+        /** @var UnaryCall $call */
+        $call = $this->connection->getWorkflowService()->{$method}($arg, $ctx->getMetadata(), $options);
+        [$result, $status] = $call->wait();
+
+        if ($status->code !== 0) {
+            throw new ServiceClientException($status);
+        }
+
+        \assert($result !== null);
+
+        return $result;
+    }
+
+    /**
      * Call a gRPC method.
      * Used in {@see withInterceptorPipeline()}
      *
@@ -276,17 +303,7 @@ abstract class BaseClient implements ServiceClientInterface
                     $options['timeout'] = CarbonInterval::instance($diff)->totalMicroseconds;
                 }
 
-                /** @var UnaryCall $call */
-                $call = $this->connection->getWorkflowService()->{$method}($arg, $ctx->getMetadata(), $options);
-                [$result, $status] = $call->wait();
-
-                if ($status->code !== 0) {
-                    throw new ServiceClientException($status);
-                }
-
-                \assert($result !== null);
-
-                return $result;
+                return $this->performCall($method, $arg, $ctx, $options);
             } catch (ServiceClientException $e) {
                 if (!\in_array($e->getCode(), self::RETRYABLE_ERRORS, true)) {
                     if ($e->getCode() === StatusCode::DEADLINE_EXCEEDED) {

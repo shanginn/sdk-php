@@ -17,6 +17,7 @@ use Temporal\Api\Workflowservice\V1\GetSystemInfoRequest;
 use Temporal\Client\GRPC\TrueAsyncServiceClient;
 use Temporal\Client\WorkflowClient;
 use Temporal\Client\WorkflowOptions;
+use Temporal\Exception\Client\WorkflowExecutionAlreadyStartedException;
 use TrueAsync\Temporal\Core\Connection;
 use function Async\await;
 use function Async\spawn;
@@ -36,7 +37,7 @@ if (!\extension_loaded('temporal')) {
     exit(1);
 }
 
-[$version, $workflowId, $runId] = await(spawn(static function () use ($address): array {
+$result = await(spawn(static function () use ($address): array {
     $svc = TrueAsyncServiceClient::fromCore(new Connection($address));
 
     // 1. A raw RPC round-trips to a typed response.
@@ -49,13 +50,34 @@ if (!\extension_loaded('temporal')) {
         ->withWorkflowId('it-' . \bin2hex(\random_bytes(4))));
     $run = $client->start($stub, 'payload');
 
-    return [$info->getServerVersion(), $run->getExecution()->getID(), $run->getExecution()->getRunID()];
+    // 3. A gRPC error carries typed details: starting the same (still-running)
+    //    workflow id again must surface as the specific SDK exception, proving
+    //    failure_details flow core -> ServiceException::statusDetails -> SDK.
+    $dupId = 'dup-' . \bin2hex(\random_bytes(4));
+    $mkDup = static fn() => $client->newUntypedWorkflowStub('DupWorkflow',
+        (new WorkflowOptions())->withTaskQueue('integration-q')->withWorkflowId($dupId));
+    $client->start($mkDup(), 'first');
+    $typed = false;
+    try {
+        $client->start($mkDup(), 'second');
+    } catch (WorkflowExecutionAlreadyStartedException) {
+        $typed = true;
+    }
+
+    return [$info->getServerVersion(), $run->getExecution()->getID(), $run->getExecution()->getRunID(), $typed];
 }));
+
+[$version, $workflowId, $runId, $typed] = $result;
 
 if ($version === '' || $workflowId === '' || !$runId) {
     \fwrite(\STDERR, "FAIL: unexpected empty result\n");
     exit(1);
 }
 
-\fwrite(\STDOUT, "PASS: server={$version} workflow={$workflowId} run={$runId}\n");
+if (!$typed) {
+    \fwrite(\STDERR, "FAIL: duplicate start did not map to WorkflowExecutionAlreadyStartedException\n");
+    exit(1);
+}
+
+\fwrite(\STDOUT, "PASS: server={$version} workflow={$workflowId} run={$runId} typed-error=ok\n");
 exit(0);

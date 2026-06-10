@@ -41,10 +41,13 @@ final class TrueAsyncServiceClient extends ServiceClient
         return $self;
     }
 
-    protected function invoke(string $method, object $arg, ?ContextInterface $ctx = null): mixed
+    /**
+     * The single transport seam (overrides {@see BaseClient::performCall()}), so
+     * invoke()'s interceptor pipeline, the API-key handling and call()'s retry
+     * loop are all reused — only the wire transport is swapped for the core.
+     */
+    protected function performCall(string $method, object $arg, ContextInterface $ctx, array $options): object
     {
-        $ctx ??= $this->getContext();
-
         // The WorkflowService follows the XxxRequest -> XxxResponse convention.
         $reqClass = $arg::class;
         if (!\str_ends_with($reqClass, 'Request')) {
@@ -52,12 +55,9 @@ final class TrueAsyncServiceClient extends ServiceClient
         }
         $respClass = \substr($reqClass, 0, -\strlen('Request')) . 'Response';
 
-        $timeoutMs = 0;
-        $deadline = $ctx->getDeadline();
-        if ($deadline !== null) {
-            $remaining = $deadline->getTimestamp() - \time();
-            $timeoutMs = $remaining > 0 ? $remaining * 1000 : 1;
-        }
+        // call() already folded the per-attempt deadline into $options['timeout']
+        // (microseconds). The core does no retrying — call()'s loop owns that.
+        $timeoutMs = isset($options['timeout']) ? (int) ((int) $options['timeout'] / 1000) : 0;
 
         try {
             $responseBytes = $this->core->rpcCall(
@@ -85,6 +85,12 @@ final class TrueAsyncServiceClient extends ServiceClient
         $status->code = $statusCode;
         $status->details = $e->getMessage();
         $status->metadata = [];
+
+        // Forward the serialized google.rpc.Status so the SDK can map specific
+        // errors (e.g. WorkflowExecutionAlreadyStarted) from the status details.
+        if ($e instanceof CoreServiceException && $e->statusDetails !== null) {
+            $status->metadata['grpc-status-details-bin'] = [$e->statusDetails];
+        }
 
         return new ServiceClientException($status, $e);
     }
