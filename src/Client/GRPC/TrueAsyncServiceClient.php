@@ -27,6 +27,9 @@ final class TrueAsyncServiceClient extends ServiceClient
     /** WorkflowService selector for the core (mirrors TemporalCoreRpcService). */
     private const SERVICE_WORKFLOW = 1;
 
+    /** Cache of RPC method name => response message class. */
+    private static array $responseClasses = [];
+
     private CoreConnection $core;
 
     public static function fromCore(CoreConnection $core): self
@@ -48,12 +51,9 @@ final class TrueAsyncServiceClient extends ServiceClient
      */
     protected function performCall(string $method, object $arg, ContextInterface $ctx, array $options): object
     {
-        // The WorkflowService follows the XxxRequest -> XxxResponse convention.
-        $reqClass = $arg::class;
-        if (!\str_ends_with($reqClass, 'Request')) {
-            throw new \LogicException("Unexpected request message type: {$reqClass}");
-        }
-        $respClass = \substr($reqClass, 0, -\strlen('Request')) . 'Response';
+        // Authoritative response class: the declared return type of the
+        // ServiceClientInterface method (cached), not a name convention.
+        $respClass = self::$responseClasses[$method] ??= self::resolveResponseClass($method);
 
         // call() already folded the per-attempt deadline into $options['timeout']
         // (microseconds). The core does no retrying — call()'s loop owns that.
@@ -94,5 +94,16 @@ final class TrueAsyncServiceClient extends ServiceClient
         }
 
         return new ServiceClientException($status, $e);
+    }
+
+    private static function resolveResponseClass(string $method): string
+    {
+        $type = (new \ReflectionMethod(ServiceClientInterface::class, $method))->getReturnType();
+
+        if (!$type instanceof \ReflectionNamedType || $type->isBuiltin()) {
+            throw new \LogicException("Cannot resolve a response message type for RPC {$method}");
+        }
+
+        return $type->getName();
     }
 }
