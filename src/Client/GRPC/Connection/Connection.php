@@ -26,11 +26,14 @@ final class Connection implements ConnectionInterface
     public function __construct(
         public \Closure $clientFactory,
     ) {
-        $this->initClient();
+        // Lazy: the underlying client is created on first use (see initClient()).
+        // This lets an alternative transport (the TrueAsync Rust core) reuse the
+        // client SDK without instantiating a gRPC stub at construction time.
     }
 
     public function isConnected(): bool
     {
+        $this->initClient();
         return ConnectionState::from($this->workflowService->getConnectivityState(false)) === ConnectionState::Ready;
     }
 
