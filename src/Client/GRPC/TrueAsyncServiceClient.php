@@ -65,6 +65,7 @@ final class TrueAsyncServiceClient extends ServiceClient
                 $method,
                 $arg->serializeToString(),
                 $timeoutMs,
+                $ctx->getMetadata(),
             );
         } catch (CoreServiceException $e) {
             throw self::mapException($e, (int) $e->getCode());
