@@ -69,6 +69,7 @@ use Temporal\Worker\Transport\Command\ServerResponseInterface;
 final class CoresdkWorkflowCodec implements CodecInterface
 {
     private string $runId = '';
+    private string $taskQueue = '';
 
     public function __construct(private readonly DataConverterInterface $dataConverter) {}
 
@@ -78,7 +79,7 @@ final class CoresdkWorkflowCodec implements CodecInterface
         $activation->mergeFromString($batch);
 
         $this->runId = $activation->getRunId();
-        $taskQueue = (string) ($headers['taskQueue'] ?? '');
+        $this->taskQueue = $taskQueue = (string) ($headers['taskQueue'] ?? '');
 
         $timestamp = $activation->getTimestamp();
         $tick = new TickInfo(
@@ -269,12 +270,14 @@ final class CoresdkWorkflowCodec implements CodecInterface
 
         $command->getPayloads()->setDataConverter($this->dataConverter);
         $activityId = (string) ($ao['ActivityID'] ?? '');
+        $taskQueue = (string) ($ao['TaskQueueName'] ?? '');
 
         $schedule = (new ScheduleActivity())
             ->setSeq($command->getID())
             ->setActivityId($activityId !== '' ? $activityId : (string) $command->getID())
             ->setActivityType($name)
-            ->setTaskQueue((string) ($ao['TaskQueueName'] ?? ''))
+            // An activity inherits the workflow's task queue when none is set.
+            ->setTaskQueue($taskQueue !== '' ? $taskQueue : $this->taskQueue)
             ->setArguments($command->getPayloads()->toPayloads()->getPayloads())
             ->setCancellationType(
                 ($ao['WaitForCancellation'] ?? false)
