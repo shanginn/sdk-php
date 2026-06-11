@@ -15,9 +15,11 @@ use Coresdk\Workflow_activation\WorkflowActivation;
 use Coresdk\Workflow_activation\WorkflowActivationJob;
 use Coresdk\Workflow_commands\CompleteWorkflowExecution;
 use Coresdk\Workflow_commands\FailWorkflowExecution;
+use Coresdk\Workflow_commands\StartTimer;
 use Coresdk\Workflow_commands\WorkflowCommand;
 use Coresdk\Workflow_completion\Success;
 use Coresdk\Workflow_completion\WorkflowActivationCompletion;
+use Google\Protobuf\Duration;
 use Temporal\Api\Common\V1\Payload;
 use Temporal\Api\Common\V1\Payloads;
 use Temporal\DataConverter\DataConverterInterface;
@@ -27,6 +29,7 @@ use Temporal\Worker\Transport\Codec\CodecInterface;
 use Temporal\Worker\Transport\Command\CommandInterface;
 use Temporal\Worker\Transport\Command\RequestInterface;
 use Temporal\Worker\Transport\Command\Server\ServerRequest;
+use Temporal\Worker\Transport\Command\Server\SuccessResponse;
 use Temporal\Worker\Transport\Command\Server\TickInfo;
 
 /**
@@ -47,9 +50,15 @@ use Temporal\Worker\Transport\Command\Server\TickInfo;
  * The run id is carried from decode to encode on the instance: one activation is
  * processed per dispatch cycle, single-threaded, so this is safe.
  *
- * This is the initial slice: it covers workflow start and completion. Jobs and
- * commands that are not yet mapped raise so the gap is explicit rather than a
- * silently hung workflow.
+ * Command/resolution correlation rides on a single number: the SDK stamps every
+ * outgoing command with a unique integer id, which we use verbatim as the coresdk
+ * `seq`. The core echoes that seq back on the resolution job (fire_timer{seq},
+ * resolve_activity{seq}, ...), so we resolve the matching promise by id with no
+ * side table.
+ *
+ * Covered so far: workflow start/completion and timers. Jobs and commands that
+ * are not yet mapped raise so the gap is explicit rather than a silently hung
+ * workflow.
  */
 final class CoresdkWorkflowCodec implements CodecInterface
 {
@@ -106,8 +115,23 @@ final class CoresdkWorkflowCodec implements CodecInterface
 
         return match ($variant) {
             'initialize_workflow' => $this->startWorkflow($job, $tick, $taskQueue),
+            'fire_timer' => $this->fireTimer($job, $tick),
             default => throw new \RuntimeException("coresdk workflow job not yet supported: {$variant}"),
         };
+    }
+
+    /**
+     * Resolve a timer the workflow previously started. The job carries the seq we
+     * stamped on the StartTimer command (= the SDK command id), so the engine's
+     * Client::dispatch resolves the matching promise by id.
+     */
+    private function fireTimer(WorkflowActivationJob $job, TickInfo $tick): SuccessResponse
+    {
+        return new SuccessResponse(
+            values: null,
+            id: $job->getFireTimer()->getSeq(),
+            info: $tick,
+        );
     }
 
     private function startWorkflow(WorkflowActivationJob $job, TickInfo $tick, string $taskQueue): ServerRequest
@@ -139,10 +163,33 @@ final class CoresdkWorkflowCodec implements CodecInterface
     {
         return match ($command->getName()) {
             'CompleteWorkflow' => $this->completeOrFail($command),
+            'NewTimer' => $this->startTimer($command),
             default => throw new \RuntimeException(
                 "SDK workflow command not yet supported: {$command->getName()}",
             ),
         };
+    }
+
+    /**
+     * Start a timer. seq = the SDK command id, so the later fire_timer job maps
+     * straight back to this command's promise.
+     */
+    private function startTimer(RequestInterface $command): WorkflowCommand
+    {
+        $ms = (int) ($command->getOptions()['ms'] ?? 0);
+
+        return (new WorkflowCommand())->setStartTimer(
+            (new StartTimer())
+                ->setSeq($command->getID())
+                ->setStartToFireTimeout(self::msToDuration($ms)),
+        );
+    }
+
+    private static function msToDuration(int $ms): Duration
+    {
+        return (new Duration())
+            ->setSeconds(\intdiv($ms, 1000))
+            ->setNanos(($ms % 1000) * 1_000_000);
     }
 
     private function completeOrFail(RequestInterface $command): WorkflowCommand
