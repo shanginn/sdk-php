@@ -123,8 +123,24 @@ final class CoresdkWorkflowCodec implements CodecInterface
             'initialize_workflow' => $this->startWorkflow($job, $tick, $taskQueue),
             'fire_timer' => $this->fireTimer($job, $tick),
             'resolve_activity' => $this->resolveActivity($job, $tick),
+            'remove_from_cache' => $this->removeFromCache($tick),
             default => throw new \RuntimeException("coresdk workflow job not yet supported: {$variant}"),
         };
+    }
+
+    /**
+     * Evict the run from the worker's cache: the core sends this when it drops a
+     * workflow (after completion, or under cache pressure). The engine tears the
+     * run's process down via the DestroyWorkflow route; the completion carries no
+     * commands.
+     */
+    private function removeFromCache(TickInfo $tick): ServerRequest
+    {
+        return new ServerRequest(
+            name: 'DestroyWorkflow',
+            info: $tick,
+            id: $this->runId,
+        );
     }
 
     /**
