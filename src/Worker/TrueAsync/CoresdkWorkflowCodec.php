@@ -11,10 +11,13 @@ declare(strict_types=1);
 
 namespace Temporal\Worker\TrueAsync;
 
+use Coresdk\Activity_result\Success as ActivitySuccess;
 use Coresdk\Workflow_activation\WorkflowActivation;
 use Coresdk\Workflow_activation\WorkflowActivationJob;
+use Coresdk\Workflow_commands\ActivityCancellationType as CoresdkActivityCancellationType;
 use Coresdk\Workflow_commands\CompleteWorkflowExecution;
 use Coresdk\Workflow_commands\FailWorkflowExecution;
+use Coresdk\Workflow_commands\ScheduleActivity;
 use Coresdk\Workflow_commands\StartTimer;
 use Coresdk\Workflow_commands\WorkflowCommand;
 use Coresdk\Workflow_completion\Success;
@@ -22,15 +25,18 @@ use Coresdk\Workflow_completion\WorkflowActivationCompletion;
 use Google\Protobuf\Duration;
 use Temporal\Api\Common\V1\Payload;
 use Temporal\Api\Common\V1\Payloads;
+use Temporal\Api\Common\V1\RetryPolicy;
 use Temporal\DataConverter\DataConverterInterface;
 use Temporal\DataConverter\EncodedValues;
 use Temporal\Exception\Failure\FailureConverter;
 use Temporal\Worker\Transport\Codec\CodecInterface;
 use Temporal\Worker\Transport\Command\CommandInterface;
 use Temporal\Worker\Transport\Command\RequestInterface;
+use Temporal\Worker\Transport\Command\Server\FailureResponse;
 use Temporal\Worker\Transport\Command\Server\ServerRequest;
 use Temporal\Worker\Transport\Command\Server\SuccessResponse;
 use Temporal\Worker\Transport\Command\Server\TickInfo;
+use Temporal\Worker\Transport\Command\ServerResponseInterface;
 
 /**
  * The coresdk workflow codec: the analog of the RoadRunner Json/Proto codec, but
@@ -56,9 +62,9 @@ use Temporal\Worker\Transport\Command\Server\TickInfo;
  * resolve_activity{seq}, ...), so we resolve the matching promise by id with no
  * side table.
  *
- * Covered so far: workflow start/completion and timers. Jobs and commands that
- * are not yet mapped raise so the gap is explicit rather than a silently hung
- * workflow.
+ * Covered so far: workflow start/completion, timers, and activities. Jobs and
+ * commands that are not yet mapped raise so the gap is explicit rather than a
+ * silently hung workflow.
  */
 final class CoresdkWorkflowCodec implements CodecInterface
 {
@@ -116,6 +122,7 @@ final class CoresdkWorkflowCodec implements CodecInterface
         return match ($variant) {
             'initialize_workflow' => $this->startWorkflow($job, $tick, $taskQueue),
             'fire_timer' => $this->fireTimer($job, $tick),
+            'resolve_activity' => $this->resolveActivity($job, $tick),
             default => throw new \RuntimeException("coresdk workflow job not yet supported: {$variant}"),
         };
     }
@@ -132,6 +139,52 @@ final class CoresdkWorkflowCodec implements CodecInterface
             id: $job->getFireTimer()->getSeq(),
             info: $tick,
         );
+    }
+
+    /**
+     * Resolve an activity the workflow scheduled. The resolution is an oneof: a
+     * success carries result payloads, a failure or cancellation carries a
+     * Temporal failure the engine rejects the promise with. seq maps back to the
+     * ScheduleActivity command id.
+     */
+    private function resolveActivity(WorkflowActivationJob $job, TickInfo $tick): ServerResponseInterface
+    {
+        $resolve = $job->getResolveActivity();
+        $seq = $resolve->getSeq();
+        $resolution = $resolve->getResult();
+
+        return match ($resolution->getStatus()) {
+            'completed' => $this->activityCompleted($resolution->getCompleted(), $seq, $tick),
+            'failed' => new FailureResponse(
+                failure: FailureConverter::mapFailureToException(
+                    $resolution->getFailed()->getFailure(),
+                    $this->dataConverter,
+                ),
+                id: $seq,
+                info: $tick,
+            ),
+            'cancelled' => new FailureResponse(
+                failure: FailureConverter::mapFailureToException(
+                    $resolution->getCancelled()->getFailure(),
+                    $this->dataConverter,
+                ),
+                id: $seq,
+                info: $tick,
+            ),
+            default => throw new \RuntimeException(
+                "coresdk activity resolution not supported: {$resolution->getStatus()}",
+            ),
+        };
+    }
+
+    private function activityCompleted(ActivitySuccess $success, int $seq, TickInfo $tick): SuccessResponse
+    {
+        $result = $success->getResult();
+        $values = $result !== null
+            ? EncodedValues::fromPayloads((new Payloads())->setPayloads([$result]), $this->dataConverter)
+            : null;
+
+        return new SuccessResponse(values: $values, id: $seq, info: $tick);
     }
 
     private function startWorkflow(WorkflowActivationJob $job, TickInfo $tick, string $taskQueue): ServerRequest
@@ -164,6 +217,7 @@ final class CoresdkWorkflowCodec implements CodecInterface
         return match ($command->getName()) {
             'CompleteWorkflow' => $this->completeOrFail($command),
             'NewTimer' => $this->startTimer($command),
+            'ExecuteActivity' => $this->scheduleActivity($command),
             default => throw new \RuntimeException(
                 "SDK workflow command not yet supported: {$command->getName()}",
             ),
@@ -185,11 +239,122 @@ final class CoresdkWorkflowCodec implements CodecInterface
         );
     }
 
+    /**
+     * Schedule an activity. seq = the SDK command id; the later resolve_activity
+     * job maps back to this command's promise. ActivityOptions reach us already
+     * marshalled (PascalCase keys, timeouts in nanoseconds, cancellation as a
+     * bool); we translate that into the typed coresdk ScheduleActivity.
+     */
+    private function scheduleActivity(RequestInterface $command): WorkflowCommand
+    {
+        $options = $command->getOptions();
+        $name = (string) ($options['name'] ?? '');
+        $ao = $options['options'] ?? [];
+
+        $command->getPayloads()->setDataConverter($this->dataConverter);
+        $activityId = (string) ($ao['ActivityID'] ?? '');
+
+        $schedule = (new ScheduleActivity())
+            ->setSeq($command->getID())
+            ->setActivityId($activityId !== '' ? $activityId : (string) $command->getID())
+            ->setActivityType($name)
+            ->setTaskQueue((string) ($ao['TaskQueueName'] ?? ''))
+            ->setArguments($command->getPayloads()->toPayloads()->getPayloads())
+            ->setCancellationType(
+                ($ao['WaitForCancellation'] ?? false)
+                    ? CoresdkActivityCancellationType::WAIT_CANCELLATION_COMPLETED
+                    : CoresdkActivityCancellationType::TRY_CANCEL,
+            );
+
+        self::applyActivityTimeouts($schedule, $ao);
+
+        $header = $command->getHeader();
+        $header->setDataConverter($this->dataConverter);
+        $headers = [];
+        foreach ($header->toHeader()->getFields() as $key => $payload) {
+            $headers[$key] = $payload;
+        }
+        if ($headers !== []) {
+            $schedule->setHeaders($headers);
+        }
+
+        if (\is_array($ao['RetryPolicy'] ?? null)) {
+            $schedule->setRetryPolicy(self::retryPolicy($ao['RetryPolicy']));
+        }
+
+        return (new WorkflowCommand())->setScheduleActivity($schedule);
+    }
+
+    private static function applyActivityTimeouts(ScheduleActivity $schedule, array $ao): void
+    {
+        if (($ns = (int) ($ao['ScheduleToCloseTimeout'] ?? 0)) > 0) {
+            $schedule->setScheduleToCloseTimeout(self::nsToDuration($ns));
+        }
+
+        if (($ns = (int) ($ao['ScheduleToStartTimeout'] ?? 0)) > 0) {
+            $schedule->setScheduleToStartTimeout(self::nsToDuration($ns));
+        }
+
+        if (($ns = (int) ($ao['StartToCloseTimeout'] ?? 0)) > 0) {
+            $schedule->setStartToCloseTimeout(self::nsToDuration($ns));
+        }
+
+        if (($ns = (int) ($ao['HeartbeatTimeout'] ?? 0)) > 0) {
+            $schedule->setHeartbeatTimeout(self::nsToDuration($ns));
+        }
+    }
+
+    private static function retryPolicy(array $r): RetryPolicy
+    {
+        $policy = new RetryPolicy();
+
+        $initial = $r['InitialInterval'] ?? $r['initial_interval'] ?? null;
+        if (\is_array($initial)) {
+            $policy->setInitialInterval(self::durationFromParts($initial));
+        }
+
+        $maximum = $r['MaximumInterval'] ?? $r['maximum_interval'] ?? null;
+        if (\is_array($maximum)) {
+            $policy->setMaximumInterval(self::durationFromParts($maximum));
+        }
+
+        $backoff = $r['BackoffCoefficient'] ?? $r['backoff_coefficient'] ?? null;
+        if ($backoff !== null) {
+            $policy->setBackoffCoefficient((float) $backoff);
+        }
+
+        $attempts = $r['MaximumAttempts'] ?? $r['maximum_attempts'] ?? null;
+        if ($attempts !== null) {
+            $policy->setMaximumAttempts((int) $attempts);
+        }
+
+        $nonRetryable = $r['NonRetryableErrorTypes'] ?? $r['non_retryable_error_types'] ?? [];
+        if (\is_array($nonRetryable) && $nonRetryable !== []) {
+            $policy->setNonRetryableErrorTypes(\array_values($nonRetryable));
+        }
+
+        return $policy;
+    }
+
     private static function msToDuration(int $ms): Duration
     {
         return (new Duration())
             ->setSeconds(\intdiv($ms, 1000))
             ->setNanos(($ms % 1000) * 1_000_000);
+    }
+
+    private static function nsToDuration(int $ns): Duration
+    {
+        return (new Duration())
+            ->setSeconds(\intdiv($ns, 1_000_000_000))
+            ->setNanos($ns % 1_000_000_000);
+    }
+
+    private static function durationFromParts(array $d): Duration
+    {
+        return (new Duration())
+            ->setSeconds((int) ($d['seconds'] ?? 0))
+            ->setNanos((int) ($d['nanos'] ?? 0));
     }
 
     private function completeOrFail(RequestInterface $command): WorkflowCommand
