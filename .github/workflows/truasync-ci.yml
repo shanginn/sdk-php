@@ -35,7 +35,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ env.PHP_PREFIX }}
-          key: trueasync-php-${{ runner.os }}-${{ steps.phpsrc.outputs.sha }}
+          key: trueasync-php-v2-${{ runner.os }}-${{ steps.phpsrc.outputs.sha }}
 
       - name: Build TrueAsync PHP
         if: steps.php-cache.outputs.cache-hit != 'true'
@@ -45,9 +45,11 @@ jobs:
           git clone --depth 1 --branch true-async https://github.com/true-async/php-src /tmp/php-src
           cd /tmp/php-src
           ./buildconf
+          # --disable-all must come FIRST: later flags win, so every enable
+          # (including --enable-async) has to follow it.
           ./configure --prefix="$PHP_PREFIX" \
-            --enable-zts --enable-async \
             --disable-all --disable-cgi --disable-phpdbg \
+            --enable-zts --enable-async \
             --enable-sockets --enable-pcntl --enable-posix \
             --enable-mbstring --enable-ctype --enable-filter \
             --enable-tokenizer --enable-phar \
