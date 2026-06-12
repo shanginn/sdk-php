@@ -114,10 +114,13 @@ jobs:
       - name: Install SDK dependencies
         run: |
           composer config -g github-oauth.github.com "${{ secrets.GITHUB_TOKEN }}"
-          # --no-dev: the integration scripts need only runtime deps (phpunit and
-          # friends pin php <= released versions and need dom/simplexml);
-          # --ignore-platform-req=php: 8.6.0-dev is ahead of every published cap.
-          composer install --no-interaction --no-progress --no-dev --ignore-platform-req=php
+          # composer.lock is gitignored upstream (library policy), so this is a
+          # full resolution and it validates require-dev platform needs too:
+          # phpunit/psalm want dom/simplexml, laminas caps php <= released
+          # versions while ours is 8.6.0-dev. --no-dev skips installing them;
+          # --ignore-platform-reqs silences their platform pins during
+          # resolution. The runtime deps are pure PHP + ext-json.
+          composer update --no-interaction --no-progress --no-dev --ignore-platform-reqs
 
       - name: SDK integration tests
         run: |
