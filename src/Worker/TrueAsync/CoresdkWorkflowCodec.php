@@ -56,11 +56,19 @@ use Temporal\Worker\Transport\Command\ServerResponseInterface;
  * The run id is carried from decode to encode on the instance: one activation is
  * processed per dispatch cycle, single-threaded, so this is safe.
  *
- * Command/resolution correlation rides on a single number: the SDK stamps every
- * outgoing command with a unique integer id, which we use verbatim as the coresdk
- * `seq`. The core echoes that seq back on the resolution job (fire_timer{seq},
- * resolve_activity{seq}, ...), so we resolve the matching promise by id with no
- * side table.
+ * Command/resolution correlation rides on the coresdk `seq`, which must be stable
+ * across replays: the core keys a command by the seq it was issued with, and
+ * echoes that seq back on the resolution job (fire_timer{seq}, resolve_activity
+ * {seq}, ...). The SDK's own command id cannot be the wire seq — it comes from a
+ * process-global counter (Request::$lastID) that keeps growing across runs and
+ * replays, so a replayed run re-issues the same logical command with a fresh id
+ * and the core's resolution would never match. Instead each run gets a private
+ * counter incremented in deterministic command-issue order (the first timer/
+ * activity is seq 1, the next seq 2, ...), which a replay reproduces exactly. The
+ * codec keeps a per-run seq<->id map so it can stamp outgoing commands with the
+ * stable seq and route an incoming resolution back to the current run's live SDK
+ * id. The map is dropped when the run is evicted (remove_from_cache); a later
+ * replay rebuilds an identical one.
  *
  * Covered so far: workflow start/completion, timers, and activities. Jobs and
  * commands that are not yet mapped raise so the gap is explicit rather than a
@@ -70,6 +78,15 @@ final class CoresdkWorkflowCodec implements CodecInterface
 {
     private string $runId = '';
     private string $taskQueue = '';
+
+    /**
+     * Per-run deterministic seq state, keyed by run id and surviving across the
+     * run's activations: ['next' => int, 'idToSeq' => array<int,int>,
+     * 'seqToId' => array<int,int>].
+     *
+     * @var array<string, array{next: int, idToSeq: array<int, int>, seqToId: array<int, int>}>
+     */
+    private array $runs = [];
 
     public function __construct(private readonly DataConverterInterface $dataConverter) {}
 
@@ -133,27 +150,31 @@ final class CoresdkWorkflowCodec implements CodecInterface
      * Evict the run from the worker's cache: the core sends this when it drops a
      * workflow (after completion, or under cache pressure). The engine tears the
      * run's process down via the DestroyWorkflow route; the completion carries no
-     * commands.
+     * commands. Drop the seq map too so a later replay rebuilds it from scratch.
      */
     private function removeFromCache(TickInfo $tick): ServerRequest
     {
-        return new ServerRequest(
+        $request = new ServerRequest(
             name: 'DestroyWorkflow',
             info: $tick,
             id: $this->runId,
         );
+
+        unset($this->runs[$this->runId]);
+
+        return $request;
     }
 
     /**
-     * Resolve a timer the workflow previously started. The job carries the seq we
-     * stamped on the StartTimer command (= the SDK command id), so the engine's
-     * Client::dispatch resolves the matching promise by id.
+     * Resolve a timer the workflow previously started. The job carries the stable
+     * seq we stamped on the StartTimer command; mapping it back to the current
+     * run's SDK command id lets Client::dispatch resolve the matching promise.
      */
     private function fireTimer(WorkflowActivationJob $job, TickInfo $tick): SuccessResponse
     {
         return new SuccessResponse(
             values: null,
-            id: $job->getFireTimer()->getSeq(),
+            id: $this->idForSeq($job->getFireTimer()->getSeq()),
             info: $tick,
         );
     }
@@ -161,23 +182,23 @@ final class CoresdkWorkflowCodec implements CodecInterface
     /**
      * Resolve an activity the workflow scheduled. The resolution is an oneof: a
      * success carries result payloads, a failure or cancellation carries a
-     * Temporal failure the engine rejects the promise with. seq maps back to the
-     * ScheduleActivity command id.
+     * Temporal failure the engine rejects the promise with. The job's seq maps
+     * back to the current run's ScheduleActivity command id.
      */
     private function resolveActivity(WorkflowActivationJob $job, TickInfo $tick): ServerResponseInterface
     {
         $resolve = $job->getResolveActivity();
-        $seq = $resolve->getSeq();
+        $id = $this->idForSeq($resolve->getSeq());
         $resolution = $resolve->getResult();
 
         return match ($resolution->getStatus()) {
-            'completed' => $this->activityCompleted($resolution->getCompleted(), $seq, $tick),
+            'completed' => $this->activityCompleted($resolution->getCompleted(), $id, $tick),
             'failed' => new FailureResponse(
                 failure: FailureConverter::mapFailureToException(
                     $resolution->getFailed()->getFailure(),
                     $this->dataConverter,
                 ),
-                id: $seq,
+                id: $id,
                 info: $tick,
             ),
             'cancelled' => new FailureResponse(
@@ -185,7 +206,7 @@ final class CoresdkWorkflowCodec implements CodecInterface
                     $resolution->getCancelled()->getFailure(),
                     $this->dataConverter,
                 ),
-                id: $seq,
+                id: $id,
                 info: $tick,
             ),
             default => throw new \RuntimeException(
@@ -194,14 +215,55 @@ final class CoresdkWorkflowCodec implements CodecInterface
         };
     }
 
-    private function activityCompleted(ActivitySuccess $success, int $seq, TickInfo $tick): SuccessResponse
+    private function activityCompleted(ActivitySuccess $success, int $id, TickInfo $tick): SuccessResponse
     {
         $result = $success->getResult();
         $values = $result !== null
             ? EncodedValues::fromPayloads((new Payloads())->setPayloads([$result]), $this->dataConverter)
             : null;
 
-        return new SuccessResponse(values: $values, id: $seq, info: $tick);
+        return new SuccessResponse(values: $values, id: $id, info: $tick);
+    }
+
+    /**
+     * Map an SDK command id to this run's deterministic seq, assigning the next
+     * one on first sight. Stable across replays because the workflow issues its
+     * commands in the same order every time, unlike the process-global id.
+     */
+    private function seqFor(int $commandId): int
+    {
+        $run = &$this->runs[$this->runId];
+        $run ??= ['next' => 1, 'idToSeq' => [], 'seqToId' => []];
+
+        if (isset($run['idToSeq'][$commandId])) {
+            return $run['idToSeq'][$commandId];
+        }
+
+        $seq = $run['next']++;
+        $run['idToSeq'][$commandId] = $seq;
+        $run['seqToId'][$seq] = $commandId;
+
+        return $seq;
+    }
+
+    /**
+     * Map a resolution job's stable seq back to the current run's live SDK command
+     * id. The command was issued (and mapped) on an earlier activation of this run:
+     * the core replays one workflow task per activation, so a resolution never
+     * arrives before the activation that issues its command. An unmapped seq is a
+     * real defect, so raise rather than resolve the wrong promise.
+     */
+    private function idForSeq(int $seq): int
+    {
+        $run = $this->runs[$this->runId] ?? null;
+
+        if ($run === null || !isset($run['seqToId'][$seq])) {
+            throw new \RuntimeException(
+                "no workflow command mapped to resolution seq {$seq} on run {$this->runId}",
+            );
+        }
+
+        return $run['seqToId'][$seq];
     }
 
     private function startWorkflow(WorkflowActivationJob $job, TickInfo $tick, string $taskQueue): ServerRequest
@@ -242,8 +304,8 @@ final class CoresdkWorkflowCodec implements CodecInterface
     }
 
     /**
-     * Start a timer. seq = the SDK command id, so the later fire_timer job maps
-     * straight back to this command's promise.
+     * Start a timer. seq is this run's deterministic sequence number for the
+     * command, so the later fire_timer job maps back to its promise across replays.
      */
     private function startTimer(RequestInterface $command): WorkflowCommand
     {
@@ -251,16 +313,18 @@ final class CoresdkWorkflowCodec implements CodecInterface
 
         return (new WorkflowCommand())->setStartTimer(
             (new StartTimer())
-                ->setSeq($command->getID())
+                ->setSeq($this->seqFor($command->getID()))
                 ->setStartToFireTimeout(self::msToDuration($ms)),
         );
     }
 
     /**
-     * Schedule an activity. seq = the SDK command id; the later resolve_activity
-     * job maps back to this command's promise. ActivityOptions reach us already
-     * marshalled (PascalCase keys, timeouts in nanoseconds, cancellation as a
-     * bool); we translate that into the typed coresdk ScheduleActivity.
+     * Schedule an activity. seq is this run's deterministic sequence number for
+     * the command; the later resolve_activity job maps back to its promise across
+     * replays. The activity id defaults to the same seq (also replay-stable) when
+     * the workflow sets none. ActivityOptions reach us already marshalled
+     * (PascalCase keys, timeouts in nanoseconds, cancellation as a bool); we
+     * translate that into the typed coresdk ScheduleActivity.
      */
     private function scheduleActivity(RequestInterface $command): WorkflowCommand
     {
@@ -269,12 +333,13 @@ final class CoresdkWorkflowCodec implements CodecInterface
         $ao = $options['options'] ?? [];
 
         $command->getPayloads()->setDataConverter($this->dataConverter);
+        $seq = $this->seqFor($command->getID());
         $activityId = (string) ($ao['ActivityID'] ?? '');
         $taskQueue = (string) ($ao['TaskQueueName'] ?? '');
 
         $schedule = (new ScheduleActivity())
-            ->setSeq($command->getID())
-            ->setActivityId($activityId !== '' ? $activityId : (string) $command->getID())
+            ->setSeq($seq)
+            ->setActivityId($activityId !== '' ? $activityId : (string) $seq)
             ->setActivityType($name)
             // An activity inherits the workflow's task queue when none is set.
             ->setTaskQueue($taskQueue !== '' ? $taskQueue : $this->taskQueue)
