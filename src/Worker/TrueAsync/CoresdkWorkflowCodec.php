@@ -12,17 +12,21 @@ declare(strict_types=1);
 namespace Temporal\Worker\TrueAsync;
 
 use Coresdk\ActivityResult\Success as ActivitySuccess;
+use Coresdk\ChildWorkflow\ChildWorkflowCancellationType as CoresdkChildCancellationType;
 use Coresdk\WorkflowActivation\WorkflowActivation;
 use Coresdk\WorkflowActivation\WorkflowActivationJob;
 use Coresdk\WorkflowCommands\ActivityCancellationType as CoresdkActivityCancellationType;
+use Coresdk\WorkflowCommands\CancelChildWorkflowExecution;
 use Coresdk\WorkflowCommands\CancelTimer;
 use Coresdk\WorkflowCommands\CancelWorkflowExecution;
 use Coresdk\WorkflowCommands\CompleteWorkflowExecution;
+use Coresdk\WorkflowCommands\ContinueAsNewWorkflowExecution;
 use Coresdk\WorkflowCommands\FailWorkflowExecution;
 use Coresdk\WorkflowCommands\QueryResult;
 use Coresdk\WorkflowCommands\QuerySuccess;
 use Coresdk\WorkflowCommands\RequestCancelActivity;
 use Coresdk\WorkflowCommands\ScheduleActivity;
+use Coresdk\WorkflowCommands\StartChildWorkflowExecution;
 use Coresdk\WorkflowCommands\StartTimer;
 use Coresdk\WorkflowCommands\WorkflowCommand;
 use Coresdk\WorkflowCompletion\Failure as CompletionFailure;
@@ -35,6 +39,7 @@ use Temporal\Api\Common\V1\RetryPolicy;
 use Temporal\DataConverter\DataConverterInterface;
 use Temporal\DataConverter\EncodedValues;
 use Temporal\DataConverter\ValuesInterface;
+use Temporal\Exception\Failure\ApplicationFailure;
 use Temporal\Exception\Failure\CanceledFailure;
 use Temporal\Exception\Failure\FailureConverter;
 use Temporal\Worker\Transport\Codec\CodecInterface;
@@ -79,9 +84,10 @@ use Temporal\Worker\Transport\Command\ServerResponseInterface;
  * replay rebuilds an identical one.
  *
  * Covered so far: workflow start/completion, timers, activities, signals,
- * queries, and cancellation (of the workflow, its timers and its activities).
- * Jobs and commands that are not yet mapped raise so the gap is explicit
- * rather than a silently hung workflow.
+ * queries, cancellation (of the workflow, its timers, activities and child
+ * workflows), child workflows, and continue-as-new. Jobs and commands that
+ * are not yet mapped raise so the gap is explicit rather than a silently
+ * hung workflow.
  */
 final class CoresdkWorkflowCodec implements CodecInterface
 {
@@ -90,12 +96,21 @@ final class CoresdkWorkflowCodec implements CodecInterface
 
     /**
      * Per-run deterministic seq state, keyed by run id and surviving across the
-     * run's activations: ['next' => int, 'idToSeq' => array<int,int>,
-     * 'seqToId' => array<int,int>, 'kind' => array<int,string>]. The kind
-     * ('timer' | 'activity') is what a later Cancel of the command needs to pick
-     * the matching coresdk cancel command.
+     * run's activations. 'kind' ('timer' | 'activity' | 'child-workflow') is
+     * what a later Cancel of the command needs to pick the matching coresdk
+     * cancel command. 'wfId' is this run's workflow id (the deterministic
+     * default for child workflow ids). 'children' tracks per-seq child state:
+     * the child's workflow id and the pending GetChildWorkflowExecution
+     * request id its start resolution must answer.
      *
-     * @var array<string, array{next: int, idToSeq: array<int, int>, seqToId: array<int, int>, kind: array<int, string>}>
+     * @var array<string, array{
+     *     next: int,
+     *     idToSeq: array<int, int>,
+     *     seqToId: array<int, int>,
+     *     kind: array<int, string>,
+     *     wfId: string,
+     *     children: array<int, array{wfId: string, getId: int|null}>,
+     * }>
      */
     private array $runs = [];
 
@@ -145,7 +160,7 @@ final class CoresdkWorkflowCodec implements CodecInterface
         );
 
         foreach ($activation->getJobs() as $job) {
-            yield $this->decodeJob($job, $tick, $taskQueue);
+            yield from $this->decodeJob($job, $tick, $taskQueue);
         }
     }
 
@@ -177,6 +192,19 @@ final class CoresdkWorkflowCodec implements CodecInterface
     {
         if ($command->getName() === 'Cancel') {
             return $this->stageCancel($command);
+        }
+
+        /* No coresdk command: the start confirmation arrives on its own
+           (resolve_child_workflow_execution_start). Remember which request id
+           that resolution must answer. The ExecuteChildWorkflow is always
+           staged first (the stub issues both in order), so the seq exists. */
+        if ($command->getName() === 'GetChildWorkflowExecution') {
+            $executeId = (int) ($command->getOptions()['id'] ?? 0);
+            $run = &$this->run();
+            $seq = $run['idToSeq'][$executeId]
+                ?? throw new \RuntimeException("GetChildWorkflowExecution for unknown command id {$executeId}");
+            $run['children'][$seq]['getId'] = $command->getID();
+            return [];
         }
 
         /* A response arrived for a request the SDK no longer tracks — e.g. a
@@ -238,6 +266,11 @@ final class CoresdkWorkflowCodec implements CodecInterface
                 $this->staged[] = (new WorkflowCommand())->setRequestCancelActivity(
                     (new RequestCancelActivity())->setSeq($seq),
                 );
+            } elseif ($kind === 'child-workflow') {
+                /* The core resolves the child (cancelled) itself; no synthesis. */
+                $this->staged[] = (new WorkflowCommand())->setCancelChildWorkflowExecution(
+                    (new CancelChildWorkflowExecution())->setChildWorkflowSeq($seq),
+                );
             } else {
                 throw new \RuntimeException(
                     "cancel of a '{$kind}' command not yet supported (seq {$seq})",
@@ -273,18 +306,27 @@ final class CoresdkWorkflowCodec implements CodecInterface
         return $completion->serializeToString();
     }
 
-    private function decodeJob(WorkflowActivationJob $job, TickInfo $tick, string $taskQueue): CommandInterface
+    /**
+     * One job usually yields one engine command, but a few yield more (a failed
+     * child start must reject both the start waiter and the result promise — the
+     * core sends nothing further for that seq), hence the list.
+     *
+     * @return list<CommandInterface>
+     */
+    private function decodeJob(WorkflowActivationJob $job, TickInfo $tick, string $taskQueue): array
     {
         $variant = $job->getVariant();
 
         return match ($variant) {
-            'initialize_workflow' => $this->startWorkflow($job, $tick, $taskQueue),
-            'signal_workflow' => $this->signalWorkflow($job, $tick),
-            'query_workflow' => $this->queryWorkflow($job, $tick),
-            'cancel_workflow' => $this->cancelWorkflow($tick),
-            'fire_timer' => $this->fireTimer($job, $tick),
-            'resolve_activity' => $this->resolveActivity($job, $tick),
-            'remove_from_cache' => $this->removeFromCache($tick),
+            'initialize_workflow' => [$this->startWorkflow($job, $tick, $taskQueue)],
+            'signal_workflow' => [$this->signalWorkflow($job, $tick)],
+            'query_workflow' => [$this->queryWorkflow($job, $tick)],
+            'cancel_workflow' => [$this->cancelWorkflow($tick)],
+            'fire_timer' => [$this->fireTimer($job, $tick)],
+            'resolve_activity' => [$this->resolveActivity($job, $tick)],
+            'resolve_child_workflow_execution_start' => $this->resolveChildStart($job, $tick),
+            'resolve_child_workflow_execution' => [$this->resolveChild($job, $tick)],
+            'remove_from_cache' => [$this->removeFromCache($tick)],
             default => throw new \RuntimeException("coresdk workflow job not yet supported: {$variant}"),
         };
     }
@@ -388,6 +430,121 @@ final class CoresdkWorkflowCodec implements CodecInterface
     }
 
     /**
+     * The child workflow's start resolved. On success only the start waiter
+     * (GetChildWorkflowExecution) is answered — the result promise resolves
+     * later via resolve_child_workflow_execution. On failure or pre-start
+     * cancellation the core sends nothing further for this seq, so BOTH the
+     * waiter and the result promise must be rejected here.
+     *
+     * @return list<CommandInterface>
+     */
+    private function resolveChildStart(WorkflowActivationJob $job, TickInfo $tick): array
+    {
+        $resolve = $job->getResolveChildWorkflowExecutionStart();
+        $seq = $resolve->getSeq();
+        $executeId = $this->idForSeq($seq);
+
+        $run = &$this->run();
+        $child = $run['children'][$seq] ?? null;
+        $getId = $child['getId'] ?? null;
+        if ($getId === null) {
+            throw new \RuntimeException("no start waiter registered for child workflow seq {$seq}");
+        }
+        $run['children'][$seq]['getId'] = null;
+
+        switch ($resolve->getStatus()) {
+            case 'succeeded':
+                /* The keys follow WorkflowExecution's Marshal names: the stub
+                   hydrates the value via getValue(0, WorkflowExecution::class). */
+                $execution = [
+                    'ID' => $child['wfId'] ?? '',
+                    'RunID' => $resolve->getSucceeded()->getRunId(),
+                ];
+
+                return [new SuccessResponse(
+                    values: EncodedValues::fromValues([$execution], $this->dataConverter),
+                    id: $getId,
+                    info: $tick,
+                )];
+
+            case 'failed':
+                $failed = $resolve->getFailed();
+                $failure = new ApplicationFailure(
+                    \sprintf(
+                        "child workflow start failed: %s '%s' (cause %d)",
+                        $failed->getWorkflowType(),
+                        $failed->getWorkflowId(),
+                        $failed->getCause(),
+                    ),
+                    'ChildWorkflowExecutionStartFailure',
+                    true,
+                );
+
+                return [
+                    new FailureResponse(failure: $failure, id: $getId, info: $tick),
+                    new FailureResponse(failure: $failure, id: $executeId, info: $tick),
+                ];
+
+            case 'cancelled':
+                $failure = FailureConverter::mapFailureToException(
+                    $resolve->getCancelled()->getFailure(),
+                    $this->dataConverter,
+                );
+
+                return [
+                    new FailureResponse(failure: $failure, id: $getId, info: $tick),
+                    new FailureResponse(failure: $failure, id: $executeId, info: $tick),
+                ];
+        }
+
+        throw new \RuntimeException(
+            "coresdk child workflow start resolution not supported: {$resolve->getStatus()}",
+        );
+    }
+
+    /** The child workflow itself resolved: answer the ExecuteChildWorkflow promise. */
+    private function resolveChild(WorkflowActivationJob $job, TickInfo $tick): ServerResponseInterface
+    {
+        $resolve = $job->getResolveChildWorkflowExecution();
+        $id = $this->idForSeq($resolve->getSeq());
+        $result = $resolve->getResult();
+
+        switch ($result->getStatus()) {
+            case 'completed':
+                $payload = $result->getCompleted()->getResult();
+                $values = $payload !== null
+                    ? EncodedValues::fromPayloads((new Payloads())->setPayloads([$payload]), $this->dataConverter)
+                    : null;
+
+                return new SuccessResponse(values: $values, id: $id, info: $tick);
+
+            case 'failed':
+                return new FailureResponse(
+                    failure: FailureConverter::mapFailureToException(
+                        $result->getFailed()->getFailure(),
+                        $this->dataConverter,
+                    ),
+                    id: $id,
+                    info: $tick,
+                );
+
+            case 'cancelled':
+                return new FailureResponse(
+                    failure: FailureConverter::mapFailureToException(
+                        $result->getCancelled()->getFailure(),
+                        $this->dataConverter,
+                    ),
+                    id: $id,
+                    info: $tick,
+                );
+        }
+
+        throw new \RuntimeException(
+            "coresdk child workflow resolution not supported: {$result->getStatus()}",
+        );
+    }
+
+    /**
      * Map an SDK command id to this run's deterministic seq, assigning the next
      * one on first sight. Stable across replays because the workflow issues its
      * commands in the same order every time, unlike the process-global id. The
@@ -396,8 +553,7 @@ final class CoresdkWorkflowCodec implements CodecInterface
      */
     private function seqFor(int $commandId, string $kind): int
     {
-        $run = &$this->runs[$this->runId];
-        $run ??= ['next' => 1, 'idToSeq' => [], 'seqToId' => [], 'kind' => []];
+        $run = &$this->run();
 
         if (isset($run['idToSeq'][$commandId])) {
             return $run['idToSeq'][$commandId];
@@ -409,6 +565,15 @@ final class CoresdkWorkflowCodec implements CodecInterface
         $run['kind'][$seq] = $kind;
 
         return $seq;
+    }
+
+    /** The current run's seq state, created on first touch. */
+    private function &run(): array
+    {
+        $run = &$this->runs[$this->runId];
+        $run ??= ['next' => 1, 'idToSeq' => [], 'seqToId' => [], 'kind' => [], 'wfId' => '', 'children' => []];
+
+        return $run;
     }
 
     /**
@@ -505,6 +670,9 @@ final class CoresdkWorkflowCodec implements CodecInterface
     {
         $init = $job->getInitializeWorkflow();
 
+        /* Remembered as the base of deterministic child workflow ids. */
+        $this->run()['wfId'] = $init->getWorkflowId();
+
         $payloads = new Payloads();
         $payloads->setPayloads($init->getArguments());
 
@@ -532,10 +700,123 @@ final class CoresdkWorkflowCodec implements CodecInterface
             'CompleteWorkflow' => $this->completeOrFail($command),
             'NewTimer' => $this->startTimer($command),
             'ExecuteActivity' => $this->scheduleActivity($command),
+            'ExecuteChildWorkflow' => $this->startChildWorkflow($command),
+            'ContinueAsNew' => $this->continueAsNew($command),
             default => throw new \RuntimeException(
                 "SDK workflow command not yet supported: {$command->getName()}",
             ),
         };
+    }
+
+    /**
+     * Start a child workflow. The child's workflow id must be replay-stable, so
+     * when the options carry none it defaults to "<parent workflow id>_<seq>"
+     * (the SDK command id is process-global and replay-unstable). The start
+     * confirmation and the result arrive as separate resolution jobs; the
+     * GetChildWorkflowExecution waiter for the former is registered when that
+     * command is staged (see stage()).
+     */
+    private function startChildWorkflow(RequestInterface $command): WorkflowCommand
+    {
+        $options = $command->getOptions();
+        $co = $options['options'] ?? [];
+        $seq = $this->seqFor($command->getID(), 'child-workflow');
+        $run = &$this->run();
+
+        $workflowId = (string) ($co['WorkflowID'] ?? '');
+        if ($workflowId === '') {
+            $workflowId = $run['wfId'] . '_' . $seq;
+        }
+        $run['children'][$seq] = ['wfId' => $workflowId, 'getId' => null];
+
+        $command->getPayloads()->setDataConverter($this->dataConverter);
+        $taskQueue = (string) ($co['TaskQueueName'] ?? '');
+
+        $start = (new StartChildWorkflowExecution())
+            ->setSeq($seq)
+            ->setNamespace((string) ($co['Namespace'] ?? 'default'))
+            ->setWorkflowId($workflowId)
+            ->setWorkflowType((string) ($options['name'] ?? ''))
+            /* A child inherits the parent's task queue when none is set. */
+            ->setTaskQueue($taskQueue !== '' ? $taskQueue : $this->taskQueue)
+            ->setInput($command->getPayloads()->toPayloads()->getPayloads())
+            ->setParentClosePolicy((int) ($co['ParentClosePolicy'] ?? 0))
+            ->setWorkflowIdReusePolicy((int) ($co['WorkflowIDReusePolicy'] ?? 0))
+            /* Same bool wire form as activities (see scheduleActivity). */
+            ->setCancellationType(
+                ($co['WaitForCancellation'] ?? false)
+                    ? CoresdkChildCancellationType::WAIT_CANCELLATION_COMPLETED
+                    : CoresdkChildCancellationType::TRY_CANCEL,
+            );
+
+        if (($ns = (int) ($co['WorkflowExecutionTimeout'] ?? 0)) > 0) {
+            $start->setWorkflowExecutionTimeout(self::nsToDuration($ns));
+        }
+        if (($ns = (int) ($co['WorkflowRunTimeout'] ?? 0)) > 0) {
+            $start->setWorkflowRunTimeout(self::nsToDuration($ns));
+        }
+        if (($ns = (int) ($co['WorkflowTaskTimeout'] ?? 0)) > 0) {
+            $start->setWorkflowTaskTimeout(self::nsToDuration($ns));
+        }
+        if (\is_string($co['CronSchedule'] ?? null) && $co['CronSchedule'] !== '') {
+            $start->setCronSchedule($co['CronSchedule']);
+        }
+        if (\is_array($co['RetryPolicy'] ?? null)) {
+            $start->setRetryPolicy(self::retryPolicy($co['RetryPolicy']));
+        }
+
+        $headers = $this->headerFields($command);
+        if ($headers !== []) {
+            $start->setHeaders($headers);
+        }
+
+        return (new WorkflowCommand())->setStartChildWorkflowExecution($start);
+    }
+
+    /**
+     * Continue this workflow as a new run. The handler returns the never-
+     * resolving continueAsNew promise, so no CompleteWorkflow follows: this
+     * command terminates the run by itself.
+     */
+    private function continueAsNew(RequestInterface $command): WorkflowCommand
+    {
+        $options = $command->getOptions();
+        $co = $options['options'] ?? [];
+
+        $command->getPayloads()->setDataConverter($this->dataConverter);
+
+        $can = (new ContinueAsNewWorkflowExecution())
+            ->setWorkflowType((string) ($options['name'] ?? ''))
+            ->setTaskQueue((string) ($co['TaskQueueName'] ?? ''))
+            ->setArguments($command->getPayloads()->toPayloads()->getPayloads());
+
+        if (($ns = (int) ($co['WorkflowRunTimeout'] ?? 0)) > 0) {
+            $can->setWorkflowRunTimeout(self::nsToDuration($ns));
+        }
+        if (($ns = (int) ($co['WorkflowTaskTimeout'] ?? 0)) > 0) {
+            $can->setWorkflowTaskTimeout(self::nsToDuration($ns));
+        }
+
+        $headers = $this->headerFields($command);
+        if ($headers !== []) {
+            $can->setHeaders($headers);
+        }
+
+        return (new WorkflowCommand())->setContinueAsNewWorkflowExecution($can);
+    }
+
+    /** The command's header as a payload map, bound to our converter. */
+    private function headerFields(RequestInterface $command): array
+    {
+        $header = $command->getHeader();
+        $header->setDataConverter($this->dataConverter);
+
+        $fields = [];
+        foreach ($header->toHeader()->getFields() as $key => $payload) {
+            $fields[$key] = $payload;
+        }
+
+        return $fields;
     }
 
     /**
