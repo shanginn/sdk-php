@@ -114,7 +114,10 @@ jobs:
       - name: Install SDK dependencies
         run: |
           composer config -g github-oauth.github.com "${{ secrets.GITHUB_TOKEN }}"
-          composer install --no-interaction --no-progress
+          # --no-dev: the integration scripts need only runtime deps (phpunit and
+          # friends pin php <= released versions and need dom/simplexml);
+          # --ignore-platform-req=php: 8.6.0-dev is ahead of every published cap.
+          composer install --no-interaction --no-progress --no-dev --ignore-platform-req=php
 
       - name: SDK integration tests
         run: |
