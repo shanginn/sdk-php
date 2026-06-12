@@ -57,7 +57,9 @@ jobs:
 
       - name: Use TrueAsync PHP
         run: |
-          sudo apt-get update && sudo apt-get install -y libuv1
+          # libuv1: TrueAsync runtime dep; protobuf-compiler: prost-wkt-types
+          # build script in the core c-bridge needs protoc.
+          sudo apt-get update && sudo apt-get install -y libuv1 protobuf-compiler
           echo "$PHP_PREFIX/bin" >> "$GITHUB_PATH"
           "$PHP_PREFIX/bin/php" -v
 
