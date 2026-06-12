@@ -12,7 +12,10 @@ declare(strict_types=1);
 namespace Temporal\Worker\TrueAsync;
 
 use Temporal\DataConverter\ValuesInterface;
-use Temporal\Worker\Transport\Command\ServerRequestInterface;
+use Temporal\Exception\Failure\CanceledFailure;
+use Temporal\Worker\Transport\Command\RequestInterface;
+use Temporal\Worker\Transport\Command\Server\FailureResponse;
+use Temporal\Worker\Transport\Command\Server\TickInfo;
 use Temporal\Worker\Transport\Command\ServerResponseInterface;
 
 /**
@@ -45,10 +48,12 @@ final class WorkflowWorkerFactory extends \Temporal\WorkerFactory
     {
         $codec = $this->workflowCodec ??= new CoresdkWorkflowCodec($this->converter);
         $headers = ['taskQueue' => $taskQueue];
+        $tick = null;
 
         try {
             foreach ($codec->decode($activation, $headers) as $command) {
-                $this->env->update($command->getTickInfo());
+                $tick = $command->getTickInfo();
+                $this->env->update($tick);
 
                 if ($command instanceof ServerResponseInterface) {
                     $this->client->dispatch($command);
@@ -60,11 +65,9 @@ final class WorkflowWorkerFactory extends \Temporal\WorkerFactory
                    generic ack queue would be indistinguishable from other acks.
                    Dispatch through the worker directly and capture the result
                    off the promise; it resolves on the ON_QUERY phase of tick()
-                   below, and encode() emits the QueryResult command. */
-                $queryId = $command instanceof ServerRequestInterface
-                    ? ($command->getOptions()['queryId'] ?? null)
-                    : null;
-                if ($queryId !== null) {
+                   below, and the codec emits the QueryResult command. */
+                if ($command instanceof QueryServerRequest) {
+                    $queryId = $command->queryId;
                     $worker = $this->queues->find($taskQueue) ?? throw new \LogicException(
                         "no worker registered for task queue {$taskQueue}",
                     );
@@ -79,8 +82,9 @@ final class WorkflowWorkerFactory extends \Temporal\WorkerFactory
             }
 
             $this->tick();
+            $this->drainIntoCodec($codec, $tick);
 
-            return $codec->encode($this->responses);
+            return $codec->encodeStaged();
         } catch (\Throwable $e) {
             // The workflow task failed: a codec gap, an unmapped resolution, or an
             // engine/workflow-code error. Drop any commands queued before the throw
@@ -91,5 +95,43 @@ final class WorkflowWorkerFactory extends \Temporal\WorkerFactory
 
             return $codec->encodeFailure($e);
         }
+    }
+
+    /**
+     * Drain the outgoing queue into the codec, replaying the role the RR host
+     * played for cancelled commands. The core never resolves a cancelled timer
+     * (CancelTimer is fire-and-forget, unlike an activity cancel), so when
+     * staging reports such ids we reject their promises with a CanceledFailure
+     * here and tick again — the workflow observes the cancel at its current
+     * await and can issue its next commands (e.g. CompleteWorkflow) within the
+     * same activation. Without this, a workflow parked on a cancelled timer
+     * would hang forever. Repeats until a pass synthesizes nothing new.
+     */
+    private function drainIntoCodec(CoresdkWorkflowCodec $codec, ?TickInfo $tick): void
+    {
+        do {
+            $synthesize = [];
+            foreach ($this->responses as $response) {
+                if ($response instanceof RequestInterface) {
+                    foreach ($codec->stage($response) as $commandId) {
+                        $synthesize[] = $commandId;
+                    }
+                }
+            }
+
+            if ($synthesize === [] || $tick === null) {
+                return;
+            }
+
+            foreach ($synthesize as $commandId) {
+                $this->client->dispatch(new FailureResponse(
+                    failure: new CanceledFailure('canceled'),
+                    id: $commandId,
+                    info: $tick,
+                ));
+            }
+
+            $this->tick();
+        } while (true);
     }
 }

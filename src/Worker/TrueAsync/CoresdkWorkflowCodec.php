@@ -15,10 +15,13 @@ use Coresdk\Activity_result\Success as ActivitySuccess;
 use Coresdk\Workflow_activation\WorkflowActivation;
 use Coresdk\Workflow_activation\WorkflowActivationJob;
 use Coresdk\Workflow_commands\ActivityCancellationType as CoresdkActivityCancellationType;
+use Coresdk\Workflow_commands\CancelTimer;
+use Coresdk\Workflow_commands\CancelWorkflowExecution;
 use Coresdk\Workflow_commands\CompleteWorkflowExecution;
 use Coresdk\Workflow_commands\FailWorkflowExecution;
 use Coresdk\Workflow_commands\QueryResult;
 use Coresdk\Workflow_commands\QuerySuccess;
+use Coresdk\Workflow_commands\RequestCancelActivity;
 use Coresdk\Workflow_commands\ScheduleActivity;
 use Coresdk\Workflow_commands\StartTimer;
 use Coresdk\Workflow_commands\WorkflowCommand;
@@ -32,6 +35,7 @@ use Temporal\Api\Common\V1\RetryPolicy;
 use Temporal\DataConverter\DataConverterInterface;
 use Temporal\DataConverter\EncodedValues;
 use Temporal\DataConverter\ValuesInterface;
+use Temporal\Exception\Failure\CanceledFailure;
 use Temporal\Exception\Failure\FailureConverter;
 use Temporal\Worker\Transport\Codec\CodecInterface;
 use Temporal\Worker\Transport\Command\CommandInterface;
@@ -74,9 +78,10 @@ use Temporal\Worker\Transport\Command\ServerResponseInterface;
  * id. The map is dropped when the run is evicted (remove_from_cache); a later
  * replay rebuilds an identical one.
  *
- * Covered so far: workflow start/completion, timers, activities, signals, and
- * queries. Jobs and commands that are not yet mapped raise so the gap is
- * explicit rather than a silently hung workflow.
+ * Covered so far: workflow start/completion, timers, activities, signals,
+ * queries, and cancellation (of the workflow, its timers and its activities).
+ * Jobs and commands that are not yet mapped raise so the gap is explicit
+ * rather than a silently hung workflow.
  */
 final class CoresdkWorkflowCodec implements CodecInterface
 {
@@ -86,11 +91,31 @@ final class CoresdkWorkflowCodec implements CodecInterface
     /**
      * Per-run deterministic seq state, keyed by run id and surviving across the
      * run's activations: ['next' => int, 'idToSeq' => array<int,int>,
-     * 'seqToId' => array<int,int>].
+     * 'seqToId' => array<int,int>, 'kind' => array<int,string>]. The kind
+     * ('timer' | 'activity') is what a later Cancel of the command needs to pick
+     * the matching coresdk cancel command.
      *
-     * @var array<string, array{next: int, idToSeq: array<int, int>, seqToId: array<int, int>}>
+     * @var array<string, array{next: int, idToSeq: array<int, int>, seqToId: array<int, int>, kind: array<int, string>}>
      */
     private array $runs = [];
+
+    /**
+     * Runs the server has asked to cancel (a cancel_workflow job was seen). A
+     * CompleteWorkflow carrying a CanceledFailure on such a run encodes as
+     * CancelWorkflowExecution; without the flag it stays a plain failure (the
+     * workflow threw a CanceledFailure of its own accord).
+     *
+     * @var array<string, true>
+     */
+    private array $cancelRequested = [];
+
+    /**
+     * coresdk commands staged for the current activation's completion, in issue
+     * order; drained by encodeStaged().
+     *
+     * @var list<WorkflowCommand>
+     */
+    private array $staged = [];
 
     /**
      * Query outcomes captured during the current activation (the factory feeds
@@ -126,17 +151,50 @@ final class CoresdkWorkflowCodec implements CodecInterface
 
     public function encode(iterable $commands): string
     {
-        $wfCommands = [];
         foreach ($commands as $command) {
             /* The queue also holds acknowledgements for the server requests we
                dispatched (e.g. the StartWorkflow ack). coresdk carries no per-job
                response — only the workflow's own outgoing commands. */
-            if (!$command instanceof RequestInterface) {
-                continue;
+            if ($command instanceof RequestInterface) {
+                $this->stage($command);
             }
-
-            $wfCommands[] = $this->encodeCommand($command);
         }
+
+        return $this->encodeStaged();
+    }
+
+    /**
+     * Translate one outgoing SDK command into staged coresdk commands (in issue
+     * order; emitted by encodeStaged). Returns the SDK command ids that need a
+     * *synthetic* cancellation response: the RR host answered a cancelled
+     * command itself, but the core never resolves a cancelled timer, so the
+     * factory must reject those promises locally and tick again — otherwise a
+     * workflow parked on the timer would hang forever.
+     *
+     * @return list<int>
+     */
+    public function stage(RequestInterface $command): array
+    {
+        if ($command->getName() === 'Cancel') {
+            return $this->stageCancel($command);
+        }
+
+        /* A response arrived for a request the SDK no longer tracks — e.g. a
+           timer that fired server-side in the same activation that cancelled
+           it. Log-only on the RR host; nothing to tell the core. */
+        if ($command->getName() === 'UndefinedResponse') {
+            return [];
+        }
+
+        $this->staged[] = $this->encodeCommand($command);
+        return [];
+    }
+
+    /** Build the completion from the staged commands and query results. */
+    public function encodeStaged(): string
+    {
+        $wfCommands = $this->staged;
+        $this->staged = [];
 
         foreach ($this->queryResults as $result) {
             $wfCommands[] = (new WorkflowCommand())->setRespondToQuery($result);
@@ -151,6 +209,46 @@ final class CoresdkWorkflowCodec implements CodecInterface
     }
 
     /**
+     * Cancel previously issued commands. Each id maps back to its seq and kind;
+     * an unmapped id was pulled from the queue before it ever reached the core
+     * (cancelled in the tick that issued it), so there is nothing to cancel.
+     * Timer ids are returned for synthetic rejection (see stage); an activity
+     * cancel is resolved by the core itself (resolve_activity{cancelled}).
+     *
+     * @return list<int>
+     */
+    private function stageCancel(RequestInterface $command): array
+    {
+        $synthesize = [];
+        $run = $this->runs[$this->runId] ?? null;
+
+        foreach ((array) ($command->getOptions()['ids'] ?? []) as $id) {
+            $seq = $run['idToSeq'][$id] ?? null;
+            if ($seq === null) {
+                continue;
+            }
+
+            $kind = $run['kind'][$seq] ?? '';
+            if ($kind === 'timer') {
+                $this->staged[] = (new WorkflowCommand())->setCancelTimer(
+                    (new CancelTimer())->setSeq($seq),
+                );
+                $synthesize[] = (int) $id;
+            } elseif ($kind === 'activity') {
+                $this->staged[] = (new WorkflowCommand())->setRequestCancelActivity(
+                    (new RequestCancelActivity())->setSeq($seq),
+                );
+            } else {
+                throw new \RuntimeException(
+                    "cancel of a '{$kind}' command not yet supported (seq {$seq})",
+                );
+            }
+        }
+
+        return $synthesize;
+    }
+
+    /**
      * Build a failed activation completion for the current run. Used when applying
      * the activation throws (a codec gap, an unmapped resolution, an engine or
      * workflow-code error): reporting the workflow-task failure lets the core retry
@@ -160,7 +258,9 @@ final class CoresdkWorkflowCodec implements CodecInterface
      */
     public function encodeFailure(\Throwable $e): string
     {
-        $this->queryResults = [];   /* a failed task reports no partial results */
+        /* A failed task reports no partial results or commands. */
+        $this->queryResults = [];
+        $this->staged = [];
 
         $completion = (new WorkflowActivationCompletion())
             ->setRunId($this->runId)
@@ -181,11 +281,31 @@ final class CoresdkWorkflowCodec implements CodecInterface
             'initialize_workflow' => $this->startWorkflow($job, $tick, $taskQueue),
             'signal_workflow' => $this->signalWorkflow($job, $tick),
             'query_workflow' => $this->queryWorkflow($job, $tick),
+            'cancel_workflow' => $this->cancelWorkflow($tick),
             'fire_timer' => $this->fireTimer($job, $tick),
             'resolve_activity' => $this->resolveActivity($job, $tick),
             'remove_from_cache' => $this->removeFromCache($tick),
             default => throw new \RuntimeException("coresdk workflow job not yet supported: {$variant}"),
         };
+    }
+
+    /**
+     * The server asked to cancel the workflow. The CancelWorkflow route cancels
+     * the run's root scope: in-flight commands get Cancel requests, and the
+     * workflow observes a CanceledFailure at its current await (delivered by a
+     * core resolution for activities, or synthesized by the factory for
+     * timers). The flag makes the resulting CanceledFailure completion encode
+     * as CancelWorkflowExecution rather than a plain failure.
+     */
+    private function cancelWorkflow(TickInfo $tick): ServerRequest
+    {
+        $this->cancelRequested[$this->runId] = true;
+
+        return new ServerRequest(
+            name: 'CancelWorkflow',
+            info: $tick,
+            id: $this->runId,
+        );
     }
 
     /**
@@ -202,7 +322,7 @@ final class CoresdkWorkflowCodec implements CodecInterface
             id: $this->runId,
         );
 
-        unset($this->runs[$this->runId]);
+        unset($this->runs[$this->runId], $this->cancelRequested[$this->runId]);
 
         return $request;
     }
@@ -270,12 +390,14 @@ final class CoresdkWorkflowCodec implements CodecInterface
     /**
      * Map an SDK command id to this run's deterministic seq, assigning the next
      * one on first sight. Stable across replays because the workflow issues its
-     * commands in the same order every time, unlike the process-global id.
+     * commands in the same order every time, unlike the process-global id. The
+     * kind is remembered so a later Cancel of the id picks the matching coresdk
+     * cancel command.
      */
-    private function seqFor(int $commandId): int
+    private function seqFor(int $commandId, string $kind): int
     {
         $run = &$this->runs[$this->runId];
-        $run ??= ['next' => 1, 'idToSeq' => [], 'seqToId' => []];
+        $run ??= ['next' => 1, 'idToSeq' => [], 'seqToId' => [], 'kind' => []];
 
         if (isset($run['idToSeq'][$commandId])) {
             return $run['idToSeq'][$commandId];
@@ -284,6 +406,7 @@ final class CoresdkWorkflowCodec implements CodecInterface
         $seq = $run['next']++;
         $run['idToSeq'][$commandId] = $seq;
         $run['seqToId'][$seq] = $commandId;
+        $run['kind'][$seq] = $kind;
 
         return $seq;
     }
@@ -323,13 +446,11 @@ final class CoresdkWorkflowCodec implements CodecInterface
         $payloads = new Payloads();
         $payloads->setPayloads(\iterator_to_array($query->getArguments()));
 
-        return new ServerRequest(
+        return new QueryServerRequest(
+            queryId: $query->getQueryId(),
             name: 'InvokeQuery',
             info: $tick,
-            options: [
-                'name' => $query->getQueryType(),
-                'queryId' => $query->getQueryId(),
-            ],
+            options: ['name' => $query->getQueryType()],
             payloads: EncodedValues::fromPayloads($payloads, $this->dataConverter),
             id: $this->runId,
         );
@@ -427,7 +548,7 @@ final class CoresdkWorkflowCodec implements CodecInterface
 
         return (new WorkflowCommand())->setStartTimer(
             (new StartTimer())
-                ->setSeq($this->seqFor($command->getID()))
+                ->setSeq($this->seqFor($command->getID(), 'timer'))
                 ->setStartToFireTimeout(self::msToDuration($ms)),
         );
     }
@@ -447,7 +568,7 @@ final class CoresdkWorkflowCodec implements CodecInterface
         $ao = $options['options'] ?? [];
 
         $command->getPayloads()->setDataConverter($this->dataConverter);
-        $seq = $this->seqFor($command->getID());
+        $seq = $this->seqFor($command->getID(), 'activity');
         $activityId = (string) ($ao['ActivityID'] ?? '');
         $taskQueue = (string) ($ao['TaskQueueName'] ?? '');
 
@@ -560,6 +681,13 @@ final class CoresdkWorkflowCodec implements CodecInterface
         $failure = $command->getFailure();
 
         if ($failure !== null) {
+            /* A CanceledFailure on a run the server asked to cancel is the
+               normal end of a cancelled workflow, not an error. A CanceledFailure
+               the workflow threw of its own accord stays a failure. */
+            if ($failure instanceof CanceledFailure && isset($this->cancelRequested[$this->runId])) {
+                return (new WorkflowCommand())->setCancelWorkflowExecution(new CancelWorkflowExecution());
+            }
+
             return (new WorkflowCommand())->setFailWorkflowExecution(
                 (new FailWorkflowExecution())->setFailure(
                     FailureConverter::mapExceptionToFailure($failure, $this->dataConverter),
