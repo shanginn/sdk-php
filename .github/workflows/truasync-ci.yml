@@ -26,16 +26,18 @@ jobs:
 
       # ---- TrueAsync PHP (built from the php-src fork, cached by its SHA) ----
 
-      - name: Resolve TrueAsync php-src revision
+      - name: Resolve TrueAsync php-src + php-async revisions
         id: phpsrc
-        run: echo "sha=$(git ls-remote https://github.com/true-async/php-src refs/heads/true-async | cut -f1)" >> "$GITHUB_OUTPUT"
+        run: |
+          echo "sha=$(git ls-remote https://github.com/true-async/php-src refs/heads/true-async | cut -f1)" >> "$GITHUB_OUTPUT"
+          echo "asha=$(git ls-remote https://github.com/true-async/php-async refs/heads/main | cut -f1)" >> "$GITHUB_OUTPUT"
 
       - name: Cache TrueAsync PHP
         id: php-cache
         uses: actions/cache@v4
         with:
           path: ${{ env.PHP_PREFIX }}
-          key: trueasync-php-v2-${{ runner.os }}-${{ steps.phpsrc.outputs.sha }}
+          key: trueasync-php-v3-${{ runner.os }}-${{ steps.phpsrc.outputs.sha }}-${{ steps.phpsrc.outputs.asha }}
 
       - name: Build TrueAsync PHP
         if: steps.php-cache.outputs.cache-hit != 'true'
@@ -43,6 +45,9 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y bison re2c libuv1-dev libssl-dev zlib1g-dev libonig-dev
           git clone --depth 1 --branch true-async https://github.com/true-async/php-src /tmp/php-src
+          # ext/async lives in its own repo, nested into the php-src tree;
+          # without it buildconf does not even know --enable-async.
+          git clone --depth 1 https://github.com/true-async/php-async /tmp/php-src/ext/async
           cd /tmp/php-src
           ./buildconf
           # --disable-all must come FIRST: later flags win, so every enable
@@ -64,6 +69,10 @@ jobs:
           sudo apt-get update && sudo apt-get install -y libuv1 protobuf-compiler
           echo "$PHP_PREFIX/bin" >> "$GITHUB_PATH"
           "$PHP_PREFIX/bin/php" -v
+          # Fail fast if the TrueAsync runtime is missing (a silent configure
+          # miss otherwise surfaces as cryptic test failures much later).
+          "$PHP_PREFIX/bin/php" -r 'exit(function_exists("Async\\await") ? 0 : 1);' \
+            || { echo "TrueAsync runtime (ext/async) is not in this PHP build" >&2; exit 1; }
 
       # ---- The Rust core c-bridge (cargo target dir cached) ----
 
