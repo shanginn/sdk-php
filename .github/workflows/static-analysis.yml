@@ -1,6 +1,11 @@
 name: Static Analysis
 
-on: [push, pull_request]
+# The true-async branch runs its own pipeline (truasync-ci.yml).
+on:
+  push:
+    branches-ignore: ["true-async"]
+  pull_request:
+    branches-ignore: ["true-async"]
 
 permissions:
   contents: read
