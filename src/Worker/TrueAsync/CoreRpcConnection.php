@@ -11,8 +11,8 @@ declare(strict_types=1);
 
 namespace Temporal\Worker\TrueAsync;
 
-use Coresdk\Activity_task\ActivityCancelReason;
-use Coresdk\Activity_task\Cancel;
+use Coresdk\ActivityTask\ActivityCancelReason;
+use Coresdk\ActivityTask\Cancel;
 use Coresdk\ActivityHeartbeat;
 use Temporal\Api\Common\V1\Payloads;
 use Temporal\Worker\Transport\RPCConnectionInterface;

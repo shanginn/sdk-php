@@ -31,7 +31,7 @@ class ActivityTaskCompletion extends \Google\Protobuf\Internal\Message
      *     Optional. Data for populating the Message object.
      *
      *     @type string $task_token
-     *     @type \Coresdk\Activity_result\ActivityExecutionResult $result
+     *     @type \Coresdk\ActivityResult\ActivityExecutionResult $result
      * }
      */
     public function __construct($data = NULL) {
@@ -63,7 +63,7 @@ class ActivityTaskCompletion extends \Google\Protobuf\Internal\Message
 
     /**
      * Generated from protobuf field <code>.coresdk.activity_result.ActivityExecutionResult result = 2;</code>
-     * @return \Coresdk\Activity_result\ActivityExecutionResult|null
+     * @return \Coresdk\ActivityResult\ActivityExecutionResult|null
      */
     public function getResult()
     {
@@ -82,12 +82,12 @@ class ActivityTaskCompletion extends \Google\Protobuf\Internal\Message
 
     /**
      * Generated from protobuf field <code>.coresdk.activity_result.ActivityExecutionResult result = 2;</code>
-     * @param \Coresdk\Activity_result\ActivityExecutionResult $var
+     * @param \Coresdk\ActivityResult\ActivityExecutionResult $var
      * @return $this
      */
     public function setResult($var)
     {
-        GPBUtil::checkMessage($var, \Coresdk\Activity_result\ActivityExecutionResult::class);
+        GPBUtil::checkMessage($var, \Coresdk\ActivityResult\ActivityExecutionResult::class);
         $this->result = $var;
 
         return $this;

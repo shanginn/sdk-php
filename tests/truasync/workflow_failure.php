@@ -14,10 +14,10 @@ declare(strict_types=1);
 
 require __DIR__ . '/../../vendor/autoload.php';
 
-use Coresdk\Workflow_activation\FireTimer;
-use Coresdk\Workflow_activation\WorkflowActivation;
-use Coresdk\Workflow_activation\WorkflowActivationJob;
-use Coresdk\Workflow_completion\WorkflowActivationCompletion;
+use Coresdk\WorkflowActivation\FireTimer;
+use Coresdk\WorkflowActivation\WorkflowActivation;
+use Coresdk\WorkflowActivation\WorkflowActivationJob;
+use Coresdk\WorkflowCompletion\WorkflowActivationCompletion;
 use Temporal\DataConverter\DataConverter;
 use Temporal\Worker\TrueAsync\NullRpcConnection;
 use Temporal\Worker\TrueAsync\WorkflowWorkerFactory;

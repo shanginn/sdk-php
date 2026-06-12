@@ -11,7 +11,7 @@ declare(strict_types=1);
 
 namespace Temporal\Worker\TrueAsync;
 
-use Coresdk\Activity_task\ActivityTask;
+use Coresdk\ActivityTask\ActivityTask;
 use Temporal\DataConverter\DataConverterInterface;
 use Temporal\Worker\DispatcherInterface;
 use TrueAsync\Temporal\Core\Worker as CoreWorker;

@@ -11,13 +11,13 @@ declare(strict_types=1);
 
 namespace Temporal\Worker\TrueAsync;
 
-use Coresdk\Activity_result\ActivityExecutionResult;
-use Coresdk\Activity_result\Cancellation;
-use Coresdk\Activity_result\Failure as ResultFailure;
-use Coresdk\Activity_result\Success;
-use Coresdk\Activity_result\WillCompleteAsync;
-use Coresdk\Activity_task\ActivityTask;
-use Coresdk\Activity_task\Start;
+use Coresdk\ActivityResult\ActivityExecutionResult;
+use Coresdk\ActivityResult\Cancellation;
+use Coresdk\ActivityResult\Failure as ResultFailure;
+use Coresdk\ActivityResult\Success;
+use Coresdk\ActivityResult\WillCompleteAsync;
+use Coresdk\ActivityTask\ActivityTask;
+use Coresdk\ActivityTask\Start;
 use Coresdk\ActivityTaskCompletion;
 use Google\Protobuf\Timestamp;
 use Temporal\Api\Common\V1\Payload;

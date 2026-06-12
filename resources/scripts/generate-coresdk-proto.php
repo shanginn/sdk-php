@@ -19,6 +19,15 @@ declare(strict_types=1);
  * Output namespaces:
  *   Coresdk\*                        -> bridge/Coresdk
  *   GPBMetadata\Temporal\Sdk\Core\*  -> bridge/GPBMetadata/Temporal/Sdk/Core
+ *
+ * protoc's default PHP mapping keeps proto-package underscores in the
+ * namespace (coresdk.workflow_activation -> Coresdk\Workflow_activation),
+ * and the only override is the file-level php_namespace option — there is no
+ * CLI flag, and the vendored protos must not be edited in place. So the local
+ * proto tree is copied to a temp dir and a PascalCase php_namespace derived
+ * from each coresdk package (-> Coresdk\WorkflowActivation) is injected before
+ * protoc runs. The GPBMetadata namespace derives from the file path, not the
+ * package, so it is unaffected.
  */
 
 $root = dirname(__DIR__, 2);
@@ -61,8 +70,46 @@ if (!is_dir($out) && !mkdir($out, 0777, true) && !is_dir($out)) {
     exit(1);
 }
 
+/* Copy the local tree and inject PascalCase php_namespace into coresdk protos. */
+$patched = sys_get_temp_dir() . '/coresdk-protos-' . getmypid();
+$iterator = new RecursiveIteratorIterator(
+    new RecursiveDirectoryIterator($local, FilesystemIterator::SKIP_DOTS),
+    RecursiveIteratorIterator::SELF_FIRST,
+);
+foreach ($iterator as $item) {
+    $dest = $patched . '/' . $iterator->getSubPathName();
+    if ($item->isDir()) {
+        if (!is_dir($dest)) {
+            mkdir($dest, 0777, true);
+        }
+        continue;
+    }
+    copy($item->getPathname(), $dest);
+
+    if (!str_ends_with($dest, '.proto')) {
+        continue;
+    }
+    $source = file_get_contents($dest);
+    if (!preg_match('/^package\s+(coresdk[a-z0-9_.]*)\s*;/m', $source, $m)) {
+        continue;
+    }
+    $namespace = implode('\\', array_map(
+        static fn(string $segment): string => str_replace('_', '', ucwords($segment, '_')),
+        explode('.', $m[1]),
+    ));
+    $option = 'option php_namespace = "' . str_replace('\\', '\\\\', $namespace) . '";';
+    /* preg_replace_callback: a literal replacement — preg_replace would eat
+       the backslashes in the namespace escape. */
+    file_put_contents($dest, preg_replace_callback(
+        '/^package\s+coresdk[a-z0-9_.]*\s*;/m',
+        static fn(array $match): string => $match[0] . "\n" . $option,
+        $source,
+        1,
+    ));
+}
+
 $cmd = array_merge(
-    ['protoc', '-I', $local, '-I', $apiUpstream, '--php_out=' . $out],
+    ['protoc', '-I', $patched, '-I', $apiUpstream, '--php_out=' . $out],
     $files
 );
 
