@@ -48,10 +48,21 @@ final class TemporalWorker
         ?RPCConnectionInterface $rpc = null,
     ) {
         $this->dataConverter = $dataConverter ?? DataConverter::createDefault();
-        $this->factory = WorkflowWorkerFactory::create($this->dataConverter, $rpc ?? new NullRpcConnection());
+
+        /* The default RPC channel answers activity heartbeats through the core
+           and relays cancel tasks back into running activities. */
+        $rpc ??= new CoreRpcConnection($core);
+
+        $this->factory = WorkflowWorkerFactory::create($this->dataConverter, $rpc);
         $this->worker = $this->factory->newWorker($taskQueue);
         $this->workflowLoop = new WorkflowWorker($this->core, $this->factory, $taskQueue);
-        $this->activityLoop = new ActivityWorker($this->core, $this->worker, $this->dataConverter, $taskQueue);
+        $this->activityLoop = new ActivityWorker(
+            $this->core,
+            $this->worker,
+            $this->dataConverter,
+            $taskQueue,
+            $rpc instanceof CoreRpcConnection ? $rpc : null,
+        );
     }
 
     public function registerWorkflowTypes(string ...$class): self

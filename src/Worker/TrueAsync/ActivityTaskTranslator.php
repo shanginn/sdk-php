@@ -25,6 +25,7 @@ use Temporal\Api\Common\V1\Payloads;
 use Temporal\DataConverter\DataConverterInterface;
 use Temporal\DataConverter\EncodedValues;
 use Temporal\DataConverter\ValuesInterface;
+use Temporal\Exception\Client\ActivityCanceledException;
 use Temporal\Exception\DoNotCompleteOnResultException;
 use Temporal\Exception\Failure\CanceledFailure;
 use Temporal\Exception\Failure\FailureConverter;
@@ -49,8 +50,8 @@ final class ActivityTaskTranslator
     ) {}
 
     /**
-     * Build the "InvokeActivity" request from a Start task, or null when the
-     * task is a cancel (handled out of band, not through the Router).
+     * Build the "InvokeActivity" request from a Start task, or null for any
+     * other variant (cancels are intercepted by the loop before reaching here).
      */
     public function toServerRequest(ActivityTask $task): ?ServerRequest
     {
@@ -114,7 +115,12 @@ final class ActivityTaskTranslator
 
         $failure = FailureConverter::mapExceptionToFailure($error, $this->dataConverter);
 
-        $result = $error instanceof CanceledFailure
+        /* An ActivityCanceledException bubbling out (a heartbeat observed the
+           cancel) is a cancellation, not a failure; the converter already wires
+           CanceledFailureInfo into its wire failure. */
+        $canceled = $error instanceof CanceledFailure || $error instanceof ActivityCanceledException;
+
+        $result = $canceled
             ? (new ActivityExecutionResult())->setCancelled((new Cancellation())->setFailure($failure))
             : (new ActivityExecutionResult())->setFailed((new ResultFailure())->setFailure($failure));
 

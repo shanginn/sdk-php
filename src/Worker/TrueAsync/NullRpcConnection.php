@@ -14,9 +14,10 @@ namespace Temporal\Worker\TrueAsync;
 use Temporal\Worker\Transport\RPCConnectionInterface;
 
 /**
- * A placeholder RPC channel for the worker factory. The deterministic workflow
- * engine makes no RPCs, and activity heartbeats are not wired to the core yet;
- * any call here is a not-yet-supported path rather than a silent no-op.
+ * A placeholder RPC channel for workflow-only worker factories (the
+ * deterministic engine makes no RPCs). Workers serving activities use
+ * {@see CoreRpcConnection}, which answers heartbeats through the core; any
+ * call here is an unwired path rather than a silent no-op.
  */
 final class NullRpcConnection implements RPCConnectionInterface
 {

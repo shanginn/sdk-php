@@ -39,6 +39,7 @@ final class ActivityWorker
         private readonly DispatcherInterface $dispatcher,
         DataConverterInterface $dataConverter,
         string $taskQueue,
+        private readonly ?CoreRpcConnection $rpc = null,
     ) {
         $this->translator = new ActivityTaskTranslator($dataConverter, $taskQueue);
     }
@@ -73,10 +74,17 @@ final class ActivityWorker
 
     private function handle(ActivityTask $task): void
     {
+        /* A cancel arrives as its own task on the poll stream while the start
+           task's coroutine is still running. Record it; the running activity
+           observes it on its next heartbeat (cooperative cancellation) and the
+           cancel needs no completion of its own. */
+        if ($task->getVariant() === 'cancel') {
+            $this->rpc?->markCancellation($task->getTaskToken(), $task->getCancel());
+            return;
+        }
+
         $request = $this->translator->toServerRequest($task);
 
-        /* Non-start variants (cancel) are delivered out of band, not through the
-           Router; the activity's own cancellation token handles them. */
         if ($request === null) {
             return;
         }
@@ -98,6 +106,10 @@ final class ActivityWorker
             ? $this->translator->failure($token, $error)
             : $this->translator->success($token, $result);
 
-        $this->core->completeActivityTask($completion->serializeToString());
+        try {
+            $this->core->completeActivityTask($completion->serializeToString());
+        } finally {
+            $this->rpc?->forget($token);
+        }
     }
 }
