@@ -161,6 +161,7 @@ final class CoresdkWorkflowCodec implements CodecInterface
 
         return match ($variant) {
             'initialize_workflow' => $this->startWorkflow($job, $tick, $taskQueue),
+            'signal_workflow' => $this->signalWorkflow($job, $tick),
             'fire_timer' => $this->fireTimer($job, $tick),
             'resolve_activity' => $this->resolveActivity($job, $tick),
             'remove_from_cache' => $this->removeFromCache($tick),
@@ -286,6 +287,28 @@ final class CoresdkWorkflowCodec implements CodecInterface
         }
 
         return $run['seqToId'][$seq];
+    }
+
+    /**
+     * Deliver a signal to a running workflow. An advancing job (no seq): the
+     * InvokeSignal route finds the run by id and hands the input to the registered
+     * signal handler, which may unblock an awaitSignal and let the workflow issue
+     * its next commands on the following tick.
+     */
+    private function signalWorkflow(WorkflowActivationJob $job, TickInfo $tick): ServerRequest
+    {
+        $signal = $job->getSignalWorkflow();
+
+        $payloads = new Payloads();
+        $payloads->setPayloads($signal->getInput());
+
+        return new ServerRequest(
+            name: 'InvokeSignal',
+            info: $tick,
+            options: ['name' => $signal->getSignalName()],
+            payloads: EncodedValues::fromPayloads($payloads, $this->dataConverter),
+            id: $this->runId,
+        );
     }
 
     private function startWorkflow(WorkflowActivationJob $job, TickInfo $tick, string $taskQueue): ServerRequest
