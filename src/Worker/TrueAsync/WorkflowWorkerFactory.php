@@ -50,6 +50,19 @@ final class WorkflowWorkerFactory extends \Temporal\WorkerFactory
         $headers = ['taskQueue' => $taskQueue];
         $tick = null;
 
+        /* The determinism guard (DESIGN.md §7, layer 3). Legit workflow code
+           never reaches the real reactor: it yields promises the engine
+           resolves synchronously within the activation, so this coroutine
+           never suspends while one is processed. The reactor is single-
+           threaded, so the sentinel below can only run if the coroutine DOES
+           suspend — workflow code performed real I/O, called Async\* directly,
+           or awaited a non-workflow primitive. The task is then failed loudly
+           instead of committing non-deterministic results. */
+        $suspended = false;
+        $sentinel = \Async\spawn(static function () use (&$suspended): void {
+            $suspended = true;
+        });
+
         try {
             foreach ($codec->decode($activation, $headers) as $command) {
                 $tick = $command->getTickInfo();
@@ -84,6 +97,16 @@ final class WorkflowWorkerFactory extends \Temporal\WorkerFactory
             $this->tick();
             $this->drainIntoCodec($codec, $tick);
 
+            if ($suspended) {
+                throw new NonDeterministicWorkflowException(
+                    'Workflow code suspended the worker coroutine: it reached the real reactor '
+                    . '(direct Async\* usage, blocking I/O, or a non-workflow await). Workflow '
+                    . 'code must be deterministic — use Workflow::timer(), '
+                    . 'Workflow::executeActivity(), Workflow::await*() and the other '
+                    . 'Workflow:: primitives instead.',
+                );
+            }
+
             return $codec->encodeStaged();
         } catch (\Throwable $e) {
             // The workflow task failed: a codec gap, an unmapped resolution, or an
@@ -94,6 +117,9 @@ final class WorkflowWorkerFactory extends \Temporal\WorkerFactory
             }
 
             return $codec->encodeFailure($e);
+        } finally {
+            /* Never ran on the clean path (the coroutine never yielded). */
+            $sentinel->cancel();
         }
     }
 
