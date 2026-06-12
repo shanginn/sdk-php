@@ -1,0 +1,117 @@
+name: TrueAsync CI
+
+on:
+  push:
+    branches: [true-async]
+  pull_request:
+    branches: [true-async]
+
+env:
+  PHP_PREFIX: /opt/trueasync-php
+
+jobs:
+  test:
+    name: SDK integration over the native extension (live dev server)
+    runs-on: ubuntu-24.04   # libuv >= 1.45 needed by TrueAsync
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check out the php-temporal extension
+        uses: actions/checkout@v4
+        with:
+          repository: true-async/php-temporal
+          ref: main
+          path: php-temporal
+          submodules: true
+
+      # ---- TrueAsync PHP (built from the php-src fork, cached by its SHA) ----
+
+      - name: Resolve TrueAsync php-src revision
+        id: phpsrc
+        run: echo "sha=$(git ls-remote https://github.com/true-async/php-src refs/heads/true-async | cut -f1)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache TrueAsync PHP
+        id: php-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.PHP_PREFIX }}
+          key: trueasync-php-${{ runner.os }}-${{ steps.phpsrc.outputs.sha }}
+
+      - name: Build TrueAsync PHP
+        if: steps.php-cache.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bison re2c libuv1-dev libssl-dev zlib1g-dev libonig-dev
+          git clone --depth 1 --branch true-async https://github.com/true-async/php-src /tmp/php-src
+          cd /tmp/php-src
+          ./buildconf
+          ./configure --prefix="$PHP_PREFIX" \
+            --enable-zts --enable-async \
+            --disable-all --disable-cgi --disable-phpdbg \
+            --enable-sockets --enable-pcntl --enable-posix \
+            --enable-mbstring --enable-ctype --enable-filter \
+            --enable-tokenizer --enable-phar \
+            --with-openssl --with-zlib
+          make -j"$(nproc)"
+          sudo make install
+
+      - name: Use TrueAsync PHP
+        run: |
+          sudo apt-get update && sudo apt-get install -y libuv1
+          echo "$PHP_PREFIX/bin" >> "$GITHUB_PATH"
+          "$PHP_PREFIX/bin/php" -v
+
+      # ---- The Rust core c-bridge (cargo target dir cached) ----
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: php-temporal/third_party/sdk-rust
+
+      - name: Build the Temporal core c-bridge
+        run: cargo build --release -p temporalio-sdk-core-c-bridge --manifest-path php-temporal/third_party/sdk-rust/Cargo.toml
+
+      # ---- The extension ----
+
+      - name: Build the extension
+        working-directory: php-temporal
+        run: |
+          phpize
+          ./configure --enable-temporal --with-php-config="$PHP_PREFIX/bin/php-config"
+          make -j"$(nproc)"
+
+      # ---- Live Temporal dev server ----
+
+      - name: Start the Temporal dev server
+        run: |
+          docker run -d --name temporal-dev -p 7233:7233 \
+            temporalio/temporal server start-dev --ip 0.0.0.0 --log-level error
+          for i in $(seq 1 60); do
+            if (exec 3<>/dev/tcp/127.0.0.1/7233) 2>/dev/null; then exit 0; fi
+            sleep 1
+          done
+          echo "Temporal dev server did not come up" >&2
+          docker logs temporal-dev >&2 || true
+          exit 1
+
+      # ---- SDK integration tests ----
+
+      - name: Install SDK dependencies
+        run: |
+          composer config -g github-oauth.github.com "${{ secrets.GITHUB_TOKEN }}"
+          composer install --no-interaction --no-progress
+
+      - name: SDK integration tests
+        run: |
+          status=0
+          for t in tests/truasync/*.php; do
+            echo "::group::$t"
+            if ! php -d extension="$GITHUB_WORKSPACE/php-temporal/modules/temporal.so" "$t"; then
+              echo "FAILED: $t"
+              status=1
+            fi
+            echo "::endgroup::"
+          done
+          exit $status
