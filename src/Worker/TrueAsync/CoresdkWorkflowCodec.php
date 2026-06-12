@@ -17,6 +17,8 @@ use Coresdk\Workflow_activation\WorkflowActivationJob;
 use Coresdk\Workflow_commands\ActivityCancellationType as CoresdkActivityCancellationType;
 use Coresdk\Workflow_commands\CompleteWorkflowExecution;
 use Coresdk\Workflow_commands\FailWorkflowExecution;
+use Coresdk\Workflow_commands\QueryResult;
+use Coresdk\Workflow_commands\QuerySuccess;
 use Coresdk\Workflow_commands\ScheduleActivity;
 use Coresdk\Workflow_commands\StartTimer;
 use Coresdk\Workflow_commands\WorkflowCommand;
@@ -29,6 +31,7 @@ use Temporal\Api\Common\V1\Payloads;
 use Temporal\Api\Common\V1\RetryPolicy;
 use Temporal\DataConverter\DataConverterInterface;
 use Temporal\DataConverter\EncodedValues;
+use Temporal\DataConverter\ValuesInterface;
 use Temporal\Exception\Failure\FailureConverter;
 use Temporal\Worker\Transport\Codec\CodecInterface;
 use Temporal\Worker\Transport\Command\CommandInterface;
@@ -71,9 +74,9 @@ use Temporal\Worker\Transport\Command\ServerResponseInterface;
  * id. The map is dropped when the run is evicted (remove_from_cache); a later
  * replay rebuilds an identical one.
  *
- * Covered so far: workflow start/completion, timers, and activities. Jobs and
- * commands that are not yet mapped raise so the gap is explicit rather than a
- * silently hung workflow.
+ * Covered so far: workflow start/completion, timers, activities, signals, and
+ * queries. Jobs and commands that are not yet mapped raise so the gap is
+ * explicit rather than a silently hung workflow.
  */
 final class CoresdkWorkflowCodec implements CodecInterface
 {
@@ -88,6 +91,14 @@ final class CoresdkWorkflowCodec implements CodecInterface
      * @var array<string, array{next: int, idToSeq: array<int, int>, seqToId: array<int, int>}>
      */
     private array $runs = [];
+
+    /**
+     * Query outcomes captured during the current activation (the factory feeds
+     * them off the InvokeQuery promises); drained into the completion by encode.
+     *
+     * @var list<QueryResult>
+     */
+    private array $queryResults = [];
 
     public function __construct(private readonly DataConverterInterface $dataConverter) {}
 
@@ -127,6 +138,11 @@ final class CoresdkWorkflowCodec implements CodecInterface
             $wfCommands[] = $this->encodeCommand($command);
         }
 
+        foreach ($this->queryResults as $result) {
+            $wfCommands[] = (new WorkflowCommand())->setRespondToQuery($result);
+        }
+        $this->queryResults = [];
+
         $completion = (new WorkflowActivationCompletion())
             ->setRunId($this->runId)
             ->setSuccessful((new Success())->setCommands($wfCommands));
@@ -144,6 +160,8 @@ final class CoresdkWorkflowCodec implements CodecInterface
      */
     public function encodeFailure(\Throwable $e): string
     {
+        $this->queryResults = [];   /* a failed task reports no partial results */
+
         $completion = (new WorkflowActivationCompletion())
             ->setRunId($this->runId)
             ->setFailed(
@@ -162,6 +180,7 @@ final class CoresdkWorkflowCodec implements CodecInterface
         return match ($variant) {
             'initialize_workflow' => $this->startWorkflow($job, $tick, $taskQueue),
             'signal_workflow' => $this->signalWorkflow($job, $tick),
+            'query_workflow' => $this->queryWorkflow($job, $tick),
             'fire_timer' => $this->fireTimer($job, $tick),
             'resolve_activity' => $this->resolveActivity($job, $tick),
             'remove_from_cache' => $this->removeFromCache($tick),
@@ -287,6 +306,56 @@ final class CoresdkWorkflowCodec implements CodecInterface
         }
 
         return $run['seqToId'][$seq];
+    }
+
+    /**
+     * Run a query against the workflow. The request id must be the run id (the
+     * InvokeQuery route looks the process up by it), which makes the generic ack
+     * queue unable to tell a query result apart from other acks — so the factory
+     * dispatches this request outside the Server, captures the outcome off the
+     * promise into recordQuery*, and encode() emits the QueryResult command with
+     * the completion. Queries never advance the workflow: no seq, no commands.
+     */
+    private function queryWorkflow(WorkflowActivationJob $job, TickInfo $tick): ServerRequest
+    {
+        $query = $job->getQueryWorkflow();
+
+        $payloads = new Payloads();
+        $payloads->setPayloads(\iterator_to_array($query->getArguments()));
+
+        return new ServerRequest(
+            name: 'InvokeQuery',
+            info: $tick,
+            options: [
+                'name' => $query->getQueryType(),
+                'queryId' => $query->getQueryId(),
+            ],
+            payloads: EncodedValues::fromPayloads($payloads, $this->dataConverter),
+            id: $this->runId,
+        );
+    }
+
+    /** Record a resolved query; emitted as a QueryResult command by encode(). */
+    public function recordQuerySuccess(string $queryId, ?ValuesInterface $values): void
+    {
+        if ($values instanceof EncodedValues) {
+            $values->setDataConverter($this->dataConverter);
+        }
+
+        $payloads = $values?->toPayloads()->getPayloads();
+        $response = $payloads !== null && \count($payloads) > 0 ? $payloads[0] : new Payload();
+
+        $this->queryResults[] = (new QueryResult())
+            ->setQueryId($queryId)
+            ->setSucceeded((new QuerySuccess())->setResponse($response));
+    }
+
+    /** Record a failed query (unknown type, handler threw); see encode(). */
+    public function recordQueryFailure(string $queryId, \Throwable $error): void
+    {
+        $this->queryResults[] = (new QueryResult())
+            ->setQueryId($queryId)
+            ->setFailed(FailureConverter::mapExceptionToFailure($error, $this->dataConverter));
     }
 
     /**

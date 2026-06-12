@@ -11,6 +11,8 @@ declare(strict_types=1);
 
 namespace Temporal\Worker\TrueAsync;
 
+use Temporal\DataConverter\ValuesInterface;
+use Temporal\Worker\Transport\Command\ServerRequestInterface;
 use Temporal\Worker\Transport\Command\ServerResponseInterface;
 
 /**
@@ -50,6 +52,26 @@ final class WorkflowWorkerFactory extends \Temporal\WorkerFactory
 
                 if ($command instanceof ServerResponseInterface) {
                     $this->client->dispatch($command);
+                    continue;
+                }
+
+                /* Queries bypass the Server: their request id must be the run id
+                   (the route finds the process by it), so their outcome in the
+                   generic ack queue would be indistinguishable from other acks.
+                   Dispatch through the worker directly and capture the result
+                   off the promise; it resolves on the ON_QUERY phase of tick()
+                   below, and encode() emits the QueryResult command. */
+                $queryId = $command instanceof ServerRequestInterface
+                    ? ($command->getOptions()['queryId'] ?? null)
+                    : null;
+                if ($queryId !== null) {
+                    $worker = $this->queues->find($taskQueue) ?? throw new \LogicException(
+                        "no worker registered for task queue {$taskQueue}",
+                    );
+                    $worker->dispatch($command, $headers)->then(
+                        static fn(?ValuesInterface $values) => $codec->recordQuerySuccess($queryId, $values),
+                        static fn(\Throwable $e) => $codec->recordQueryFailure($queryId, $e),
+                    );
                     continue;
                 }
 
