@@ -117,4 +117,24 @@ $escaped = implode(' ', array_map('escapeshellarg', $cmd));
 echo $escaped, "\n";
 
 passthru($escaped, $code);
+
+if ($code === 0) {
+    /* protoc also emits deprecated Parent_Nested alias shims beside the real
+       nested-namespace classes (Parent\Nested). Nothing references them — this
+       repo is the only Coresdk consumer — so drop them rather than ship dead
+       classes that fire E_USER_DEPRECATED when autoloaded. */
+    $generated = new RecursiveIteratorIterator(
+        new RecursiveDirectoryIterator($out . '/Coresdk', FilesystemIterator::SKIP_DOTS),
+    );
+    foreach ($generated as $file) {
+        if (!str_contains($file->getFilename(), '_') || !str_ends_with($file->getFilename(), '.php')) {
+            continue;
+        }
+        $content = (string) file_get_contents($file->getPathname());
+        if (str_contains($content, 'E_USER_DEPRECATED') && str_contains($content, 'if (false)')) {
+            unlink($file->getPathname());
+        }
+    }
+}
+
 exit($code);
