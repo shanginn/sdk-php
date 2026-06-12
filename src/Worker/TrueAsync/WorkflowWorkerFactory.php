@@ -44,19 +44,30 @@ final class WorkflowWorkerFactory extends \Temporal\WorkerFactory
         $codec = $this->workflowCodec ??= new CoresdkWorkflowCodec($this->converter);
         $headers = ['taskQueue' => $taskQueue];
 
-        foreach ($codec->decode($activation, $headers) as $command) {
-            $this->env->update($command->getTickInfo());
+        try {
+            foreach ($codec->decode($activation, $headers) as $command) {
+                $this->env->update($command->getTickInfo());
 
-            if ($command instanceof ServerResponseInterface) {
-                $this->client->dispatch($command);
-                continue;
+                if ($command instanceof ServerResponseInterface) {
+                    $this->client->dispatch($command);
+                    continue;
+                }
+
+                $this->server->dispatch($command, $headers);
             }
 
-            $this->server->dispatch($command, $headers);
+            $this->tick();
+
+            return $codec->encode($this->responses);
+        } catch (\Throwable $e) {
+            // The workflow task failed: a codec gap, an unmapped resolution, or an
+            // engine/workflow-code error. Drop any commands queued before the throw
+            // so they cannot leak into the next activation, then report the failure
+            // so the core retries the task instead of waiting out a timeout.
+            foreach ($this->responses as $ignored) {
+            }
+
+            return $codec->encodeFailure($e);
         }
-
-        $this->tick();
-
-        return $codec->encode($this->responses);
     }
 }

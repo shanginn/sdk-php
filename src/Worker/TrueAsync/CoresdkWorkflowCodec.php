@@ -20,6 +20,7 @@ use Coresdk\Workflow_commands\FailWorkflowExecution;
 use Coresdk\Workflow_commands\ScheduleActivity;
 use Coresdk\Workflow_commands\StartTimer;
 use Coresdk\Workflow_commands\WorkflowCommand;
+use Coresdk\Workflow_completion\Failure as CompletionFailure;
 use Coresdk\Workflow_completion\Success;
 use Coresdk\Workflow_completion\WorkflowActivationCompletion;
 use Google\Protobuf\Duration;
@@ -129,6 +130,27 @@ final class CoresdkWorkflowCodec implements CodecInterface
         $completion = (new WorkflowActivationCompletion())
             ->setRunId($this->runId)
             ->setSuccessful((new Success())->setCommands($wfCommands));
+
+        return $completion->serializeToString();
+    }
+
+    /**
+     * Build a failed activation completion for the current run. Used when applying
+     * the activation throws (a codec gap, an unmapped resolution, an engine or
+     * workflow-code error): reporting the workflow-task failure lets the core retry
+     * the task instead of leaving it to time out with no completion. force_cause is
+     * left unspecified, so the server treats it as a normal, retryable task failure
+     * rather than failing the workflow.
+     */
+    public function encodeFailure(\Throwable $e): string
+    {
+        $completion = (new WorkflowActivationCompletion())
+            ->setRunId($this->runId)
+            ->setFailed(
+                (new CompletionFailure())->setFailure(
+                    FailureConverter::mapExceptionToFailure($e, $this->dataConverter),
+                ),
+            );
 
         return $completion->serializeToString();
     }
