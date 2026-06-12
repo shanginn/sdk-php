@@ -22,6 +22,9 @@ abstract class Facade
         'Calling facade methods can only be made ' .
         'from the currently running process';
 
+    /** Key of the per-coroutine context slot under TrueAsync. */
+    private const CTX_KEY = 'temporal.facade.context';
+
     private static ?object $ctx = null;
 
     /**
@@ -37,12 +40,47 @@ abstract class Facade
      */
     public static function setCurrentContext(?object $ctx): void
     {
+        $storage = self::coroutineStorage();
+
+        if ($storage !== null) {
+            $ctx === null
+                ? $storage->unset(self::CTX_KEY)
+                : $storage->set(self::CTX_KEY, $ctx, true);
+            return;
+        }
+
         self::$ctx = $ctx;
     }
 
     public static function getCurrentContext(): ?object
     {
+        $storage = self::coroutineStorage();
+
+        if ($storage !== null) {
+            $found = $storage->findLocal(self::CTX_KEY);
+            return \is_object($found) ? $found : null;
+        }
+
         return self::$ctx;
+    }
+
+    /**
+     * The current coroutine's local context under TrueAsync, or null without
+     * the extension (RoadRunner), where the plain static is correct: RR runs
+     * one task at a time per process.
+     *
+     * Why a static cannot be used under TrueAsync: workflow and activity tasks
+     * run in concurrent coroutines of one process, so a process-global "current
+     * context" would be clobbered whenever another task is dispatched while
+     * this one is parked — e.g. an activity suspended in delay() would lose its
+     * context to a workflow activation, breaking Activity::heartbeat() on
+     * resume.
+     */
+    private static function coroutineStorage(): ?\Async\Context
+    {
+        return \function_exists('Async\coroutine_context')
+            ? \Async\coroutine_context()
+            : null;
     }
 
     /**
