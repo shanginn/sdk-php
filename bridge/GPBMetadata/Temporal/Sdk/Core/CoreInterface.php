@@ -27,7 +27,7 @@ class CoreInterface
         \GPBMetadata\Temporal\Sdk\Core\WorkflowCompletion\WorkflowCompletion::initOnce();
         $pool->internalAddGeneratedFile(
             '
-ý
+‡	
 &temporal/sdk/core/core_interface.protocoresdkgoogle/protobuf/empty.protogoogle/protobuf/timestamp.proto$temporal/api/common/v1/message.proto7temporal/sdk/core/activity_result/activity_result.proto3temporal/sdk/core/activity_task/activity_task.proto%temporal/sdk/core/common/common.proto3temporal/sdk/core/external_data/external_data.proto?temporal/sdk/core/workflow_activation/workflow_activation.proto;temporal/sdk/core/workflow_commands/workflow_commands.proto?temporal/sdk/core/workflow_completion/workflow_completion.proto"Y
 ActivityHeartbeat
 
@@ -51,7 +51,7 @@ task_token (@
 limits (2.coresdk.NamespaceInfo.LimitsF
 Limits
 blob_size_limit_error (
-memo_size_limit_error (B3ê0Temporalio::Internal::Bridge::Api::CoreInterfacebproto3'
+memo_size_limit_error (B=ÊCoresdkê0Temporalio::Internal::Bridge::Api::CoreInterfacebproto3'
         , true);
 
         static::$is_initialized = true;

@@ -18,7 +18,7 @@ class ExternalData
         \GPBMetadata\Google\Protobuf\Timestamp::initOnce();
         $pool->internalAddGeneratedFile(
             '
-ß
+ö
 3temporal/sdk/core/external_data/external_data.protocoresdk.external_datagoogle/protobuf/timestamp.proto"þ
 LocalActivityMarkerData
 seq (
@@ -32,7 +32,7 @@ class ExternalData
 
 id (	
 
-deprecated (B2ê/Temporalio::Internal::Bridge::Api::ExternalDatabproto3'
+deprecated (BIÊCoresdk\\ExternalDataê/Temporalio::Internal::Bridge::Api::ExternalDatabproto3'
         , true);
 
         static::$is_initialized = true;
