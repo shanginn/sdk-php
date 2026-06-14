@@ -30,11 +30,13 @@ use Coresdk\WorkflowCommands\ScheduleActivity;
 use Coresdk\WorkflowCommands\SignalExternalWorkflowExecution;
 use Coresdk\WorkflowCommands\StartChildWorkflowExecution;
 use Coresdk\WorkflowCommands\StartTimer;
+use Coresdk\WorkflowCommands\UpdateResponse as CoresdkUpdateResponse;
 use Coresdk\WorkflowCommands\WorkflowCommand;
 use Coresdk\WorkflowCompletion\Failure as CompletionFailure;
 use Coresdk\WorkflowCompletion\Success;
 use Coresdk\WorkflowCompletion\WorkflowActivationCompletion;
 use Google\Protobuf\Duration;
+use Google\Protobuf\GPBEmpty;
 use Temporal\Api\Common\V1\Payload;
 use Temporal\Api\Common\V1\Payloads;
 use Temporal\Api\Common\V1\RetryPolicy;
@@ -45,6 +47,7 @@ use Temporal\Exception\Failure\ApplicationFailure;
 use Temporal\Exception\Failure\CanceledFailure;
 use Temporal\Exception\Failure\FailureConverter;
 use Temporal\Worker\Transport\Codec\CodecInterface;
+use Temporal\Worker\Transport\Command\Client\UpdateResponse;
 use Temporal\Worker\Transport\Command\CommandInterface;
 use Temporal\Worker\Transport\Command\RequestInterface;
 use Temporal\Worker\Transport\Command\Server\FailureResponse;
@@ -87,9 +90,10 @@ use Temporal\Worker\Transport\Command\ServerResponseInterface;
  *
  * Covered so far: workflow start/completion, timers, activities, signals,
  * queries, cancellation (of the workflow, its timers, activities and child
- * workflows), child workflows, continue-as-new, and signalling external/child
- * workflows. Jobs and commands that are not yet mapped raise so the gap is
- * explicit rather than a silently hung workflow.
+ * workflows), child workflows, continue-as-new, signalling external/child
+ * workflows, and updates (validate/accept/reject/complete). Jobs and commands
+ * that are not yet mapped raise so the gap is explicit rather than a silently
+ * hung workflow.
  */
 final class CoresdkWorkflowCodec implements CodecInterface
 {
@@ -103,7 +107,9 @@ final class CoresdkWorkflowCodec implements CodecInterface
      * cancel command. 'wfId' is this run's workflow id (the deterministic
      * default for child workflow ids). 'children' tracks per-seq child state:
      * the child's workflow id and the pending GetChildWorkflowExecution
-     * request id its start resolution must answer.
+     * request id its start resolution must answer. 'updates' maps each update id
+     * to its protocol_instance_id, which the coresdk UpdateResponse needs but the
+     * SDK's UpdateResponse command does not carry.
      *
      * @var array<string, array{
      *     next: int,
@@ -112,6 +118,7 @@ final class CoresdkWorkflowCodec implements CodecInterface
      *     kind: array<int, string>,
      *     wfId: string,
      *     children: array<int, array{wfId: string, getId: int|null}>,
+     *     updates: array<string, string>,
      * }>
      */
     private array $runs = [];
@@ -329,6 +336,7 @@ final class CoresdkWorkflowCodec implements CodecInterface
             'resolve_child_workflow_execution_start' => $this->resolveChildStart($job, $tick),
             'resolve_child_workflow_execution' => [$this->resolveChild($job, $tick)],
             'resolve_signal_external_workflow' => [$this->resolveSignalExternal($job, $tick)],
+            'do_update' => [$this->doUpdate($job, $tick)],
             'remove_from_cache' => [$this->removeFromCache($tick)],
             default => throw new \RuntimeException("coresdk workflow job not yet supported: {$variant}"),
         };
@@ -571,6 +579,77 @@ final class CoresdkWorkflowCodec implements CodecInterface
     }
 
     /**
+     * A workflow update was delivered. The InvokeUpdate route runs the validator
+     * (unless run_validator is false — replay/already-accepted) and the handler,
+     * emitting one or more UpdateResponse commands the factory feeds back through
+     * {@see stageUpdateResponse}. The coresdk UpdateResponse needs the update's
+     * protocol_instance_id, so it is remembered here keyed by update id (the SDK's
+     * UpdateResponse command only carries the update id). Like signals/queries the
+     * request id is the run id and the update advances no command seq of its own.
+     */
+    private function doUpdate(WorkflowActivationJob $job, TickInfo $tick): ServerRequest
+    {
+        $update = $job->getDoUpdate();
+        $updateId = $update->getId();
+
+        $this->run()['updates'][$updateId] = $update->getProtocolInstanceId();
+
+        $payloads = new Payloads();
+        $payloads->setPayloads(\iterator_to_array($update->getInput()));
+
+        return new ServerRequest(
+            name: 'InvokeUpdate',
+            info: $tick,
+            options: [
+                'updateId' => $updateId,
+                'name' => $update->getName(),
+                /* run_validator false means the core already accepted it (replay
+                   or a no-validator update); InvokeUpdate skips validation then. */
+                'replay' => !$update->getRunValidator(),
+            ],
+            payloads: EncodedValues::fromPayloads($payloads, $this->dataConverter),
+            id: $this->runId,
+        );
+    }
+
+    /**
+     * Translate one SDK UpdateResponse (the validation or completion phase) into a
+     * coresdk UpdateResponse command, stamped with the update's protocol instance.
+     * A failure — a rejected validator or a handler that threw after acceptance —
+     * is 'rejected' either way (per the core protocol); a passed validation is
+     * 'accepted'; a successful handler is 'completed' with its single result. The
+     * factory routes these here because UpdateResponse is a ResponseInterface, not
+     * a RequestInterface, so it never reaches {@see stage}.
+     */
+    public function stageUpdateResponse(UpdateResponse $response): void
+    {
+        $updateId = (string) ($response->getOptions()['id'] ?? '');
+        $protocolInstanceId = $this->runs[$this->runId]['updates'][$updateId]
+            ?? throw new \RuntimeException(
+                "no protocol instance for update {$updateId} on run {$this->runId}",
+            );
+
+        $update = (new CoresdkUpdateResponse())->setProtocolInstanceId($protocolInstanceId);
+
+        $failure = $response->getFailure();
+        if ($failure !== null) {
+            $update->setRejected(FailureConverter::mapExceptionToFailure($failure, $this->dataConverter));
+        } elseif ($response->getCommand() === UpdateResponse::COMMAND_VALIDATED) {
+            $update->setAccepted(new GPBEmpty());
+        } else {
+            $values = $response->getPayloads();
+            if ($values instanceof EncodedValues) {
+                $values->setDataConverter($this->dataConverter);
+            }
+            $payloads = $values?->toPayloads()->getPayloads();
+            $result = $payloads !== null && \count($payloads) > 0 ? $payloads[0] : new Payload();
+            $update->setCompleted($result);
+        }
+
+        $this->staged[] = (new WorkflowCommand())->setUpdateResponse($update);
+    }
+
+    /**
      * Map an SDK command id to this run's deterministic seq, assigning the next
      * one on first sight. Stable across replays because the workflow issues its
      * commands in the same order every time, unlike the process-global id. The
@@ -597,7 +676,7 @@ final class CoresdkWorkflowCodec implements CodecInterface
     private function &run(): array
     {
         $run = &$this->runs[$this->runId];
-        $run ??= ['next' => 1, 'idToSeq' => [], 'seqToId' => [], 'kind' => [], 'wfId' => '', 'children' => []];
+        $run ??= ['next' => 1, 'idToSeq' => [], 'seqToId' => [], 'kind' => [], 'wfId' => '', 'children' => [], 'updates' => []];
 
         return $run;
     }

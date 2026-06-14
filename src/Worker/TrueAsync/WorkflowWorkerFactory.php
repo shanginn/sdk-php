@@ -13,6 +13,7 @@ namespace Temporal\Worker\TrueAsync;
 
 use Temporal\DataConverter\ValuesInterface;
 use Temporal\Exception\Failure\CanceledFailure;
+use Temporal\Worker\Transport\Command\Client\UpdateResponse;
 use Temporal\Worker\Transport\Command\RequestInterface;
 use Temporal\Worker\Transport\Command\Server\FailureResponse;
 use Temporal\Worker\Transport\Command\Server\TickInfo;
@@ -142,6 +143,11 @@ final class WorkflowWorkerFactory extends \Temporal\WorkerFactory
                     foreach ($codec->stage($response) as $commandId) {
                         $synthesize[] = $commandId;
                     }
+                } elseif ($response instanceof UpdateResponse) {
+                    /* Update replies are ResponseInterface, not RequestInterface,
+                       so stage() never sees them — the role the RR host played.
+                       Route each phase (validated/completed) into the codec. */
+                    $codec->stageUpdateResponse($response);
                 }
             }
 
