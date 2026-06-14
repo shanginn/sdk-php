@@ -857,7 +857,7 @@ final class CoresdkWorkflowCodec implements CodecInterface
             ->setSeq($seq)
             ->setActivityId($activityId !== '' ? $activityId : (string) $seq)
             ->setActivityType($name)
-            // An activity inherits the workflow's task queue when none is set.
+            /* An activity inherits the workflow's task queue when none is set. */
             ->setTaskQueue($taskQueue !== '' ? $taskQueue : $this->taskQueue)
             ->setArguments($command->getPayloads()->toPayloads()->getPayloads())
             ->setCancellationType(
@@ -868,12 +868,7 @@ final class CoresdkWorkflowCodec implements CodecInterface
 
         self::applyActivityTimeouts($schedule, $ao);
 
-        $header = $command->getHeader();
-        $header->setDataConverter($this->dataConverter);
-        $headers = [];
-        foreach ($header->toHeader()->getFields() as $key => $payload) {
-            $headers[$key] = $payload;
-        }
+        $headers = $this->headerFields($command);
         if ($headers !== []) {
             $schedule->setHeaders($headers);
         }
