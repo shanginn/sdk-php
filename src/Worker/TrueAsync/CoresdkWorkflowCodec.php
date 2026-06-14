@@ -13,6 +13,7 @@ namespace Temporal\Worker\TrueAsync;
 
 use Coresdk\ActivityResult\Success as ActivitySuccess;
 use Coresdk\ChildWorkflow\ChildWorkflowCancellationType as CoresdkChildCancellationType;
+use Coresdk\Common\NamespacedWorkflowExecution;
 use Coresdk\WorkflowActivation\WorkflowActivation;
 use Coresdk\WorkflowActivation\WorkflowActivationJob;
 use Coresdk\WorkflowCommands\ActivityCancellationType as CoresdkActivityCancellationType;
@@ -26,6 +27,7 @@ use Coresdk\WorkflowCommands\QueryResult;
 use Coresdk\WorkflowCommands\QuerySuccess;
 use Coresdk\WorkflowCommands\RequestCancelActivity;
 use Coresdk\WorkflowCommands\ScheduleActivity;
+use Coresdk\WorkflowCommands\SignalExternalWorkflowExecution;
 use Coresdk\WorkflowCommands\StartChildWorkflowExecution;
 use Coresdk\WorkflowCommands\StartTimer;
 use Coresdk\WorkflowCommands\WorkflowCommand;
@@ -85,9 +87,9 @@ use Temporal\Worker\Transport\Command\ServerResponseInterface;
  *
  * Covered so far: workflow start/completion, timers, activities, signals,
  * queries, cancellation (of the workflow, its timers, activities and child
- * workflows), child workflows, and continue-as-new. Jobs and commands that
- * are not yet mapped raise so the gap is explicit rather than a silently
- * hung workflow.
+ * workflows), child workflows, continue-as-new, and signalling external/child
+ * workflows. Jobs and commands that are not yet mapped raise so the gap is
+ * explicit rather than a silently hung workflow.
  */
 final class CoresdkWorkflowCodec implements CodecInterface
 {
@@ -326,6 +328,7 @@ final class CoresdkWorkflowCodec implements CodecInterface
             'resolve_activity' => [$this->resolveActivity($job, $tick)],
             'resolve_child_workflow_execution_start' => $this->resolveChildStart($job, $tick),
             'resolve_child_workflow_execution' => [$this->resolveChild($job, $tick)],
+            'resolve_signal_external_workflow' => [$this->resolveSignalExternal($job, $tick)],
             'remove_from_cache' => [$this->removeFromCache($tick)],
             default => throw new \RuntimeException("coresdk workflow job not yet supported: {$variant}"),
         };
@@ -545,6 +548,29 @@ final class CoresdkWorkflowCodec implements CodecInterface
     }
 
     /**
+     * The signal we sent to an external (or child) workflow was delivered, or
+     * failed. The job carries the stable seq we stamped on the command; a failure
+     * rejects the promise, a success resolves it with no value (a signal carries
+     * no result payload).
+     */
+    private function resolveSignalExternal(WorkflowActivationJob $job, TickInfo $tick): ServerResponseInterface
+    {
+        $resolve = $job->getResolveSignalExternalWorkflow();
+        $id = $this->idForSeq($resolve->getSeq());
+        $failure = $resolve->getFailure();
+
+        if ($failure !== null) {
+            return new FailureResponse(
+                failure: FailureConverter::mapFailureToException($failure, $this->dataConverter),
+                id: $id,
+                info: $tick,
+            );
+        }
+
+        return new SuccessResponse(values: null, id: $id, info: $tick);
+    }
+
+    /**
      * Map an SDK command id to this run's deterministic seq, assigning the next
      * one on first sight. Stable across replays because the workflow issues its
      * commands in the same order every time, unlike the process-global id. The
@@ -701,6 +727,7 @@ final class CoresdkWorkflowCodec implements CodecInterface
             'NewTimer' => $this->startTimer($command),
             'ExecuteActivity' => $this->scheduleActivity($command),
             'ExecuteChildWorkflow' => $this->startChildWorkflow($command),
+            'SignalExternalWorkflow' => $this->signalExternalWorkflow($command),
             'ContinueAsNew' => $this->continueAsNew($command),
             default => throw new \RuntimeException(
                 "SDK workflow command not yet supported: {$command->getName()}",
@@ -771,6 +798,46 @@ final class CoresdkWorkflowCodec implements CodecInterface
         }
 
         return (new WorkflowCommand())->setStartChildWorkflowExecution($start);
+    }
+
+    /**
+     * Signal another workflow. The target is a oneof: a specific external
+     * execution (namespace + workflow id + optional run id) or, when the SDK
+     * flags childWorkflowOnly, just a child workflow id. seq is this run's
+     * deterministic sequence number so the later resolve_signal_external_workflow
+     * job maps back to the promise across replays. (Cancelling a still-pending
+     * signal is not yet mapped — stageCancel raises for the 'signal-external'
+     * kind rather than hang silently.)
+     */
+    private function signalExternalWorkflow(RequestInterface $command): WorkflowCommand
+    {
+        $options = $command->getOptions();
+        $seq = $this->seqFor($command->getID(), 'signal-external');
+
+        $command->getPayloads()->setDataConverter($this->dataConverter);
+
+        $signal = (new SignalExternalWorkflowExecution())
+            ->setSeq($seq)
+            ->setSignalName((string) ($options['signal'] ?? ''))
+            ->setArgs($command->getPayloads()->toPayloads()->getPayloads());
+
+        if ($options['childWorkflowOnly'] ?? false) {
+            $signal->setChildWorkflowId((string) ($options['workflowID'] ?? ''));
+        } else {
+            $signal->setWorkflowExecution(
+                (new NamespacedWorkflowExecution())
+                    ->setNamespace((string) ($options['namespace'] ?? 'default'))
+                    ->setWorkflowId((string) ($options['workflowID'] ?? ''))
+                    ->setRunId((string) ($options['runID'] ?? '')),
+            );
+        }
+
+        $headers = $this->headerFields($command);
+        if ($headers !== []) {
+            $signal->setHeaders($headers);
+        }
+
+        return (new WorkflowCommand())->setSignalExternalWorkflowExecution($signal);
     }
 
     /**
