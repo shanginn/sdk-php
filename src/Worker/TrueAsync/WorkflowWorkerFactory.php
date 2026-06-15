@@ -140,10 +140,12 @@ final class WorkflowWorkerFactory extends \Temporal\WorkerFactory
             return $codec->encodeStaged();
         } catch (\Throwable $e) {
             /* The workflow task failed: a codec gap, an unmapped resolution, or an
-               engine/workflow-code error. Drop any commands queued before the throw
-               so they cannot leak into the next activation, then report the failure
-               so the core retries the task instead of waiting out a timeout. */
+               engine/workflow-code error. Drain the response queue — iterating it
+               consumes each entry — so commands queued before the throw cannot leak
+               into the next activation, then report the failure so the core retries
+               the task instead of waiting out a timeout. */
             foreach ($this->responses as $ignored) {
+                /* discard */
             }
 
             return $codec->encodeFailure($e);
