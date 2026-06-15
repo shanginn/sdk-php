@@ -102,9 +102,10 @@ use Temporal\Worker\Transport\Command\ServerResponseInterface;
  * activities and child workflows), child workflows, continue-as-new, signalling
  * and cancelling external/child workflows, updates (validate/accept/reject/
  * complete), upserting search attributes (untyped and typed) and memo, panic
- * (a retryable workflow error reported as a failed task), and versioning via
- * getVersion/patches. Jobs and commands that are not yet mapped raise so the gap
- * is explicit rather than a silently hung workflow.
+ * (a retryable workflow error reported as a failed task), versioning via
+ * getVersion/patches, and surviving a reset (the new random seed is consumed).
+ * Jobs and commands that are not yet mapped raise so the gap is explicit rather
+ * than a silently hung workflow.
  */
 final class CoresdkWorkflowCodec implements CodecInterface
 {
@@ -415,6 +416,7 @@ final class CoresdkWorkflowCodec implements CodecInterface
             'resolve_request_cancel_external_workflow' => [$this->resolveCancelExternal($job, $tick)],
             'do_update' => [$this->doUpdate($job, $tick)],
             'notify_has_patch' => $this->notifyHasPatch($job),
+            'update_random_seed' => $this->updateRandomSeed(),
             'remove_from_cache' => [$this->removeFromCache($tick)],
             default => throw new \RuntimeException("coresdk workflow job not yet supported: {$variant}"),
         };
@@ -802,6 +804,21 @@ final class CoresdkWorkflowCodec implements CodecInterface
     {
         $this->run()['patchesNotified'][$job->getNotifyHasPatch()->getPatchId()] = true;
 
+        return [];
+    }
+
+    /**
+     * The core handed us a new random seed, which it does when a workflow is reset
+     * (the reset run must draw different randomness than the original). The reused
+     * engine derives workflow randomness through side effects, not a core-seeded
+     * PRNG (there is nowhere to apply the seed), so this is a no-op — but it must
+     * be consumed rather than raised, or a reset would fail every task. Drives
+     * nothing in the engine, so it yields no command.
+     *
+     * @return list<CommandInterface>
+     */
+    private function updateRandomSeed(): array
+    {
         return [];
     }
 
