@@ -510,14 +510,21 @@ final class CoresdkWorkflowCodec implements CodecInterface
         };
     }
 
+    /** A single optional result payload as decoded values, or null when absent. */
+    private function valuesFromPayload(?Payload $payload): ?ValuesInterface
+    {
+        return $payload !== null
+            ? EncodedValues::fromPayloads((new Payloads())->setPayloads([$payload]), $this->dataConverter)
+            : null;
+    }
+
     private function activityCompleted(ActivitySuccess $success, int $id, TickInfo $tick): SuccessResponse
     {
-        $result = $success->getResult();
-        $values = $result !== null
-            ? EncodedValues::fromPayloads((new Payloads())->setPayloads([$result]), $this->dataConverter)
-            : null;
-
-        return new SuccessResponse(values: $values, id: $id, info: $tick);
+        return new SuccessResponse(
+            values: $this->valuesFromPayload($success->getResult()),
+            id: $id,
+            info: $tick,
+        );
     }
 
     /**
@@ -602,12 +609,11 @@ final class CoresdkWorkflowCodec implements CodecInterface
 
         switch ($result->getStatus()) {
             case 'completed':
-                $payload = $result->getCompleted()->getResult();
-                $values = $payload !== null
-                    ? EncodedValues::fromPayloads((new Payloads())->setPayloads([$payload]), $this->dataConverter)
-                    : null;
-
-                return new SuccessResponse(values: $values, id: $id, info: $tick);
+                return new SuccessResponse(
+                    values: $this->valuesFromPayload($result->getCompleted()->getResult()),
+                    id: $id,
+                    info: $tick,
+                );
 
             case 'failed':
                 return new FailureResponse(
@@ -755,11 +761,13 @@ final class CoresdkWorkflowCodec implements CodecInterface
      * either present in history or not), so the version is binary: a present
      * change yields maxSupported, an absent one minSupported (which is
      * Workflow::DEFAULT_VERSION when the change point was added to pre-existing
-     * code — the workflow then takes its original branch). A change first seen on a
-     * live (non-replay) task is recorded with a SetPatchMarker so replays observe
-     * it; on replay the core delivers notify_has_patch up front, so {@see run}'s
-     * 'patches' set is already populated and no marker is re-issued. The version is
-     * queued for the factory to dispatch back to the awaiting request.
+     * code — the workflow then takes its original branch). A change in effect is
+     * recorded with a SetPatchMarker, once per run (patchesMarked) but re-issued
+     * after an eviction: on replay the core delivers notify_has_patch up front
+     * (populating patchesNotified, which decides the version), and the marker
+     * command must still be re-emitted to match the one already in history, or the
+     * core fails the task for non-determinism. The version is queued for the
+     * factory to dispatch back to the awaiting request.
      */
     private function stageGetVersion(RequestInterface $command): void
     {

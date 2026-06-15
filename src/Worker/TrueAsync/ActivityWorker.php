@@ -51,18 +51,35 @@ final class ActivityWorker
     public function run(): void
     {
         $inflight = [];
+        $live = [];
         $seq = 0;
 
         while (($bytes = $this->core->pollActivityTask()) !== null) {
             $task = new ActivityTask();
             $task->mergeFromString($bytes);
+            $token = $task->getTaskToken();
+
+            /* A cancel arrives as its own task while the start task's coroutine is
+               still running; it carries no work and needs no completion, so record
+               it inline (no coroutine) for the activity's next heartbeat to
+               observe. Skip one whose activity has already finished — no heartbeat
+               will read it, so recording it would leak (the core does not normally
+               send this, but be defensive). The start side is always polled before
+               its cancel, so the live token is registered by the time we get here. */
+            if ($task->getVariant() === 'cancel') {
+                if (isset($live[$token])) {
+                    $this->rpc?->markCancellation($token, $task->getCancel());
+                }
+                continue;
+            }
 
             $key = $seq++;
-            $inflight[$key] = \Async\spawn(function () use ($task, $key, &$inflight): void {
+            $live[$token] = true;
+            $inflight[$key] = \Async\spawn(function () use ($task, $key, $token, &$inflight, &$live): void {
                 try {
                     $this->handle($task);
                 } finally {
-                    unset($inflight[$key]);
+                    unset($inflight[$key], $live[$token]);
                 }
             });
         }
@@ -74,15 +91,7 @@ final class ActivityWorker
 
     private function handle(ActivityTask $task): void
     {
-        /* A cancel arrives as its own task on the poll stream while the start
-           task's coroutine is still running. Record it; the running activity
-           observes it on its next heartbeat (cooperative cancellation) and the
-           cancel needs no completion of its own. */
-        if ($task->getVariant() === 'cancel') {
-            $this->rpc?->markCancellation($task->getTaskToken(), $task->getCancel());
-            return;
-        }
-
+        /* Cancels are handled inline in run(); only start tasks reach here. */
         $request = $this->translator->toServerRequest($task);
 
         if ($request === null) {
