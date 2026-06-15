@@ -31,6 +31,7 @@ use Coresdk\WorkflowCommands\RequestCancelExternalWorkflowExecution;
 use Coresdk\WorkflowCommands\RequestCancelLocalActivity;
 use Coresdk\WorkflowCommands\ScheduleActivity;
 use Coresdk\WorkflowCommands\ScheduleLocalActivity;
+use Coresdk\WorkflowCommands\SetPatchMarker;
 use Coresdk\WorkflowCommands\SignalExternalWorkflowExecution;
 use Coresdk\WorkflowCommands\StartChildWorkflowExecution;
 use Coresdk\WorkflowCommands\StartTimer;
@@ -100,10 +101,10 @@ use Temporal\Worker\Transport\Command\ServerResponseInterface;
  * local), signals, queries, cancellation (of the workflow, its timers,
  * activities and child workflows), child workflows, continue-as-new, signalling
  * and cancelling external/child workflows, updates (validate/accept/reject/
- * complete), upserting search attributes (untyped and typed) and memo, and panic
- * (a retryable workflow error reported as a failed task). Jobs and commands that
- * are not yet mapped raise so the gap is explicit rather than a silently hung
- * workflow.
+ * complete), upserting search attributes (untyped and typed) and memo, panic
+ * (a retryable workflow error reported as a failed task), and versioning via
+ * getVersion/patches. Jobs and commands that are not yet mapped raise so the gap
+ * is explicit rather than a silently hung workflow.
  */
 final class CoresdkWorkflowCodec implements CodecInterface
 {
@@ -119,7 +120,11 @@ final class CoresdkWorkflowCodec implements CodecInterface
      * the child's workflow id and the pending GetChildWorkflowExecution
      * request id its start resolution must answer. 'updates' maps each update id
      * to its protocol_instance_id, which the coresdk UpdateResponse needs but the
-     * SDK's UpdateResponse command does not carry.
+     * SDK's UpdateResponse command does not carry. getVersion uses two patch sets:
+     * 'patchesNotified' is change ids the core reported present in history
+     * (notify_has_patch), which decides the returned version; 'patchesMarked' is
+     * change ids for which a SetPatchMarker has been issued this run, so the marker
+     * is emitted once (but re-emitted after an eviction, to match the history).
      *
      * @var array<string, array{
      *     next: int,
@@ -129,6 +134,8 @@ final class CoresdkWorkflowCodec implements CodecInterface
      *     wfId: string,
      *     children: array<int, array{wfId: string, getId: int|null}>,
      *     updates: array<string, string>,
+     *     patchesNotified: array<string, true>,
+     *     patchesMarked: array<string, true>,
      * }>
      */
     private array $runs = [];
@@ -169,6 +176,25 @@ final class CoresdkWorkflowCodec implements CodecInterface
      */
     private ?\Throwable $panic = null;
 
+    /**
+     * Whether the current activation is a replay (carried from decode to the
+     * stage/encode pass). getVersion needs it: on replay a change id absent from
+     * history was not part of the original run and must resolve to the old branch,
+     * whereas on a live task an unseen change id is a new patch to record.
+     */
+    private bool $isReplaying = false;
+
+    /**
+     * getVersion resolutions captured during the current activation: each maps the
+     * SDK request id to the version the workflow must observe. getVersion is a
+     * request/response like a query — the codec resolves it locally (no server
+     * round-trip) and the factory dispatches the value back off this list, the way
+     * it synthesizes cancelled-timer rejections.
+     *
+     * @var list<array{id: int, version: int}>
+     */
+    private array $versionResolutions = [];
+
     public function __construct(private readonly DataConverterInterface $dataConverter) {}
 
     public function decode(string $batch, array $headers = []): iterable
@@ -178,6 +204,7 @@ final class CoresdkWorkflowCodec implements CodecInterface
 
         $this->runId = $activation->getRunId();
         $this->taskQueue = $taskQueue = (string) ($headers['taskQueue'] ?? '');
+        $this->isReplaying = $activation->getIsReplaying();
 
         $timestamp = $activation->getTimestamp();
         $tick = new TickInfo(
@@ -228,6 +255,14 @@ final class CoresdkWorkflowCodec implements CodecInterface
            completion and drops everything staged before it. */
         if ($command->getName() === 'Panic') {
             $this->panic = $command->getFailure() ?? new \RuntimeException('workflow panicked');
+            return [];
+        }
+
+        /* getVersion maps onto the coresdk patch mechanism: it may stage a
+           SetPatchMarker, and always resolves the request locally with a version.
+           Handled apart from encodeCommand, which assumes one command per request. */
+        if ($command->getName() === 'GetVersion') {
+            $this->stageGetVersion($command);
             return [];
         }
 
@@ -343,6 +378,7 @@ final class CoresdkWorkflowCodec implements CodecInterface
         $this->queryResults = [];
         $this->staged = [];
         $this->panic = null;
+        $this->versionResolutions = [];
 
         $completion = (new WorkflowActivationCompletion())
             ->setRunId($this->runId)
@@ -378,6 +414,7 @@ final class CoresdkWorkflowCodec implements CodecInterface
             'resolve_signal_external_workflow' => [$this->resolveSignalExternal($job, $tick)],
             'resolve_request_cancel_external_workflow' => [$this->resolveCancelExternal($job, $tick)],
             'do_update' => [$this->doUpdate($job, $tick)],
+            'notify_has_patch' => $this->notifyHasPatch($job),
             'remove_from_cache' => [$this->removeFromCache($tick)],
             default => throw new \RuntimeException("coresdk workflow job not yet supported: {$variant}"),
         };
@@ -711,6 +748,79 @@ final class CoresdkWorkflowCodec implements CodecInterface
     }
 
     /**
+     * Resolve a getVersion(changeId, minSupported, maxSupported) call against the
+     * coresdk patch mechanism. The core has only a boolean notion (a change id is
+     * either present in history or not), so the version is binary: a present
+     * change yields maxSupported, an absent one minSupported (which is
+     * Workflow::DEFAULT_VERSION when the change point was added to pre-existing
+     * code — the workflow then takes its original branch). A change first seen on a
+     * live (non-replay) task is recorded with a SetPatchMarker so replays observe
+     * it; on replay the core delivers notify_has_patch up front, so {@see run}'s
+     * 'patches' set is already populated and no marker is re-issued. The version is
+     * queued for the factory to dispatch back to the awaiting request.
+     */
+    private function stageGetVersion(RequestInterface $command): void
+    {
+        $options = $command->getOptions();
+        $changeId = (string) ($options['changeID'] ?? '');
+        $minSupported = (int) ($options['minSupported'] ?? 0);
+        $maxSupported = (int) ($options['maxSupported'] ?? 0);
+
+        $run = &$this->run();
+
+        /* The change is in effect if the core told us its marker is in history
+           (notify_has_patch), or this is a live task meeting it for the first
+           time. Replaying with no notification means the marker is not in this
+           run's history — the change was not part of it, so take the old branch. */
+        $present = isset($run['patchesNotified'][$changeId]) || !$this->isReplaying;
+
+        if ($present && !isset($run['patchesMarked'][$changeId])) {
+            /* Issue the SetPatchMarker once per run. It must be re-issued on
+               replay too: the core fails the task for non-determinism if a
+               non-deprecated marker in history has no corresponding command. */
+            $this->staged[] = (new WorkflowCommand())->setSetPatchMarker(
+                (new SetPatchMarker())->setPatchId($changeId),
+            );
+            $run['patchesMarked'][$changeId] = true;
+        }
+
+        $this->versionResolutions[] = [
+            'id' => $command->getID(),
+            'version' => $present ? $maxSupported : $minSupported,
+        ];
+    }
+
+    /**
+     * The core detected a patch marker in history and is telling us the change
+     * exists, pre-emptively (no command of ours prompted it). Record it so a later
+     * getVersion for this change id resolves to the patched branch. Drives nothing
+     * in the engine, so it yields no command.
+     *
+     * @return list<CommandInterface>
+     */
+    private function notifyHasPatch(WorkflowActivationJob $job): array
+    {
+        $this->run()['patchesNotified'][$job->getNotifyHasPatch()->getPatchId()] = true;
+
+        return [];
+    }
+
+    /**
+     * Drain the getVersion resolutions captured this activation. The factory
+     * dispatches each as a SuccessResponse so the awaiting getVersion promise
+     * resolves and the workflow advances within the same activation.
+     *
+     * @return list<array{id: int, version: int}>
+     */
+    public function drainVersionResolutions(): array
+    {
+        $resolutions = $this->versionResolutions;
+        $this->versionResolutions = [];
+
+        return $resolutions;
+    }
+
+    /**
      * Map an SDK command id to this run's deterministic seq, assigning the next
      * one on first sight. Stable across replays because the workflow issues its
      * commands in the same order every time, unlike the process-global id. The
@@ -737,7 +847,7 @@ final class CoresdkWorkflowCodec implements CodecInterface
     private function &run(): array
     {
         $run = &$this->runs[$this->runId];
-        $run ??= ['next' => 1, 'idToSeq' => [], 'seqToId' => [], 'kind' => [], 'wfId' => '', 'children' => [], 'updates' => []];
+        $run ??= ['next' => 1, 'idToSeq' => [], 'seqToId' => [], 'kind' => [], 'wfId' => '', 'children' => [], 'updates' => [], 'patchesNotified' => [], 'patchesMarked' => []];
 
         return $run;
     }

@@ -11,11 +11,13 @@ declare(strict_types=1);
 
 namespace Temporal\Worker\TrueAsync;
 
+use Temporal\DataConverter\EncodedValues;
 use Temporal\DataConverter\ValuesInterface;
 use Temporal\Exception\Failure\CanceledFailure;
 use Temporal\Worker\Transport\Command\Client\UpdateResponse;
 use Temporal\Worker\Transport\Command\RequestInterface;
 use Temporal\Worker\Transport\Command\Server\FailureResponse;
+use Temporal\Worker\Transport\Command\Server\SuccessResponse;
 use Temporal\Worker\Transport\Command\Server\TickInfo;
 use Temporal\Worker\Transport\Command\ServerResponseInterface;
 
@@ -157,6 +159,10 @@ final class WorkflowWorkerFactory extends \Temporal\WorkerFactory
      * await and can issue its next commands (e.g. CompleteWorkflow) within the
      * same activation. Without this, a workflow parked on a cancelled timer
      * would hang forever. Repeats until a pass synthesizes nothing new.
+     *
+     * getVersion is resolved the same way: it has no server round-trip, so the
+     * codec computes the version and we dispatch it straight back as a
+     * SuccessResponse, then tick so the workflow continues on its chosen branch.
      */
     private function drainIntoCodec(CoresdkWorkflowCodec $codec, ?TickInfo $tick): void
     {
@@ -175,7 +181,9 @@ final class WorkflowWorkerFactory extends \Temporal\WorkerFactory
                 }
             }
 
-            if ($synthesize === [] || $tick === null) {
+            $versions = $codec->drainVersionResolutions();
+
+            if (($synthesize === [] && $versions === []) || $tick === null) {
                 return;
             }
 
@@ -183,6 +191,14 @@ final class WorkflowWorkerFactory extends \Temporal\WorkerFactory
                 $this->client->dispatch(new FailureResponse(
                     failure: new CanceledFailure('canceled'),
                     id: $commandId,
+                    info: $tick,
+                ));
+            }
+
+            foreach ($versions as $version) {
+                $this->client->dispatch(new SuccessResponse(
+                    values: EncodedValues::fromValues([$version['version']], $this->converter),
+                    id: $version['id'],
                     info: $tick,
                 ));
             }
