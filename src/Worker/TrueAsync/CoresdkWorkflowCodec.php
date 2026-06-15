@@ -23,6 +23,7 @@ use Coresdk\WorkflowCommands\CancelWorkflowExecution;
 use Coresdk\WorkflowCommands\CompleteWorkflowExecution;
 use Coresdk\WorkflowCommands\ContinueAsNewWorkflowExecution;
 use Coresdk\WorkflowCommands\FailWorkflowExecution;
+use Coresdk\WorkflowCommands\ModifyWorkflowProperties;
 use Coresdk\WorkflowCommands\QueryResult;
 use Coresdk\WorkflowCommands\QuerySuccess;
 use Coresdk\WorkflowCommands\RequestCancelActivity;
@@ -39,6 +40,7 @@ use Coresdk\WorkflowCompletion\Success;
 use Coresdk\WorkflowCompletion\WorkflowActivationCompletion;
 use Google\Protobuf\Duration;
 use Google\Protobuf\GPBEmpty;
+use Temporal\Api\Common\V1\Memo;
 use Temporal\Api\Common\V1\Payload;
 use Temporal\Api\Common\V1\Payloads;
 use Temporal\Api\Common\V1\RetryPolicy;
@@ -95,9 +97,11 @@ use Temporal\Worker\Transport\Command\ServerResponseInterface;
  * Covered so far: workflow start/completion, timers, activities, signals,
  * queries, cancellation (of the workflow, its timers, activities and child
  * workflows), child workflows, continue-as-new, signalling and cancelling
- * external/child workflows, updates (validate/accept/reject/complete), and
- * upserting search attributes. Jobs and commands that are not yet mapped raise
- * so the gap is explicit rather than a silently hung workflow.
+ * external/child workflows, updates (validate/accept/reject/complete),
+ * upserting search attributes (untyped and typed) and memo, and panic (a
+ * retryable workflow error reported as a failed task). Jobs and commands that
+ * are not yet mapped raise so the gap is explicit rather than a silently hung
+ * workflow.
  */
 final class CoresdkWorkflowCodec implements CodecInterface
 {
@@ -153,6 +157,16 @@ final class CoresdkWorkflowCodec implements CodecInterface
      */
     private array $queryResults = [];
 
+    /**
+     * A Panic command staged during the current activation: the engine issues one
+     * when workflow code throws a *retryable* error (see Process::complete). That
+     * is a workflow-*task* failure, not a workflow failure — the whole activation
+     * completes as failed (so the core retries the task), discarding any commands
+     * queued before it, exactly as the RoadRunner host does. Captured here and
+     * turned into the failed completion by {@see encodeStaged}.
+     */
+    private ?\Throwable $panic = null;
+
     public function __construct(private readonly DataConverterInterface $dataConverter) {}
 
     public function decode(string $batch, array $headers = []): iterable
@@ -207,6 +221,14 @@ final class CoresdkWorkflowCodec implements CodecInterface
             return $this->stageCancel($command);
         }
 
+        /* Not a coresdk command: a Panic fails the whole workflow task. Capture
+           the failure; encodeStaged() turns the activation into a failed
+           completion and drops everything staged before it. */
+        if ($command->getName() === 'Panic') {
+            $this->panic = $command->getFailure() ?? new \RuntimeException('workflow panicked');
+            return [];
+        }
+
         /* No coresdk command: the start confirmation arrives on its own
            (resolve_child_workflow_execution_start). Remember which request id
            that resolution must answer. The ExecuteChildWorkflow is always
@@ -234,6 +256,12 @@ final class CoresdkWorkflowCodec implements CodecInterface
     /** Build the completion from the staged commands and query results. */
     public function encodeStaged(): string
     {
+        /* A Panic staged this activation overrides everything: report a failed
+           task and discard the partial command stream (encodeFailure clears it). */
+        if ($this->panic !== null) {
+            return $this->encodeFailure($this->panic);
+        }
+
         $wfCommands = $this->staged;
         $this->staged = [];
 
@@ -307,6 +335,7 @@ final class CoresdkWorkflowCodec implements CodecInterface
         /* A failed task reports no partial results or commands. */
         $this->queryResults = [];
         $this->staged = [];
+        $this->panic = null;
 
         $completion = (new WorkflowActivationCompletion())
             ->setRunId($this->runId)
@@ -834,6 +863,8 @@ final class CoresdkWorkflowCodec implements CodecInterface
             'SignalExternalWorkflow' => $this->signalExternalWorkflow($command),
             'CancelExternalWorkflow' => $this->cancelExternalWorkflow($command),
             'UpsertWorkflowSearchAttributes' => $this->upsertSearchAttributes($command),
+            'UpsertWorkflowTypedSearchAttributes' => $this->upsertTypedSearchAttributes($command),
+            'UpsertMemo' => $this->upsertMemo($command),
             'ContinueAsNew' => $this->continueAsNew($command),
             default => throw new \RuntimeException(
                 "SDK workflow command not yet supported: {$command->getName()}",
@@ -990,6 +1021,84 @@ final class CoresdkWorkflowCodec implements CodecInterface
         return (new WorkflowCommand())->setUpsertWorkflowSearchAttributes(
             (new UpsertWorkflowSearchAttributes())->setSearchAttributes(
                 (new SearchAttributes())->setIndexedFields($fields),
+            ),
+        );
+    }
+
+    /**
+     * Upsert typed search attributes — the strongly-typed sibling of
+     * {@see upsertSearchAttributes}, riding the same coresdk command. The SDK
+     * request marshals each update to ['type' => <ValueType::value>, 'operation'
+     * => 'set'|'unset', 'value' => <scalar|list|RFC3339 datetime>]; we encode the
+     * value to a Payload and tag it with the search-attribute `type` metadata the
+     * server keys on (Bool/Int/Double/Keyword/KeywordList/Text/Datetime). An unset
+     * removes the attribute, expressed (as the other SDKs do) by upserting a null
+     * value carrying only the type tag. Fire-and-forget: no seq, no resolution.
+     */
+    private function upsertTypedSearchAttributes(RequestInterface $command): WorkflowCommand
+    {
+        $attributes = (array) ($command->getOptions()['search_attributes'] ?? []);
+
+        $fields = [];
+        foreach ($attributes as $name => $update) {
+            $update = (array) $update;
+            $unset = ($update['operation'] ?? 'set') === 'unset';
+
+            $payload = $this->dataConverter->toPayload($unset ? null : ($update['value'] ?? null));
+
+            $type = self::searchAttributeType((string) ($update['type'] ?? ''));
+            if ($type !== '') {
+                $payload->getMetadata()['type'] = $type;
+            }
+
+            $fields[(string) $name] = $payload;
+        }
+
+        return (new WorkflowCommand())->setUpsertWorkflowSearchAttributes(
+            (new UpsertWorkflowSearchAttributes())->setSearchAttributes(
+                (new SearchAttributes())->setIndexedFields($fields),
+            ),
+        );
+    }
+
+    /**
+     * Map the SDK's ValueType (its enum *value*, e.g. 'int64') to the search-
+     * attribute `type` metadata name the server tags payloads with (e.g. 'Int').
+     * Unknown types yield '' so the payload is sent untagged (the server can still
+     * resolve it from the registered attribute).
+     */
+    private static function searchAttributeType(string $valueType): string
+    {
+        return match ($valueType) {
+            'bool' => 'Bool',
+            'float64' => 'Double',
+            'int64' => 'Int',
+            'keyword' => 'Keyword',
+            'keyword_list' => 'KeywordList',
+            'string' => 'Text',
+            'datetime' => 'Datetime',
+            default => '',
+        };
+    }
+
+    /**
+     * Upsert (add, change or remove) the workflow's memo. Fire-and-forget: no seq
+     * and no resolution. Each value is encoded to a Payload via the data converter
+     * exactly as the client start path does (WorkflowOptions::toMemo), into the
+     * Memo fields map wrapped in a ModifyWorkflowProperties command.
+     */
+    private function upsertMemo(RequestInterface $command): WorkflowCommand
+    {
+        $memo = (array) ($command->getOptions()['memo'] ?? []);
+
+        $fields = [];
+        foreach ($memo as $key => $value) {
+            $fields[$key] = $this->dataConverter->toPayload($value);
+        }
+
+        return (new WorkflowCommand())->setModifyWorkflowProperties(
+            (new ModifyWorkflowProperties())->setUpsertedMemo(
+                (new Memo())->setFields($fields),
             ),
         );
     }
