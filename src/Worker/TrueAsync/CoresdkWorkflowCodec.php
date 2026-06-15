@@ -28,7 +28,9 @@ use Coresdk\WorkflowCommands\QueryResult;
 use Coresdk\WorkflowCommands\QuerySuccess;
 use Coresdk\WorkflowCommands\RequestCancelActivity;
 use Coresdk\WorkflowCommands\RequestCancelExternalWorkflowExecution;
+use Coresdk\WorkflowCommands\RequestCancelLocalActivity;
 use Coresdk\WorkflowCommands\ScheduleActivity;
+use Coresdk\WorkflowCommands\ScheduleLocalActivity;
 use Coresdk\WorkflowCommands\SignalExternalWorkflowExecution;
 use Coresdk\WorkflowCommands\StartChildWorkflowExecution;
 use Coresdk\WorkflowCommands\StartTimer;
@@ -94,12 +96,12 @@ use Temporal\Worker\Transport\Command\ServerResponseInterface;
  * id. The map is dropped when the run is evicted (remove_from_cache); a later
  * replay rebuilds an identical one.
  *
- * Covered so far: workflow start/completion, timers, activities, signals,
- * queries, cancellation (of the workflow, its timers, activities and child
- * workflows), child workflows, continue-as-new, signalling and cancelling
- * external/child workflows, updates (validate/accept/reject/complete),
- * upserting search attributes (untyped and typed) and memo, and panic (a
- * retryable workflow error reported as a failed task). Jobs and commands that
+ * Covered so far: workflow start/completion, timers, activities (regular and
+ * local), signals, queries, cancellation (of the workflow, its timers,
+ * activities and child workflows), child workflows, continue-as-new, signalling
+ * and cancelling external/child workflows, updates (validate/accept/reject/
+ * complete), upserting search attributes (untyped and typed) and memo, and panic
+ * (a retryable workflow error reported as a failed task). Jobs and commands that
  * are not yet mapped raise so the gap is explicit rather than a silently hung
  * workflow.
  */
@@ -306,6 +308,11 @@ final class CoresdkWorkflowCodec implements CodecInterface
             } elseif ($kind === 'activity') {
                 $this->staged[] = (new WorkflowCommand())->setRequestCancelActivity(
                     (new RequestCancelActivity())->setSeq($seq),
+                );
+            } elseif ($kind === 'local-activity') {
+                /* The core resolves the local activity (cancelled) itself. */
+                $this->staged[] = (new WorkflowCommand())->setRequestCancelLocalActivity(
+                    (new RequestCancelLocalActivity())->setSeq($seq),
                 );
             } elseif ($kind === 'child-workflow') {
                 /* The core resolves the child (cancelled) itself; no synthesis. */
@@ -859,6 +866,7 @@ final class CoresdkWorkflowCodec implements CodecInterface
             'CompleteWorkflow' => $this->completeOrFail($command),
             'NewTimer' => $this->startTimer($command),
             'ExecuteActivity' => $this->scheduleActivity($command),
+            'ExecuteLocalActivity' => $this->scheduleLocalActivity($command),
             'ExecuteChildWorkflow' => $this->startChildWorkflow($command),
             'SignalExternalWorkflow' => $this->signalExternalWorkflow($command),
             'CancelExternalWorkflow' => $this->cancelExternalWorkflow($command),
@@ -1208,6 +1216,56 @@ final class CoresdkWorkflowCodec implements CodecInterface
         }
 
         return (new WorkflowCommand())->setScheduleActivity($schedule);
+    }
+
+    /**
+     * Schedule a local activity — run by the worker in-process and recorded as a
+     * marker rather than dispatched to the server, but otherwise driven like a
+     * regular activity: the core delivers it through the same activity-task channel
+     * (Start.is_local) and resolves it through the same resolve_activity job
+     * (ResolveActivity.is_local), so only the encode is special. seq is this run's
+     * deterministic sequence number; the resolution maps back to its promise across
+     * replays (kind 'local-activity' so a Cancel routes to RequestCancelLocalActivity).
+     * LocalActivityOptions marshals fewer fields than ActivityOptions: no task queue
+     * (it never leaves the worker) and no activity id (defaults to the seq). attempt
+     * is 1 for a fresh schedule; the core manages fast retries within
+     * local_retry_threshold itself. (A retry whose backoff exceeds that threshold
+     * resolves as DoBackoff — not yet handled; resolveActivity raises on it rather
+     * than hang.)
+     */
+    private function scheduleLocalActivity(RequestInterface $command): WorkflowCommand
+    {
+        $options = $command->getOptions();
+        $name = (string) ($options['name'] ?? '');
+        $lo = $options['options'] ?? [];
+
+        $command->getPayloads()->setDataConverter($this->dataConverter);
+        $seq = $this->seqFor($command->getID(), 'local-activity');
+
+        $schedule = (new ScheduleLocalActivity())
+            ->setSeq($seq)
+            ->setActivityId((string) $seq)
+            ->setActivityType($name)
+            ->setArguments($command->getPayloads()->toPayloads()->getPayloads())
+            ->setAttempt(1);
+
+        if (($ns = (int) ($lo['ScheduleToCloseTimeout'] ?? 0)) > 0) {
+            $schedule->setScheduleToCloseTimeout(self::nsToDuration($ns));
+        }
+        if (($ns = (int) ($lo['StartToCloseTimeout'] ?? 0)) > 0) {
+            $schedule->setStartToCloseTimeout(self::nsToDuration($ns));
+        }
+
+        if (\is_array($lo['RetryPolicy'] ?? null)) {
+            $schedule->setRetryPolicy(self::retryPolicy($lo['RetryPolicy']));
+        }
+
+        $headers = $this->headerFields($command);
+        if ($headers !== []) {
+            $schedule->setHeaders($headers);
+        }
+
+        return (new WorkflowCommand())->setScheduleLocalActivity($schedule);
     }
 
     private static function applyActivityTimeouts(ScheduleActivity $schedule, array $ao): void
