@@ -32,6 +32,7 @@ use Coresdk\WorkflowCommands\SignalExternalWorkflowExecution;
 use Coresdk\WorkflowCommands\StartChildWorkflowExecution;
 use Coresdk\WorkflowCommands\StartTimer;
 use Coresdk\WorkflowCommands\UpdateResponse as CoresdkUpdateResponse;
+use Coresdk\WorkflowCommands\UpsertWorkflowSearchAttributes;
 use Coresdk\WorkflowCommands\WorkflowCommand;
 use Coresdk\WorkflowCompletion\Failure as CompletionFailure;
 use Coresdk\WorkflowCompletion\Success;
@@ -41,6 +42,7 @@ use Google\Protobuf\GPBEmpty;
 use Temporal\Api\Common\V1\Payload;
 use Temporal\Api\Common\V1\Payloads;
 use Temporal\Api\Common\V1\RetryPolicy;
+use Temporal\Api\Common\V1\SearchAttributes;
 use Temporal\Api\Failure\V1\Failure;
 use Temporal\DataConverter\DataConverterInterface;
 use Temporal\DataConverter\EncodedValues;
@@ -93,9 +95,9 @@ use Temporal\Worker\Transport\Command\ServerResponseInterface;
  * Covered so far: workflow start/completion, timers, activities, signals,
  * queries, cancellation (of the workflow, its timers, activities and child
  * workflows), child workflows, continue-as-new, signalling and cancelling
- * external/child workflows, and updates (validate/accept/reject/complete). Jobs
- * and commands that are not yet mapped raise so the gap is explicit rather than
- * a silently hung workflow.
+ * external/child workflows, updates (validate/accept/reject/complete), and
+ * upserting search attributes. Jobs and commands that are not yet mapped raise
+ * so the gap is explicit rather than a silently hung workflow.
  */
 final class CoresdkWorkflowCodec implements CodecInterface
 {
@@ -831,6 +833,7 @@ final class CoresdkWorkflowCodec implements CodecInterface
             'ExecuteChildWorkflow' => $this->startChildWorkflow($command),
             'SignalExternalWorkflow' => $this->signalExternalWorkflow($command),
             'CancelExternalWorkflow' => $this->cancelExternalWorkflow($command),
+            'UpsertWorkflowSearchAttributes' => $this->upsertSearchAttributes($command),
             'ContinueAsNew' => $this->continueAsNew($command),
             default => throw new \RuntimeException(
                 "SDK workflow command not yet supported: {$command->getName()}",
@@ -966,6 +969,29 @@ final class CoresdkWorkflowCodec implements CodecInterface
             );
 
         return (new WorkflowCommand())->setRequestCancelExternalWorkflowExecution($cancel);
+    }
+
+    /**
+     * Upsert (add or update) the workflow's search attributes. Fire-and-forget:
+     * no seq and no resolution. Each value is encoded to a Payload exactly as the
+     * client start path does (DataConverter::toPayload), into the SearchAttributes
+     * indexed-fields map. The attribute names must already be registered on the
+     * namespace.
+     */
+    private function upsertSearchAttributes(RequestInterface $command): WorkflowCommand
+    {
+        $attributes = (array) ($command->getOptions()['searchAttributes'] ?? []);
+
+        $fields = [];
+        foreach ($attributes as $key => $value) {
+            $fields[$key] = $this->dataConverter->toPayload($value);
+        }
+
+        return (new WorkflowCommand())->setUpsertWorkflowSearchAttributes(
+            (new UpsertWorkflowSearchAttributes())->setSearchAttributes(
+                (new SearchAttributes())->setIndexedFields($fields),
+            ),
+        );
     }
 
     /**
