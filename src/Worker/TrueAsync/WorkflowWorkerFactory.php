@@ -40,6 +40,11 @@ final class WorkflowWorkerFactory extends \Temporal\WorkerFactory
 {
     private ?CoresdkWorkflowCodec $workflowCodec = null;
 
+    /** A workflow task whose processing blocks the worker coroutine past this
+     *  many ms reached the real reactor (Async\* / blocking I/O) instead of a
+     *  deterministic Workflow:: primitive. Mirrors the Go SDK's deadlock timeout. */
+    private const DETERMINISM_BUDGET_MS = 1000;
+
     /**
      * Apply one coresdk WorkflowActivation and return the serialized
      * WorkflowActivationCompletion. $taskQueue routes the activation's jobs to
@@ -48,21 +53,53 @@ final class WorkflowWorkerFactory extends \Temporal\WorkerFactory
     public function processActivation(string $activation, string $taskQueue): string
     {
         $codec = $this->workflowCodec ??= new CoresdkWorkflowCodec($this->converter);
+
+        /* Determinism guard, Go-style — the analog of the Go SDK dispatcher's
+           deadlock detector. Correct workflow code never blocks the worker
+           coroutine on the real reactor: every wait is a Workflow:: primitive the
+           engine resolves synchronously from history within the activation, so
+           applying it runs straight through to a completion. We run it in a child
+           coroutine and race it against a budget; if the budget elapses while the
+           child is still blocked, workflow code reached the real reactor (direct
+           Async\*, blocking I/O, a non-workflow await) and we fail the task
+           instead of committing a non-deterministic result. (Detecting the mere
+           *fact* of a coroutine switch would be wrong — a benign momentary switch,
+           e.g. a fire-and-forget command, resumes far within the budget; only a
+           lasting block is a violation, exactly as in Go.) */
+        $work = \Async\spawn(fn(): string => $this->applyActivation($codec, $activation, $taskQueue));
+        $deadline = \Async\spawn(static fn() => \Async\delay(self::DETERMINISM_BUDGET_MS));
+
+        try {
+            $completion = \Async\await($work, $deadline);
+            $deadline->cancel();
+
+            return $completion;
+        } catch (\Throwable $overBudget) {
+            $work->cancel();
+
+            return $codec->encodeFailure(new NonDeterministicWorkflowException(\sprintf(
+                'Workflow task exceeded the determinism budget (%d ms): workflow code '
+                . 'blocked the worker coroutine on the real reactor (direct Async\\* usage, '
+                . 'blocking I/O, or a non-workflow await). Workflow code must be deterministic '
+                . '— use Workflow::timer(), Workflow::executeActivity(), Workflow::await*() and '
+                . 'the other Workflow:: primitives instead.',
+                self::DETERMINISM_BUDGET_MS,
+            )));
+        }
+    }
+
+    /**
+     * Drive one activation through the reused engine: decode it into the SDK
+     * command stream, dispatch each job (server request) or resolution (server
+     * response), tick the loop, then encode the outgoing commands back into a
+     * coresdk completion. Runs inside the guard's child coroutine (see
+     * {@see processActivation}). Never throws — engine/codec errors become a
+     * failed completion so the core retries the task.
+     */
+    private function applyActivation(CoresdkWorkflowCodec $codec, string $activation, string $taskQueue): string
+    {
         $headers = ['taskQueue' => $taskQueue];
         $tick = null;
-
-        /* The determinism guard (DESIGN.md §7, layer 3). Legit workflow code
-           never reaches the real reactor: it yields promises the engine
-           resolves synchronously within the activation, so this coroutine
-           never suspends while one is processed. The reactor is single-
-           threaded, so the sentinel below can only run if the coroutine DOES
-           suspend — workflow code performed real I/O, called Async\* directly,
-           or awaited a non-workflow primitive. The task is then failed loudly
-           instead of committing non-deterministic results. */
-        $suspended = false;
-        $sentinel = \Async\spawn(static function () use (&$suspended): void {
-            $suspended = true;
-        });
 
         try {
             foreach ($codec->decode($activation, $headers) as $command) {
@@ -98,16 +135,6 @@ final class WorkflowWorkerFactory extends \Temporal\WorkerFactory
             $this->tick();
             $this->drainIntoCodec($codec, $tick);
 
-            if ($suspended) {
-                throw new NonDeterministicWorkflowException(
-                    'Workflow code suspended the worker coroutine: it reached the real reactor '
-                    . '(direct Async\* usage, blocking I/O, or a non-workflow await). Workflow '
-                    . 'code must be deterministic — use Workflow::timer(), '
-                    . 'Workflow::executeActivity(), Workflow::await*() and the other '
-                    . 'Workflow:: primitives instead.',
-                );
-            }
-
             return $codec->encodeStaged();
         } catch (\Throwable $e) {
             /* The workflow task failed: a codec gap, an unmapped resolution, or an
@@ -118,9 +145,6 @@ final class WorkflowWorkerFactory extends \Temporal\WorkerFactory
             }
 
             return $codec->encodeFailure($e);
-        } finally {
-            /* Never ran on the clean path (the coroutine never yielded). */
-            $sentinel->cancel();
         }
     }
 

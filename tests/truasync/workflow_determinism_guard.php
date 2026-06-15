@@ -8,11 +8,12 @@ declare(strict_types=1);
  *   php -d extension=temporal.so tests/truasync/workflow_determinism_guard.php [address]
  *
  * A workflow calls Async\delay() directly — forbidden: workflow code must
- * never reach the real reactor. The guard detects the suspension (a sentinel
- * coroutine that can only run if the worker coroutine yields), fails the
- * workflow task with NonDeterministicWorkflowException instead of committing
- * the result, and the failure (with its message) lands in the workflow
- * history, where the server retries the task.
+ * never block the worker coroutine on the real reactor. The guard races the
+ * activation against a time budget (the Go SDK's deadlock-detector approach);
+ * the blocked task overruns the budget and is failed with
+ * NonDeterministicWorkflowException instead of committing the result, and the
+ * failure (with its message) lands in the workflow history, where the server
+ * retries the task.
  *
  * Exits 0 on pass or skip (no server), 1 on failure.
  */
@@ -37,7 +38,7 @@ class NaughtyWorkflow
     #[WorkflowMethod(name: 'NaughtyWorkflow')]
     public function handler(): string
     {
-        delay(30);   /* the real reactor — non-deterministic, must be caught */
+        delay(2000);   /* blocks the worker on the real reactor past the budget — must be caught */
 
         return 'must-never-complete';
     }
@@ -84,7 +85,7 @@ $out = await(spawn(static function () use ($address, $taskQueue, $wfId): array {
         $failed = $event->getWorkflowTaskFailedEventAttributes();
         if ($failed !== null && $failed->getFailure() !== null) {
             $message = $failed->getFailure()->getMessage();
-            if (\str_contains($message, 'suspended the worker coroutine')) {
+            if (\str_contains($message, 'exceeded the determinism budget')) {
                 $guardMessage = $message;
             }
         }
