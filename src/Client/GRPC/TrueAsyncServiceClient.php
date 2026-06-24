@@ -15,12 +15,16 @@ use TrueAsync\Temporal\ServiceException as CoreServiceException;
  * instead of gRPC/RoadRunner.
  *
  * It reuses all of {@see ServiceClient}: the RPC method declarations, the
- * context/interceptor surface and the exception types. Only {@see invoke()} is
- * overridden — each call is routed through the native
- * {@see CoreConnection::rpcCall()}, which serialises the request, parks the
- * current coroutine while the Rust core drives the gRPC on its own threads, and
- * resumes with the response bytes. Retries are handled by the core, so the
- * gRPC retry loop in {@see BaseClient} is bypassed.
+ * context/interceptor surface and the exception types. Only the wire transport
+ * is swapped — {@see performCall()} (the single transport seam) routes each call
+ * through the native {@see CoreConnection::rpcCall()}, which serialises the
+ * request, parks the current coroutine while the Rust core drives the gRPC on
+ * its own threads, and resumes with the response bytes.
+ *
+ * Everything above performCall() is inherited: {@see BaseClient::invoke()}'s
+ * interceptor pipeline and API-key handling, plus {@see BaseClient}'s retry loop
+ * with backoff. The core runs a single attempt per call (it gets the per-attempt
+ * deadline as a timeout); retrying is owned by that loop, not the core.
  */
 final class TrueAsyncServiceClient extends ServiceClient
 {
@@ -34,8 +38,8 @@ final class TrueAsyncServiceClient extends ServiceClient
 
     public static function fromCore(CoreConnection $core): self
     {
-        // The gRPC client factory is never invoked: invoke() never reaches the
-        // gRPC path, and the connection wrapper is lazy.
+        // The gRPC client factory is never invoked: performCall() never touches
+        // the gRPC stub, and the connection wrapper is lazy.
         $self = new self(static fn(): WorkflowServiceClient => throw new \LogicException(
             'gRPC transport is disabled in the TrueAsync service client',
         ));

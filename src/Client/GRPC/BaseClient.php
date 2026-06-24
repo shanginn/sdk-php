@@ -362,6 +362,13 @@ abstract class BaseClient implements ServiceClientInterface
      */
     private function usleep(int $param): void
     {
+        // TrueAsync: yield this coroutine instead of blocking the reactor for the
+        // whole backoff (and stay cancellation-aware). Coroutines aren't \Fiber.
+        if (\function_exists('Async\\delay')) {
+            \Async\delay(\intdiv($param, 1000));
+            return;
+        }
+
         if (\Fiber::getCurrent() === null) {
             \usleep($param);
             return;
