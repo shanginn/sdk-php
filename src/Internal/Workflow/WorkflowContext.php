@@ -107,7 +107,6 @@ class WorkflowContext implements NexusWorkflowContextInterface, HeaderCarrier, D
     protected bool $continueAsNew = false;
     protected bool $readonly = true;
     protected ?string $currentDetails = null;
-
     private ?WorkflowSerializationContext $serializationContext = null;
 
     /** @var Pipeline<WorkflowOutboundRequestInterceptor, PromiseInterface> */
@@ -169,14 +168,6 @@ class WorkflowContext implements NexusWorkflowContextInterface, HeaderCarrier, D
     public function getInfo(): WorkflowInfo
     {
         return $this->input->info;
-    }
-
-    private function getSerializationContext(): WorkflowSerializationContext
-    {
-        return $this->serializationContext ??= new WorkflowSerializationContext(
-            $this->getInfo()->namespace,
-            $this->getInfo()->execution->getID(),
-        );
     }
 
     public function getHeader(): HeaderInterface
@@ -917,5 +908,13 @@ class WorkflowContext implements NexusWorkflowContextInterface, HeaderCarrier, D
             $options = $options->withService($input->service);
         }
         return $options;
+    }
+
+    private function getSerializationContext(): WorkflowSerializationContext
+    {
+        return $this->serializationContext ??= new WorkflowSerializationContext(
+            $this->getInfo()->namespace,
+            $this->getInfo()->execution->getID(),
+        );
     }
 }
