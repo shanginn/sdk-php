@@ -293,7 +293,7 @@ class WorkflowContext implements NexusWorkflowContextInterface, HeaderCarrier, D
         }
 
         $values = EncodedValues::fromValues([$value]);
-        $values->setSerializationContext($this->getSerializationContext());
+        $values = $values->withSerializationContext($this->getSerializationContext());
 
         $last = fn(): PromiseInterface => EncodedValues::decodePromise(
             $this->request(new SideEffect(
@@ -322,7 +322,7 @@ class WorkflowContext implements NexusWorkflowContextInterface, HeaderCarrier, D
                     ? EncodedValues::fromValues($input->result)
                     : EncodedValues::empty();
 
-                $values->setSerializationContext($this->getSerializationContext());
+                $values = $values->withSerializationContext($this->getSerializationContext());
 
                 return $this->request(new CompleteWorkflow($values, $input->failure), false);
             },
@@ -350,7 +350,7 @@ class WorkflowContext implements NexusWorkflowContextInterface, HeaderCarrier, D
                 $this->continueAsNew = true;
 
                 $arguments = EncodedValues::fromValues($input->args);
-                $arguments->setSerializationContext($this->getSerializationContext());
+                $arguments = $arguments->withSerializationContext($this->getSerializationContext());
 
                 $request = new ContinueAsNew(
                     $input->type,
