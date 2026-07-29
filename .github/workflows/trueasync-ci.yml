@@ -134,7 +134,8 @@ jobs:
             --ignore-platform-req=ext-true_async
 
       - name: Download Temporal test binaries
-        run: "$SYSTEM_PHP" "$COMPOSER_BIN" get:binaries
+        run: |
+          "$SYSTEM_PHP" "$COMPOSER_BIN" get:binaries
 
       - name: SDK unit tests
         run: php tests/runner.php vendor/bin/phpunit --testsuite=Unit --color=always --testdox
