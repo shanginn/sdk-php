@@ -63,8 +63,26 @@ jobs:
       - name: Install dependencies
         uses: ramsey/composer-install@5c2bcf28d7b060ef3c601d7b476d5430a7b46c27 # v4
 
-      - name: Download Temporal CLI
-        run: composer get:binaries
+      - name: Download pinned Temporal CLI
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          mkdir -p runtime
+          curl \
+            --fail \
+            --location \
+            --retry 5 \
+            --retry-all-errors \
+            --retry-delay 2 \
+            --connect-timeout 30 \
+            --silent \
+            --show-error \
+            https://github.com/temporalio/cli/releases/download/v1.8.1/temporal_cli_1.8.1_linux_amd64.tar.gz \
+            --output runtime/temporal-cli.tar.gz
+          echo 'b94417b9a8760b30217f4b881dabce4b16a76a38b5e99e2eca3ce358b8030f06  runtime/temporal-cli.tar.gz' | sha256sum --check --strict
+          tar -xzf runtime/temporal-cli.tar.gz -C runtime temporal
+          install -m 0755 runtime/temporal temporal
+          ./temporal --version | grep -F 'temporal version 1.8.1'
 
       - name: Run Nexus acceptance suite
         run: composer test:nexus

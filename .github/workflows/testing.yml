@@ -10,6 +10,163 @@ concurrency:
   group: tests-${{ github.workflow }}-${{ github.ref }}
 
 jobs:
+  test-binaries:
+    permissions:
+      contents: read
+    name: Test binaries (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            suffix: ''
+          - os: windows-latest
+            suffix: '.exe'
+    steps:
+      # Keep these versions in sync with dload.xml. Direct immutable assets
+      # avoid one GitHub release-history API scan per test-matrix cell.
+      - name: Download and verify pinned Linux binaries
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          download() {
+            curl \
+              --fail \
+              --location \
+              --retry 5 \
+              --retry-all-errors \
+              --retry-delay 2 \
+              --connect-timeout 30 \
+              --silent \
+              --show-error \
+              "$1" \
+              --output "$2"
+          }
+
+          mkdir -p runtime/test-binaries/{rr,temporal,test-server}
+
+          download \
+            https://github.com/roadrunner-server/roadrunner/releases/download/v2025.1.15/roadrunner-2025.1.15-linux-amd64.tar.gz \
+            runtime/roadrunner.tar.gz
+          download \
+            https://github.com/temporalio/cli/releases/download/v1.8.1/temporal_cli_1.8.1_linux_amd64.tar.gz \
+            runtime/temporal.tar.gz
+          download \
+            https://github.com/temporalio/sdk-java/releases/download/v1.37.0/temporal-test-server_1.37.0_linux_amd64.tar.gz \
+            runtime/temporal-test-server.tar.gz
+
+          echo '74589ff95e022dddf163f9316821cb80423a7db9865e96ce30a436d6898e34e7  runtime/roadrunner.tar.gz' | sha256sum --check --strict
+          echo 'b94417b9a8760b30217f4b881dabce4b16a76a38b5e99e2eca3ce358b8030f06  runtime/temporal.tar.gz' | sha256sum --check --strict
+          echo 'a36f80b32f12d52c1c200ae2d8b7ef83cdaaae1eee5ecdfe574646dc9db87979  runtime/temporal-test-server.tar.gz' | sha256sum --check --strict
+
+          tar -xzf runtime/roadrunner.tar.gz -C runtime/test-binaries/rr
+          tar -xzf runtime/temporal.tar.gz -C runtime/test-binaries/temporal
+          tar -xzf runtime/temporal-test-server.tar.gz -C runtime/test-binaries/test-server
+
+          install -m 0755 "$(find runtime/test-binaries/rr -type f -name rr -print -quit)" rr
+          install -m 0755 "$(find runtime/test-binaries/temporal -type f -name temporal -print -quit)" temporal
+          install -m 0755 "$(find runtime/test-binaries/test-server -type f -name temporal-test-server -print -quit)" temporal-test-server
+
+          ./rr --version | grep -F 'rr version 2025.1.15'
+          ./temporal --version | grep -F 'temporal version 1.8.1'
+          test -x temporal-test-server
+          test -s temporal-test-server
+
+      - name: Download and verify pinned Windows binaries
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $ProgressPreference = 'SilentlyContinue'
+
+          function Get-PinnedArchive {
+              param(
+                  [Parameter(Mandatory = $true)][string] $Uri,
+                  [Parameter(Mandatory = $true)][string] $Path,
+                  [Parameter(Mandatory = $true)][string] $Sha256
+              )
+
+              for ($attempt = 1; $attempt -le 5; $attempt++) {
+                  try {
+                      Remove-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
+                      Invoke-WebRequest -Uri $Uri -OutFile $Path
+                      break
+                  } catch {
+                      if ($attempt -eq 5) {
+                          throw
+                      }
+                      Start-Sleep -Seconds (2 * $attempt)
+                  }
+              }
+
+              $actual = (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
+              if ($actual -ne $Sha256) {
+                  throw "Checksum mismatch for ${Path}: expected ${Sha256}, got ${actual}"
+              }
+          }
+
+          New-Item -ItemType Directory -Force -Path 'runtime/test-binaries/rr' | Out-Null
+          New-Item -ItemType Directory -Force -Path 'runtime/test-binaries/temporal' | Out-Null
+          New-Item -ItemType Directory -Force -Path 'runtime/test-binaries/test-server' | Out-Null
+
+          Get-PinnedArchive `
+              -Uri 'https://github.com/roadrunner-server/roadrunner/releases/download/v2025.1.15/roadrunner-2025.1.15-windows-amd64.zip' `
+              -Path 'runtime/roadrunner.zip' `
+              -Sha256 '7d4d0461b7ed17a405a40121f0f19d7d413ea8fec724b6d23f56a5ff2993b42d'
+          Get-PinnedArchive `
+              -Uri 'https://github.com/temporalio/cli/releases/download/v1.8.1/temporal_cli_1.8.1_windows_amd64.zip' `
+              -Path 'runtime/temporal.zip' `
+              -Sha256 '01d3808b1a245676c69372692265e79a42f3fbef74f22533fc0b178b467f90cc'
+          Get-PinnedArchive `
+              -Uri 'https://github.com/temporalio/sdk-java/releases/download/v1.37.0/temporal-test-server_1.37.0_windows_amd64.zip' `
+              -Path 'runtime/temporal-test-server.zip' `
+              -Sha256 'a0b71bbf108299645291a354f04558a99078fb808711ec3199742908600a6dae'
+
+          Expand-Archive -LiteralPath runtime/roadrunner.zip -DestinationPath runtime/test-binaries/rr
+          Expand-Archive -LiteralPath runtime/temporal.zip -DestinationPath runtime/test-binaries/temporal
+          Expand-Archive -LiteralPath runtime/temporal-test-server.zip -DestinationPath runtime/test-binaries/test-server
+
+          $rr = Get-ChildItem runtime/test-binaries/rr -Filter rr.exe -File -Recurse | Select-Object -First 1
+          $temporal = Get-ChildItem runtime/test-binaries/temporal -Filter temporal.exe -File -Recurse | Select-Object -First 1
+          $testServer = Get-ChildItem runtime/test-binaries/test-server -Filter temporal-test-server.exe -File -Recurse | Select-Object -First 1
+          if ($null -eq $rr -or $null -eq $temporal -or $null -eq $testServer) {
+              throw 'One or more pinned test binaries were missing after extraction.'
+          }
+
+          Copy-Item -LiteralPath $rr.FullName -Destination rr.exe -Force
+          Copy-Item -LiteralPath $temporal.FullName -Destination temporal.exe -Force
+          Copy-Item -LiteralPath $testServer.FullName -Destination temporal-test-server.exe -Force
+
+          $rrVersion = (& ./rr.exe --version | Out-String)
+          if ($LASTEXITCODE -ne 0 -or $rrVersion -notmatch 'rr version 2025\.1\.15') {
+              throw "Unexpected RoadRunner version: ${rrVersion}"
+          }
+
+          $temporalVersion = (& ./temporal.exe --version | Out-String)
+          if ($LASTEXITCODE -ne 0 -or $temporalVersion -notmatch 'temporal version 1\.8\.1') {
+              throw "Unexpected Temporal CLI version: ${temporalVersion}"
+          }
+
+          if ((Get-Item temporal-test-server.exe).Length -eq 0) {
+              throw 'Temporal test server binary is empty.'
+          }
+
+      - name: Upload test binaries
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sdk-test-binaries-${{ runner.os }}
+          path: |
+            rr${{ matrix.suffix }}
+            temporal${{ matrix.suffix }}
+            temporal-test-server${{ matrix.suffix }}
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 7
+
   unit:
     permissions:
       contents: read
@@ -23,6 +180,7 @@ jobs:
     permissions:
       contents: read
     name: Functional Testing
+    needs: test-binaries
     uses: ./.github/workflows/run-test-suite.yml
     with:
       fail-fast: false
@@ -33,6 +191,7 @@ jobs:
     permissions:
       contents: read
     name: Functional Testing (Time Skipping)
+    needs: test-binaries
     uses: ./.github/workflows/run-test-suite.yml
     with:
       fail-fast: false
@@ -43,6 +202,7 @@ jobs:
     permissions:
       contents: read
     name: Acceptance Testing (Slow)
+    needs: test-binaries
     uses: ./.github/workflows/run-test-suite.yml
     with:
       fail-fast: false
@@ -53,6 +213,7 @@ jobs:
     permissions:
       contents: read
     name: Acceptance Testing (Fast)
+    needs: test-binaries
     uses: ./.github/workflows/run-test-suite.yml
     with:
       fail-fast: false
