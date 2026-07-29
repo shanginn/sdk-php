@@ -156,8 +156,22 @@ jobs:
         run: |
           docker run -d --name temporal-dev -p 7233:7233 \
             temporalio/temporal server start-dev --ip 0.0.0.0 --log-level error
+          ready=0
           for i in $(seq 1 60); do
-            if (exec 3<>/dev/tcp/127.0.0.1/7233) 2>/dev/null; then exit 0; fi
+            # A TCP accept happens before the frontend can reliably serve
+            # get_system_info. Probe through the same Core connection used by
+            # the SDK, and require two consecutive successful handshakes.
+            if timeout 5 php -r '
+              require "vendor/autoload.php";
+              Async\await(Async\spawn(
+                  static fn() => new TrueAsync\Temporal\Core\Connection("127.0.0.1:7233"),
+              ));
+            ' >/dev/null 2>&1; then
+              ready=$((ready + 1))
+              if [ "$ready" -ge 2 ]; then exit 0; fi
+            else
+              ready=0
+            fi
             sleep 1
           done
           echo "Temporal dev server did not come up" >&2
