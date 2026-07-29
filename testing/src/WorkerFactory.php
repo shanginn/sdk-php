@@ -4,46 +4,45 @@ declare(strict_types=1);
 
 namespace Temporal\Testing;
 
-use Psr\Log\LoggerInterface;
-use Psr\Log\NullLogger;
 use Temporal\Client\WorkflowClient;
 use Temporal\DataConverter\DataConverter;
 use Temporal\DataConverter\DataConverterInterface;
-use Temporal\Exception\ExceptionInterceptor;
-use Temporal\Exception\ExceptionInterceptorInterface;
-use Temporal\Interceptor\PipelineProvider;
-use Temporal\Interceptor\SimplePipelineProvider;
-use Temporal\Internal\Interceptor\Pipeline;
-use Temporal\Internal\ServiceContainer;
-use Temporal\Internal\Workflow\Logger;
-use Temporal\Plugin\CompositePipelineProvider;
 use Temporal\Plugin\PluginRegistry;
-use Temporal\Plugin\WorkerPluginContext;
-use Temporal\Plugin\WorkerPluginInterface;
 use Temporal\Worker\ActivityInvocationCache\ActivityInvocationCacheInterface;
-use Temporal\Worker\ActivityInvocationCache\RoadRunnerActivityInvocationCache;
+use Temporal\Worker\ActivityInvocationCache\FileActivityInvocationCache;
 use Temporal\Worker\ServiceCredentials;
-use Temporal\Worker\Transport\Goridge;
 use Temporal\Worker\Transport\RPCConnectionInterface;
-use Temporal\Worker\Worker;
 use Temporal\Worker\WorkerInterface;
-use Temporal\Worker\WorkerOptions;
+use TrueAsync\Temporal\Core\Connection;
 
+/**
+ * Native worker factory with process-safe activity mocking.
+ */
 class WorkerFactory extends \Temporal\WorkerFactory
 {
     private ActivityInvocationCacheInterface $activityCache;
 
     public function __construct(
         DataConverterInterface $dataConverter,
-        RPCConnectionInterface $rpc,
+        ?RPCConnectionInterface $rpc = null,
         ?ServiceCredentials $credentials = null,
         ?PluginRegistry $pluginRegistry = null,
         ?WorkflowClient $client = null,
         ?ActivityInvocationCacheInterface $activityCache = null,
+        ?Connection $connection = null,
+        string $namespace = 'default',
     ) {
-        $this->activityCache = $activityCache ?? RoadRunnerActivityInvocationCache::create($dataConverter);
+        $this->activityCache = $activityCache ?? new FileActivityInvocationCache($dataConverter);
 
-        parent::__construct($dataConverter, $rpc, $credentials ?? ServiceCredentials::create(), $pluginRegistry, $client);
+        parent::__construct(
+            $dataConverter,
+            $rpc,
+            $credentials ?? ServiceCredentials::create(),
+            $pluginRegistry,
+            $client,
+            $connection,
+            $namespace,
+        );
     }
 
     /**
@@ -55,71 +54,47 @@ class WorkerFactory extends \Temporal\WorkerFactory
         ?ServiceCredentials $credentials = null,
         ?PluginRegistry $pluginRegistry = null,
         ?WorkflowClient $client = null,
+        ?Connection $connection = null,
+        ?string $namespace = null,
         ?ActivityInvocationCacheInterface $activityCache = null,
     ): static {
+        if ($rpc !== null && $connection !== null) {
+            throw new \InvalidArgumentException(
+                'Pass either a native Temporal connection or a custom worker RPC connection, not both.',
+            );
+        }
+
+        $namespace ??= self::environmentValue('TEMPORAL_NAMESPACE') ?? 'default';
+        if ($rpc === null) {
+            $connection ??= new Connection(
+                address: self::environmentValue('TEMPORAL_ADDRESS') ?? '127.0.0.1:7233',
+                apiKey: ($credentials?->apiKey ?? '') !== '' ? $credentials->apiKey : null,
+            );
+        }
+
         return new static(
             $converter ?? DataConverter::createDefault(),
-            $rpc ?? Goridge::create(),
+            $rpc,
             $credentials,
-            $pluginRegistry ?? new PluginRegistry(),
+            $pluginRegistry,
             $client,
             $activityCache,
+            $connection,
+            $namespace,
         );
     }
 
-    public function newWorker(
-        string $taskQueue = self::DEFAULT_TASK_QUEUE,
-        ?WorkerOptions $options = null,
-        ?ExceptionInterceptorInterface $exceptionInterceptor = null,
-        ?PipelineProvider $interceptorProvider = null,
-        ?LoggerInterface $logger = null,
-    ): WorkerInterface {
-        $options ??= WorkerOptions::new();
+    protected function decorateWorker(WorkerInterface $worker): WorkerInterface
+    {
+        \assert($worker instanceof \Temporal\Worker\DispatcherInterface);
 
-        $workerContext = new WorkerPluginContext(
-            taskQueue: $taskQueue,
-            workerOptions: $options,
-            exceptionInterceptor: $exceptionInterceptor,
-        );
-        $workerPlugins = $this->pluginRegistry->getPlugins(WorkerPluginInterface::class);
-        /** @see WorkerPluginInterface::configureWorker() */
-        Pipeline::prepare($workerPlugins)
-            ->with(static fn() => null, 'configureWorker')($workerContext);
+        return new WorkerMock($worker, $this->activityCache);
+    }
 
-        $options = $workerContext->getWorkerOptions();
+    private static function environmentValue(string $name): ?string
+    {
+        $value = \getenv($name);
 
-        // Merge plugin-contributed interceptors with user-provided ones
-        $provider = new CompositePipelineProvider(
-            $workerContext->getInterceptors(),
-            $interceptorProvider ?? new SimplePipelineProvider(),
-        );
-
-        $worker = new WorkerMock(
-            new Worker(
-                $taskQueue,
-                $options,
-                ServiceContainer::fromWorkerFactory(
-                    $this,
-                    $workerContext->getExceptionInterceptor() ?? ExceptionInterceptor::createDefault(),
-                    $provider,
-                    new Logger(
-                        $logger ?? new NullLogger(),
-                        $options->enableLoggingInReplay,
-                        $taskQueue,
-                    ),
-                ),
-                $this->rpc,
-            ),
-            $this->activityCache,
-        );
-
-        // Call initializeWorker hooks (forward order)
-        /** @see WorkerPluginInterface::initializeWorker() */
-        Pipeline::prepare($workerPlugins)
-            ->with(static fn() => null, 'initializeWorker')($worker);
-
-        $this->queues->add($worker);
-
-        return $worker;
+        return \is_string($value) && $value !== '' ? $value : null;
     }
 }

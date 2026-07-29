@@ -30,7 +30,7 @@ use Temporal\Testing\Transcript\WorkflowHistoryDumper;
 use Temporal\Worker\Logger\StderrLogger;
 use Temporal\Tests\Acceptance\App\Runtime\ContainerFacade;
 use Temporal\Tests\Acceptance\App\Runtime\Feature;
-use Temporal\Tests\Acceptance\App\Runtime\RRStarter;
+use Temporal\Tests\Acceptance\App\Runtime\WorkerStarter;
 use Temporal\Tests\Acceptance\App\Runtime\State;
 use Temporal\Tests\Acceptance\App\Runtime\TemporalStarter;
 
@@ -119,9 +119,9 @@ abstract class TestCase extends \Temporal\Tests\TestCase
 
                     if (!$e instanceof SkippedTest) {
                         // Restart RR if a Error occurs
-                        $roadRunnerStarter = $container->get(RRStarter::class);
-                        $roadRunnerStarter->stop();
-                        $roadRunnerStarter->start();
+                        $workerStarter = $container->get(WorkerStarter::class);
+                        $workerStarter->stop();
+                        $workerStarter->start();
                     }
 
                     throw $e;

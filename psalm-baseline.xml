@@ -1120,21 +1120,6 @@
       <code><![CDATA[$request->getOptions()['name']]]></code>
     </PossiblyUndefinedStringArrayOffset>
   </file>
-  <file src="src/Worker/ActivityInvocationCache/RoadRunnerActivityInvocationCache.php">
-    <ArgumentTypeCoercion>
-      <code><![CDATA[$cacheName]]></code>
-      <code><![CDATA[$host]]></code>
-    </ArgumentTypeCoercion>
-    <PossiblyUndefinedStringArrayOffset>
-      <code><![CDATA[$request->getOptions()['name']]]></code>
-    </PossiblyUndefinedStringArrayOffset>
-  </file>
-  <file src="src/Worker/ChildWorkflowInvocationCache/RoadRunnerChildWorkflowInvocationCache.php">
-    <ArgumentTypeCoercion>
-      <code><![CDATA[$cacheName]]></code>
-      <code><![CDATA[$host]]></code>
-    </ArgumentTypeCoercion>
-  </file>
   <file src="src/Worker/InvocationResult.php">
     <PossiblyNullArgument>
       <code><![CDATA[$dataConverter]]></code>
@@ -1250,45 +1235,6 @@
       <code><![CDATA[$options['info']]]></code>
     </ImpureMethodCall>
   </file>
-  <file src="src/Worker/Transport/Goridge.php">
-    <ArgumentTypeCoercion>
-      <code><![CDATA[$env->getRPCAddress()]]></code>
-      <code><![CDATA[$method]]></code>
-    </ArgumentTypeCoercion>
-  </file>
-  <file src="src/Worker/Transport/RoadRunner.php">
-    <ArgumentTypeCoercion>
-      <code><![CDATA[$env->getRelayAddress()]]></code>
-    </ArgumentTypeCoercion>
-    <DocblockTypeContradiction>
-      <code><![CDATA[$payload === null]]></code>
-    </DocblockTypeContradiction>
-    <InternalClass>
-      <code><![CDATA[new Payload($frame, $json)]]></code>
-    </InternalClass>
-    <InternalMethod>
-      <code><![CDATA[new Payload($frame, $json)]]></code>
-    </InternalMethod>
-    <InternalProperty>
-      <code><![CDATA[$payload->body]]></code>
-      <code><![CDATA[$payload->header]]></code>
-    </InternalProperty>
-    <PossiblyInvalidArgument>
-      <code><![CDATA[$e->getCode()]]></code>
-      <code><![CDATA[$e->getCode()]]></code>
-      <code><![CDATA[$e->getCode()]]></code>
-      <code><![CDATA[$e->getCode()]]></code>
-    </PossiblyInvalidArgument>
-    <RedundantCondition>
-      <code><![CDATA[$result]]></code>
-    </RedundantCondition>
-    <TooManyArguments>
-      <code><![CDATA[encode]]></code>
-    </TooManyArguments>
-    <TypeDoesNotContainNull>
-      <code><![CDATA[[]]]></code>
-    </TypeDoesNotContainNull>
-  </file>
   <file src="src/Worker/Worker.php">
     <ArgumentTypeCoercion>
       <code><![CDATA[$type]]></code>
@@ -1345,15 +1291,6 @@
       <code><![CDATA[dispatch]]></code>
       <code><![CDATA[update]]></code>
     </UndefinedInterfaceMethod>
-    <UnsafeInstantiation>
-      <code><![CDATA[new static(
-            $converter ?? DataConverter::createDefault(),
-            $rpc ?? Goridge::create(),
-            $credentials,
-            $pluginRegistry,
-            $client,
-        )]]></code>
-    </UnsafeInstantiation>
   </file>
   <file src="src/Workflow.php">
     <UndefinedInterfaceMethod>
@@ -1480,16 +1417,6 @@
     <RiskyTruthyFalsyComparison>
       <code><![CDATA[\getmypid()]]></code>
     </RiskyTruthyFalsyComparison>
-  </file>
-  <file src="testing/src/Transcript/WireFrameDecoder.php">
-    <PossiblyNullArgument>
-      <code><![CDATA[$message->getHeader()]]></code>
-      <code><![CDATA[$message->getPayloads()]]></code>
-    </PossiblyNullArgument>
-    <TooManyTemplateParams>
-      <code><![CDATA[$fields]]></code>
-      <code><![CDATA[$meta]]></code>
-    </TooManyTemplateParams>
   </file>
   <file src="testing/src/Transcript/WorkflowHistoryDumper.php">
     <InvalidOperand>

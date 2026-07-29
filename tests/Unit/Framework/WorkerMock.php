@@ -23,7 +23,7 @@ use Temporal\Tests\Unit\Framework\Server\CommandHandler\CommandHandlerFactory;
 use Temporal\Tests\Unit\Framework\Server\ServerMock;
 use Temporal\Worker\DispatcherInterface;
 use Temporal\Worker\Transport\Command\ServerRequestInterface;
-use Temporal\Worker\Transport\Goridge;
+use Temporal\Worker\TrueAsync\NullRpcConnection;
 use Temporal\Worker\WorkerInterface;
 use Temporal\Worker\WorkerOptions;
 
@@ -201,7 +201,11 @@ final class WorkerMock implements WorkerInterface, DispatcherInterface
     {
         $router = new Router();
         $router->add(new Router\StartWorkflow($this->services));
-        $router->add(new Router\InvokeActivity($this->services, Goridge::create(), $this->interceptorProvider));
+        $router->add(new Router\InvokeActivity(
+            $this->services,
+            new NullRpcConnection(),
+            $this->interceptorProvider,
+        ));
         $router->add(new Router\DestroyWorkflow($this->services->running, $this->services->loop));
         $router->add(new Router\InvokeSignal($this->services->running));
 

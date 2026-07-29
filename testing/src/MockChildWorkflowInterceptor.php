@@ -16,7 +16,7 @@ use Temporal\Internal\Transport\Request\ExecuteChildWorkflow;
 use Temporal\Internal\Transport\Request\GetChildWorkflowExecution;
 use Temporal\Internal\Transport\Request\GetVersion;
 use Temporal\Worker\ChildWorkflowInvocationCache\ChildWorkflowInvocationCacheInterface;
-use Temporal\Worker\ChildWorkflowInvocationCache\RoadRunnerChildWorkflowInvocationCache;
+use Temporal\Worker\ChildWorkflowInvocationCache\FileChildWorkflowInvocationCache;
 use Temporal\Worker\InvocationFailure;
 use Temporal\Worker\InvocationMatched;
 use Temporal\Worker\Transport\Command\RequestInterface;
@@ -38,7 +38,7 @@ final class MockChildWorkflowInterceptor implements WorkflowOutboundRequestInter
         ?DataConverterInterface $dataConverter = null,
     ) {
         $this->dataConverter = $dataConverter ?? DataConverter::createDefault();
-        $this->cache = $cache ?? RoadRunnerChildWorkflowInvocationCache::create($this->dataConverter);
+        $this->cache = $cache ?? new FileChildWorkflowInvocationCache($this->dataConverter);
     }
 
     public function handleOutboundRequest(RequestInterface $request, callable $next): PromiseInterface

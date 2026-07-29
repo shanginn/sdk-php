@@ -10,7 +10,7 @@ use Temporal\Client\WorkflowStubInterface;
 use Temporal\Exception\Client\WorkflowServiceException;
 use Temporal\Tests\Acceptance\App\Attribute\Client;
 use Temporal\Tests\Acceptance\App\Attribute\Stub;
-use Temporal\Tests\Acceptance\App\Runtime\RRStarter;
+use Temporal\Tests\Acceptance\App\Runtime\WorkerStarter;
 use Temporal\Tests\Acceptance\App\TestCase;
 use Temporal\Workflow;
 use Temporal\Workflow\QueryMethod;
@@ -25,10 +25,10 @@ class TimeoutDueToNoActiveWorkersTest extends TestCase
         #[Client(timeout: 10)]
         #[Stub('Harness_Query_TimeoutDueToNoActiveWorkers')]
         WorkflowStubInterface $stub,
-        RRStarter $roadRunnerStarter,
+        WorkerStarter $workerStarter,
     ): void {
         # Stop worker
-        $roadRunnerStarter->stop();
+        $workerStarter->stop();
 
         try {
             $stub->query('simple_query')?->getValue(0);
@@ -44,7 +44,7 @@ class TimeoutDueToNoActiveWorkersTest extends TestCase
             ], 'Error code must be DEADLINE_EXCEEDED or CANCELLED. Got ' . \print_r($status, true));
         } finally {
             # Restart the worker and finish the wf
-            $roadRunnerStarter->start();
+            $workerStarter->start();
             $stub->signal('finish');
             $stub->getResult();
         }

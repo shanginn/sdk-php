@@ -4,134 +4,52 @@ declare(strict_types=1);
 
 namespace Temporal\Client\GRPC\Connection;
 
-use Temporal\Api\Workflowservice\V1\WorkflowServiceClient;
 use Temporal\Client\Common\ServerCapabilities;
+use TrueAsync\Temporal\Core\Connection as CoreConnection;
 
 /**
- * @internal
+ * Compatibility wrapper around the native TrueAsync Temporal connection.
+ *
+ * The public SDK historically exposed this interface from the `GRPC`
+ * namespace. Keeping the wrapper preserves that API while the transport is now
+ * the Rust core bridge rather than a PHP gRPC channel.
  */
 final class Connection implements ConnectionInterface
 {
     public ?ServerCapabilities $capabilities = null;
-    private WorkflowServiceClient $workflowService;
+    private bool $closed = false;
 
     /**
-     * True if ServiceClient wasn't created yet
+     * @internal Passing no Core connection is reserved for isolated transport
+     * tests whose client overrides the wire call.
      */
-    private bool $closed = true;
-
-    /**
-     * @param \Closure(): WorkflowServiceClient $clientFactory Service Client factory
-     */
-    public function __construct(
-        public \Closure $clientFactory,
-    ) {
-        // Lazy: the underlying client is created on first use (see initClient()).
-        // This lets an alternative transport (the TrueAsync Rust core) reuse the
-        // client SDK without instantiating a gRPC stub at construction time.
-    }
+    public function __construct(private readonly ?CoreConnection $core = null) {}
 
     public function isConnected(): bool
     {
-        $this->initClient();
-        return ConnectionState::from($this->workflowService->getConnectivityState(false)) === ConnectionState::Ready;
+        return !$this->closed;
     }
 
     public function connect(float $timeout): void
     {
-        $deadline = \microtime(true) + $timeout;
-        $this->initClient();
-
-        try {
-            if ($this->isConnected()) {
-                return;
-            }
-        } catch (\RuntimeException) {
-            $this->disconnect();
-            $this->initClient();
-        }
-
-        // Start connecting
-        $this->getState(true);
-        $isFiber = \Fiber::getCurrent() !== null;
-        do {
-            // Wait a bit
-            if ($isFiber) {
-                \Fiber::suspend();
-            } else {
-                $this->workflowService->waitForReady(50);
-            }
-
-            $alive = \microtime(true) < $deadline;
-            $state = $this->getState();
-        } while ($alive && $state === ConnectionState::Connecting);
-
-        $alive or throw new \RuntimeException('Failed to connect to Temporal service. Timeout exceeded.');
-        $state === ConnectionState::Idle and throw new \RuntimeException(
-            'Failed to connect to Temporal service. Channel is in idle state.',
-        );
-        $state === ConnectionState::TransientFailure and throw new \RuntimeException(
-            'Failed to connect to Temporal service. Channel is in transient failure state.',
-        );
-        $state === ConnectionState::Shutdown and throw new \RuntimeException(
-            'Failed to connect to Temporal service. Channel is in shutdown state.',
-        );
+        $this->closed = false;
     }
 
     public function disconnect(): void
     {
-        if ($this->closed) {
-            return;
-        }
-
         $this->closed = true;
         $this->capabilities = null;
-        $this->workflowService->close();
     }
 
-    /**
-     * @return WorkflowServiceClient Shouldn't be cached
-     */
-    public function getWorkflowService(): WorkflowServiceClient
+    public function getCore(): CoreConnection
     {
-        $this->initClient();
-        return $this->workflowService;
-    }
-
-    public function __destruct()
-    {
-        $this->disconnect();
-    }
-
-    private function getState(bool $tryToConnect = false): ConnectionState
-    {
-        return ConnectionState::from($this->workflowService->getConnectivityState($tryToConnect));
-    }
-
-    /**
-     * Create a new client with a new channel
-     */
-    private function initClient(): void
-    {
-        if (!$this->closed) {
-            return;
+        if ($this->closed) {
+            throw new \LogicException('The Temporal service connection is closed.');
+        }
+        if ($this->core === null) {
+            throw new \LogicException('This isolated Temporal connection has no native Core transport.');
         }
 
-        $this->workflowService = ($this->clientFactory)();
-        $this->closed = false;
-    }
-
-    /**
-     * Wait for the channel to be ready.
-     *
-     * @param float $timeout in seconds
-     *
-     * @return bool true if channel is ready
-     * @throws \Exception if channel is in FATAL_ERROR state
-     */
-    private function waitForReady(float $timeout): bool
-    {
-        /** @psalm-suppress InvalidOperand */
-        return $this->workflowService->waitForReady((int) ($timeout * 1_000_000));
+        return $this->core;
     }
 }

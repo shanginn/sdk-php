@@ -74,7 +74,7 @@ final class Downloader
             }
 
 
-            if ($assetPlatform == $systemInfo->platform && $systemInfo->os == $assetArch) {
+            if ($assetPlatform == $systemInfo->platform && $systemInfo->arch == $assetArch) {
                 return $asset;
             }
         }

@@ -22,6 +22,7 @@ use Temporal\Plugin\WorkerPluginInterface;
 use Temporal\Plugin\WorkerPluginTrait;
 use Temporal\WorkerFactory;
 use Temporal\Worker\WorkerInterface;
+use Temporal\Worker\TrueAsync\NullRpcConnection;
 
 class PluginChainTestCase extends TestCase
 {
@@ -98,7 +99,10 @@ class PluginChainTestCase extends TestCase
             }
         };
 
-        WorkerFactory::create(pluginRegistry: new PluginRegistry([$plugin]));
+        WorkerFactory::create(
+            rpc: new NullRpcConnection(),
+            pluginRegistry: new PluginRegistry([$plugin]),
+        );
 
         self::assertSame(['before', 'after'], $order);
     }
@@ -131,7 +135,10 @@ class PluginChainTestCase extends TestCase
             }
         };
 
-        $factory = WorkerFactory::create(pluginRegistry: new PluginRegistry([$plugin]));
+        $factory = WorkerFactory::create(
+            rpc: new NullRpcConnection(),
+            pluginRegistry: new PluginRegistry([$plugin]),
+        );
         $factory->newWorker('test-queue');
 
         self::assertSame(['before_config', 'after_config', 'before_init', 'after_init'], $order);

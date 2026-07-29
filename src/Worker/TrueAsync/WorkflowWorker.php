@@ -11,6 +11,8 @@ declare(strict_types=1);
 
 namespace Temporal\Worker\TrueAsync;
 
+use Coresdk\WorkflowActivation\RemoveFromCache\EvictionReason;
+use Temporal\WorkerFactory;
 use TrueAsync\Temporal\Core\Worker as CoreWorker;
 
 /**
@@ -18,7 +20,7 @@ use TrueAsync\Temporal\Core\Worker as CoreWorker;
  *
  * The Rust core long-polls the server on its own threads and hands us one
  * WorkflowActivation at a time; we run it through the reused deterministic
- * engine ({@see WorkflowWorkerFactory::processActivation}) and hand the
+ * engine ({@see WorkerFactory::processActivation}) and hand the
  * resulting WorkflowActivationCompletion back to the core.
  *
  * Unlike the activity loop, activations are processed inline rather than each in
@@ -34,7 +36,7 @@ final class WorkflowWorker
 {
     public function __construct(
         private readonly CoreWorker $core,
-        private readonly WorkflowWorkerFactory $factory,
+        private readonly WorkerFactory $factory,
         private readonly string $taskQueue,
     ) {}
 
@@ -46,6 +48,13 @@ final class WorkflowWorker
         while (($activation = $this->core->pollWorkflowActivation()) !== null) {
             $completion = $this->factory->processActivation($activation, $this->taskQueue);
             $this->core->completeWorkflowActivation($completion);
+
+            // Replay Core requires an explicit shutdown after a
+            // nondeterminism eviction. Live factories do not capture evictions,
+            // so the same event remains run-scoped and the worker keeps polling.
+            if ($this->factory->hasCapturedWorkflowEvictionReason(EvictionReason::NONDETERMINISM)) {
+                $this->core->initiateShutdown();
+            }
         }
     }
 }

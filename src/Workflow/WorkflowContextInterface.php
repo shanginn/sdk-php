@@ -129,9 +129,9 @@ interface WorkflowContextInterface extends EnvironmentInterface
     public function registerUpdate(string $name, callable $handler, ?callable $validator, string $description): static;
 
     /**
-     * Exchanges data between worker and host process.
+     * Enqueues a deterministic command for the worker runtime.
      *
-     * @param bool $waitResponse Determine if the Request requires a Response from RoadRunner.
+     * @param bool $waitResponse Whether the request requires a response.
      *
      * @internal This is an internal method
      */

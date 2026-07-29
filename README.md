@@ -1,176 +1,155 @@
 ![Temporal PHP SDK](https://raw.githubusercontent.com/temporalio/assets/main/files/w/php.png)
 
-# Temporal PHP SDK
+# Temporal PHP SDK for TrueAsync
 
-Temporal is a distributed, scalable, durable, and highly available orchestration
-engine used to execute asynchronous long-running business logic in a scalable
-and resilient way.
+[![TrueAsync CI](https://github.com/shanginn/sdk-php/actions/workflows/trueasync-ci.yml/badge.svg?branch=true-async)](https://github.com/shanginn/sdk-php/actions/workflows/trueasync-ci.yml)
+[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE.md)
 
-Temporal PHP SDK is the framework for authoring [Workflows](https://docs.temporal.io/workflows) and [Activities](https://docs.temporal.io/activities) using PHP language.
+This fork runs Temporal clients, Workflow workers, and Activity workers directly
+inside TrueAsync PHP. The Temporal Rust Core bridge performs service RPCs and
+task polling; no RoadRunner process, Goridge socket, or PHP gRPC extension is
+used.
 
-**Table of contents:**
-- [Get starting](#get-starting)
-  - [Installation](#installation)
-  - [Usage](#usage)
-- [Testing](#testing)
-- [Dev environment](#dev-environment)
-  - [Temporal CLI](#temporal-cli)
-  - [Buggregator](#buggregator)
-- [Resources](#resources)
-- [License](#license)
+The public application shape remains familiar:
 
-## Get starting
+```php
+use Temporal\Client\GRPC\ServiceClient;
+use Temporal\Client\WorkflowClient;
+use Temporal\WorkerFactory;
 
-### Installation
+$client = WorkflowClient::create(
+    ServiceClient::create('127.0.0.1:7233'),
+);
 
-Install the SDK using Composer:
-
-```bash
-composer require temporal/sdk
+$factory = WorkerFactory::create();
+$worker = $factory->newWorker('orders');
+$worker->registerWorkflowTypes(OrderWorkflow::class);
+$worker->registerActivityImplementations(new OrderActivities());
+$factory->run();
 ```
 
-[![PHP](https://img.shields.io/packagist/php-v/temporal/sdk.svg?style=flat-square&logo=php)](https://packagist.org/packages/temporal/sdk)
-[![Stable Release](https://poser.pugx.org/temporal/sdk/version?style=flat-square)](https://packagist.org/packages/temporal/sdk)
-[![Total DLoads](https://img.shields.io/packagist/dt/temporal/sdk.svg?style=flat-square)](https://packagist.org/packages/temporal/sdk/stats)
-[![License](https://img.shields.io/packagist/l/temporal/sdk.svg?style=flat-square)](LICENSE.md)
+`WorkerFactory::create()` reads `TEMPORAL_ADDRESS` (default
+`127.0.0.1:7233`) and `TEMPORAL_NAMESPACE` (default `default`). A factory may
+register multiple task queues; each gets its own Rust Core worker and all of
+them run concurrently in one structured TrueAsync scope.
 
-The SDK includes two main components: [Clients](https://docs.temporal.io/develop/php/temporal-clients) and Workers.  
-The Clients component is used to start, schedule, and manage Workflows;
-the Workers component is used to execute Workflows and Activities.
+## Requirements
 
-The Clients component requires the [`grpc`](https://pecl.php.net/package/grpc) extension,
-and the Workers component requires [RoadRunner](https://roadrunner.dev).
-It's recommended to use both components with the [`protobuf`](https://pecl.php.net/package/protobuf) extension
-in production to improve performance.
+| Component | Requirement |
+|---|---|
+| PHP | 8.6+ TrueAsync build |
+| Async runtime | `ext-true_async` |
+| Temporal Core bridge | [`ext-temporal`](https://github.com/shanginn/php-temporal) |
+| Protobuf | pure-PHP implementation included; `ext-protobuf` is optional for performance |
 
-|              | Client      | Worker      |
-|--------------|-------------|-------------|
-| RoadRunner   | —           | required    |
-| ext-grpc     | required    | —           |
-| ext-protobuf | recommended | recommended |
+The build inputs for TrueAsync PHP are
+[`true-async/php-src`](https://github.com/true-async/php-src) and
+[`true-async/php-async`](https://github.com/true-async/php-async). The native
+Temporal extension is built from
+[`shanginn/php-temporal`](https://github.com/shanginn/php-temporal).
 
-To download RoadRunner, you can use the following command:
+Until this fork is published as a stable Composer release, install its branch as
+a VCS repository:
 
 ```bash
-./vendor/bin/rr get
+composer config repositories.temporal-sdk vcs https://github.com/shanginn/sdk-php
+composer require temporal/sdk:dev-true-async
 ```
 
-### Usage
+## Client TLS and API keys
 
-If you are using [Spiral](https://github.com/spiral/framework),
-follow the [instructions in the documentation](https://spiral.dev/docs/temporal-configuration/).
+The legacy `Temporal\Client\GRPC` namespace is retained for source
+compatibility, but calls are routed through Rust Core:
 
-If you are using the SDK without integrations, the following sections of the documentation may be helpful:
-- [How to run Worker Processes](https://docs.temporal.io/develop/php/core-application#run-a-dev-worker)
-- [How to develop a basic Workflow](https://docs.temporal.io/develop/php/core-application#develop-workflows)
-- [How to connect a Temporal Client to a Temporal Service](https://docs.temporal.io/develop/php/temporal-clients#connect-to-a-dev-cluster)
-- [How to start a Workflow Execution](https://docs.temporal.io/develop/php/temporal-clients#start-workflow-execution)
+```php
+use Temporal\Client\GRPC\ServiceClient;
 
-> [!NOTE]
-> Check out [the repository with examples](https://github.com/temporalio/samples-php) of using the PHP SDK.
+$service = ServiceClient::createSSL(
+    address: 'namespace.tmprl.cloud:7233',
+    crt: '/path/to/ca.pem',
+    clientKey: '/path/to/client.key',
+    clientPem: '/path/to/client.pem',
+)->withAuthKey($_ENV['TEMPORAL_API_KEY']);
+```
 
-> [!WARNING]
-> Since version [`2.11.0`](https://github.com/temporalio/sdk-php/releases/tag/v2.11.0),
-> [feature flags](https://github.com/temporalio/sdk-php/blob/master/src/Worker/FeatureFlags.php) were introduced
-> that change the behavior of the entire PHP worker.  
-> It's recommended to disable deprecated behavior.
+Workers can receive a native connection explicitly:
 
-## Testing
+```php
+use Temporal\WorkerFactory;
+use TrueAsync\Temporal\Core\Connection;
 
-The PHP SDK includes a toolkit for testing Workflows.
-There is [documentation](https://docs.temporal.io/develop/php/testing-suite) and [dev guide](testing/README.md) on how to test a Workflow using Activity mocking.
+$factory = WorkerFactory::create(
+    connection: new Connection(
+        address: 'namespace.tmprl.cloud:7233',
+        tls: true,
+        apiKey: $_ENV['TEMPORAL_API_KEY'],
+    ),
+    namespace: 'production',
+);
+```
 
-To ensure the determinism of a Workflow,
-you can also use the [Replay API in tests](https://docs.temporal.io/develop/php/testing-suite#replay).
+## Development and testing
 
-## Dev environment
-
-Some recommendations for setting up a development environment:
-
-### Temporal CLI
-
-The [Temporal CLI](https://docs.temporal.io/cli) provides direct access to a Temporal Service via the terminal.
-You can use it to start, stop, inspect and operate on Workflows and Activities,
-and perform administrative tasks such as Namespace, Schedule, and Task Queue management.
-The Temporal CLI also includes an embedded Temporal Service suitable for use in development and CI/CD.
-It includes the Temporal Server, SQLite persistence, and the Temporal Web UI.
-
-Run the following command to start the Temporal Service in development mode:
+Start a local Temporal service:
 
 ```bash
 temporal server start-dev --log-level error
 ```
 
-Experimental features:
-- Add flags `--dynamic-config-value frontend.enableUpdateWorkflowExecution=true --dynamic-config-value frontend.enableUpdateWorkflowExecutionAsyncAccepted=true`
-to enable the [Workflow Update feature](https://docs.temporal.io/encyclopedia/workflow-message-passing#sending-updates).
-- Add flag `--dynamic-config-value frontend.enableExecuteMultiOperation=true` to enable [`updateWithStart()` feature](https://php.temporal.io/classes/Temporal-Client-WorkflowClient.html#method_updateWithStart).
-- Add flag `--dynamic-config-value system.enableEagerWorkflowStart=true` to enable the [Eager Workflow Start feature](https://docs.temporal.io/develop/advanced-start-options#eager-start).
-
-### Buggregator
-
-During development, you might need to dump a variable, throw an error trace, or simply look at the call stack.
-Since Workflows and Activities run in RoadRunner workers, you cannot use `var_dump`,
-`print_r`, `echo`, and other functions that output data to STDOUT.
-
-Instead, use [Buggregator](https://buggregator.dev) along with [Trap](https://github.com/buggregator/trap).
-In this case, dumps, traces, and logs will be sent via socket to your local Buggregator server,
-where you can view them in a convenient web interface.
-
-> [!TIP]
-> Trap is a wrapper around `symfony/var-dumper`, providing additional debugging capabilities.
-> Moreover, Trap patches var-dumper for outputting protobuf structures, which is very handy when working with Temporal.
-
-To run Buggregator in Docker, execute the command below
-and follow the [instructions](https://docs.buggregator.dev/config/var-dumper.html#configuration):
+Then run workers as ordinary PHP programs:
 
 ```bash
-docker run --rm -p 8000:8000 -p 1025:1025 -p 9912:9912 -p 9913:9913 ghcr.io/buggregator/server:latest
+php worker.php
 ```
 
-If you are not using Docker or running PHP code outside a container, you can use Trap as a compact server:
+The testing package starts worker commands directly and uses an in-memory
+activity-mocking cache. See the [testing guide](testing/README.md).
 
-```bash
-./vendor/bin/trap --ui=8000
+Offline workflow replay uses the same native Core worker:
+
+```php
+use Temporal\Testing\Replay\WorkflowReplayer;
+
+$replayer = new WorkflowReplayer(
+    workflowTypes: [OrderWorkflow::class],
+);
+$replayer->replayFromJSON('OrderWorkflow', 'history.json');
 ```
 
-Now use the `trap()`, `tr()`, or `dump()` functions to output data to Buggregator.
-Web UI will be available at `http://localhost:8000`.
+Replay completes Core eviction activations before reporting
+`NonDeterministicWorkflowException`, so deterministic histories pass and command
+mismatches fail without contacting a Temporal server.
 
-### IDE Plugin
+## Current native bridge boundaries
 
-For advanced autocomplete while coding in PHPStorm, use [Meta Storm plugin](https://github.com/xepozz/meta-storm-idea-plugin).
-The plugin provides better autocomplete and links Workflow and Activity when writing and debugging code.
+Unsupported worker options fail at registration instead of being silently
+ignored. The native bridge supports identity, heartbeat throttling, activity
+and task-queue rate limits, eager-activity controls, activity-only workers,
+legacy Build ID versioning, and Worker Deployment Versioning. It does not yet
+expose local-activity rate limiting, RoadRunner sessions, Nexus polling, or a
+distinct local-activity-only poll mode. Non-default workflow panic policy and
+registration-alias controls are also rejected until Core-equivalent behavior is
+wired end to end.
 
-## Contibuting
+Workflow code must remain deterministic. Use Temporal workflow primitives such
+as `Workflow::timer()` and `Workflow::executeActivity()`; use TrueAsync APIs in
+clients and Activities, not inside Workflow logic.
 
-We'd love your help improving the Temporal PHP SDK. Please review our [contribution guidelines](./CONTRIBUTING.md).
+## Upstream and attribution
 
-## Resources
+This repository is a TrueAsync-native fork of
+[`temporalio/sdk-php`](https://github.com/temporalio/sdk-php). Temporal’s
+conceptual and API documentation remains useful:
 
-Read the docs  
-[![Temporal Documentation](https://img.shields.io/static/v1?style=flat-square&label=&message=Documentation&logo=Temporal&color=7744ee)](https://docs.temporal.io/)
-[![PHP SDK Documentation](https://img.shields.io/static/v1?style=flat-square&label=PHP+SDK&message=Dev+guide&logo=Temporal&color=7766ee)](https://docs.temporal.io/develop/php)
-[![PHP SDK API](https://img.shields.io/static/v1?style=flat-square&label=PHP+SDK&message=API&logo=PHP&color=447723&logoColor=aa88ff)](https://php.temporal.io/)
+- [Temporal PHP developer guide](https://docs.temporal.io/develop/php)
+- [Workflows](https://docs.temporal.io/workflows)
+- [Activities](https://docs.temporal.io/activities)
+- [Temporal community forum](https://community.temporal.io/tag/php-sdk)
 
-Ask a question  
-[![Github issues](https://img.shields.io/static/v1?style=flat-square&label=&message=Issues&logo=Github&color=202020)](https://github.com/temporalio/sdk-php/issues)
-[![Slack](https://img.shields.io/static/v1?style=flat-square&label=&message=Slack&logo=Slack&color=cc4444)](https://t.mp/slack)
-[![Forum](https://img.shields.io/static/v1?style=flat-square&label=&message=Forum&logo=Discourse&color=4477ee)](https://community.temporal.io/tag/php-sdk)
-[![Discord](https://img.shields.io/static/v1?style=flat-square&label=&message=Discord&logo=Discord&color=333333)](https://discord.gg/FwmDtGQe55)
-
-Stay tuned  
-[![Read Blog](https://img.shields.io/static/v1?style=flat-square&label=&message=Read+the+Blog&logo=Temporal&color=312f2b)](https://temporal.io/blog)
-[![Temporal YT Channel](https://img.shields.io/static/v1?style=flat-square&label=&message=Watch+on+Youtube&logo=youtube&color=b9002a)](https://www.youtube.com/temporalio)
-[![X](https://img.shields.io/badge/-Follow-black?style=flat-square&logo=X)](https://x.com/temporalio)
-
-Additionally  
-[![Temporal community](https://img.shields.io/static/v1?style=flat-square&label=&message=Community&color=ff6644&logo=data:image/svg%2bxml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI5NyIgaGVpZ2h0PSI3NiI+PHBhdGggZD0iTTQyLjc0MDMgMTYuNTYyMkM0My43MjA0IDE3LjI3NzUgNDcuNjY3MyAyMC40Mjk3IDQ4LjY0NzQgMjEuMTk3OUM0OS42Mjc1IDIwLjM3NjcgNTMuNTc0NCAxNy4yNzc1IDU0LjU1NDUgMTYuNTYyMkM3NC41Mjc0IDEuNjIyMjggOTAuNTAwNSAtMi44MDE0MiA5NC45NTA3IDEuNjQ4NzhDOTkuNDAwOSA2LjA5ODk4IDk1LjAwMzcgMjIuMDQ1NSA4MC4wMzcyIDQyLjA0NUM3OS4zMjIgNDMuMDI1MSA3Ni4xNjk4IDQ2Ljk3MiA3NS40MDE2IDQ3Ljk1MjFDNzEuNjY2NiA1Mi40ODE3IDY3LjQ4MTMgNTcuMTk2OCA2Mi42ODY3IDYxLjk5MTRDNTcuODkyMSA2Ni43ODYgNTMuMjMgNzAuOTcxMyA0OC42NDc0IDc0LjcwNjNDNDQuMTE3NyA3MC45NzEzIDM5LjQwMjYgNjYuNzg2IDM0LjYwOCA2MS45OTE0QzI5LjgxMzUgNTcuMTk2OCAyNS42MjgyIDUyLjUzNDcgMjEuODkzMiA0Ny45NTIxQzIxLjA3MiA0Ni45NzIgMTcuOTcyOCA0My4wMjUxIDE3LjI1NzYgNDIuMDQ1QzIuMzE3NiAyMi4wNzIgLTIuMTA2MTEgNi4wOTg5OSAyLjM0NDA5IDEuNjQ4NzlDNi43OTQyOSAtMi44MDE0MSAyMi43NjczIDEuNjIyMjcgNDIuNzQwMyAxNi41NjIyWiIgZmlsbD0iI2ZmZiIvPjwvc3ZnPg==)](https://temporal.io/community)
-[![Awesome Temporal](https://img.shields.io/static/v1?style=flat-square&label=&message=Awesome+Temporal&logo=Awesome-Lists&color=4b4567)](https://github.com/temporalio/awesome-temporal)
-
+Fork-specific issues and source live at
+[`shanginn/sdk-php`](https://github.com/shanginn/sdk-php).
 
 ## License
 
-Temporal PHP SDK is open-sourced software licensed under the [MIT license](https://opensource.org/licenses/MIT).
-
-[![FOSSA Status](https://app.fossa.com/api/projects/git%2Bgithub.com%2Ftemporalio%2Fsdk-php.svg?type=large)](https://app.fossa.com/projects/git%2Bgithub.com%2Ftemporalio%2Fsdk-php?ref=badge_large)
+Temporal PHP SDK is open-source software licensed under the
+[MIT license](LICENSE.md).

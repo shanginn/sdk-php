@@ -4,35 +4,32 @@ declare(strict_types=1);
 
 namespace Temporal\Testing;
 
-use Spiral\RoadRunner\Console\Environment\Architecture;
-use Spiral\RoadRunner\Console\Environment\OperatingSystem;
-
 final class SystemInfo
 {
+    private const OS_DARWIN = 'darwin';
+    private const OS_LINUX = 'linux';
+    private const OS_WINDOWS = 'windows';
     private const PLATFORM_MAPPINGS = [
-        OperatingSystem::OS_DARWIN => 'macOS',
-        OperatingSystem::OS_LINUX => 'linux',
-        OperatingSystem::OS_WINDOWS => 'windows',
+        self::OS_DARWIN => 'macOS',
+        self::OS_LINUX => 'linux',
+        self::OS_WINDOWS => 'windows',
     ];
     private const ARCHITECTURE_MAPPINGS = [
         'x64' => 'amd64',
+        'x86_64' => 'amd64',
         'amd64' => 'amd64',
+        'aarch64' => 'arm64',
         'arm64' => 'arm64',
     ];
     private const TEMPORAL_EXECUTABLE_MAP = [
-        OperatingSystem::OS_DARWIN => './temporal-test-server',
-        OperatingSystem::OS_LINUX => './temporal-test-server',
-        OperatingSystem::OS_WINDOWS => 'temporal-test-server.exe',
+        self::OS_DARWIN => './temporal-test-server',
+        self::OS_LINUX => './temporal-test-server',
+        self::OS_WINDOWS => 'temporal-test-server.exe',
     ];
     private const TEMPORAL_CLI_EXECUTABLE_MAP = [
-        OperatingSystem::OS_DARWIN => './temporal',
-        OperatingSystem::OS_LINUX => './temporal',
-        OperatingSystem::OS_WINDOWS => 'temporal.exe',
-    ];
-    private const RR_EXECUTABLE_MAP = [
-        OperatingSystem::OS_DARWIN => './rr',
-        OperatingSystem::OS_LINUX => './rr',
-        OperatingSystem::OS_WINDOWS => 'rr.exe',
+        self::OS_DARWIN => './temporal',
+        self::OS_LINUX => './temporal',
+        self::OS_WINDOWS => 'temporal.exe',
     ];
 
     private function __construct(
@@ -40,23 +37,25 @@ final class SystemInfo
         public string $platform,
         public string $os,
         public string $temporalServerExecutable,
-        public string $rrExecutable,
         public string $temporalCliExecutable = 'temporal',
     ) {}
 
     public static function detect(): self
     {
-        $os = OperatingSystem::createFromGlobals();
-        $architecture = Architecture::createFromGlobals();
-        $rrBinary = \getenv('ROADRUNNER_BINARY');
+        $os = match (\PHP_OS_FAMILY) {
+            'Darwin' => self::OS_DARWIN,
+            'Windows' => self::OS_WINDOWS,
+            default => self::OS_LINUX,
+        };
+        $machine = \strtolower(\php_uname('m'));
+        $architecture = self::ARCHITECTURE_MAPPINGS[$machine] ?? 'amd64';
 
         return new self(
+            $architecture,
+            self::PLATFORM_MAPPINGS[$os],
             $os,
-            self::PLATFORM_MAPPINGS[$os] ?? self::PLATFORM_MAPPINGS[OperatingSystem::OS_LINUX],
-            self::ARCHITECTURE_MAPPINGS[$architecture] ?? self::ARCHITECTURE_MAPPINGS['amd64'],
-            self::TEMPORAL_EXECUTABLE_MAP[$os] ?? self::TEMPORAL_EXECUTABLE_MAP[OperatingSystem::OS_LINUX],
-            (\is_string($rrBinary) && $rrBinary !== '') ? $rrBinary : (self::RR_EXECUTABLE_MAP[$os] ?? self::RR_EXECUTABLE_MAP[OperatingSystem::OS_LINUX]),
-            self::TEMPORAL_CLI_EXECUTABLE_MAP[$os] ?? self::TEMPORAL_CLI_EXECUTABLE_MAP[OperatingSystem::OS_LINUX],
+            self::TEMPORAL_EXECUTABLE_MAP[$os],
+            self::TEMPORAL_CLI_EXECUTABLE_MAP[$os],
         );
     }
 }

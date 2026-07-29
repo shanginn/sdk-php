@@ -14,6 +14,7 @@ namespace Temporal\Worker\TrueAsync;
 use Coresdk\ActivityResult\Success as ActivitySuccess;
 use Coresdk\ChildWorkflow\ChildWorkflowCancellationType as CoresdkChildCancellationType;
 use Coresdk\Common\NamespacedWorkflowExecution;
+use Coresdk\WorkflowActivation\RemoveFromCache\EvictionReason;
 use Coresdk\WorkflowActivation\WorkflowActivation;
 use Coresdk\WorkflowActivation\WorkflowActivationJob;
 use Coresdk\WorkflowCommands\ActivityCancellationType as CoresdkActivityCancellationType;
@@ -46,15 +47,18 @@ use Google\Protobuf\GPBEmpty;
 use Temporal\Api\Common\V1\Memo;
 use Temporal\Api\Common\V1\Payload;
 use Temporal\Api\Common\V1\Payloads;
+use Temporal\Api\Common\V1\Priority;
 use Temporal\Api\Common\V1\RetryPolicy;
 use Temporal\Api\Common\V1\SearchAttributes;
 use Temporal\Api\Failure\V1\Failure;
+use Temporal\Api\Sdk\V1\UserMetadata;
 use Temporal\DataConverter\DataConverterInterface;
 use Temporal\DataConverter\EncodedValues;
 use Temporal\DataConverter\ValuesInterface;
 use Temporal\Exception\Failure\ApplicationFailure;
 use Temporal\Exception\Failure\CanceledFailure;
 use Temporal\Exception\Failure\FailureConverter;
+use Temporal\Interceptor\Header;
 use Temporal\Worker\Transport\Codec\CodecInterface;
 use Temporal\Worker\Transport\Command\Client\UpdateResponse;
 use Temporal\Worker\Transport\Command\CommandInterface;
@@ -64,6 +68,7 @@ use Temporal\Worker\Transport\Command\Server\ServerRequest;
 use Temporal\Worker\Transport\Command\Server\SuccessResponse;
 use Temporal\Worker\Transport\Command\Server\TickInfo;
 use Temporal\Worker\Transport\Command\ServerResponseInterface;
+use Temporal\Workflow\WorkflowExecution;
 
 /**
  * The coresdk workflow codec: the analog of the RoadRunner Json/Proto codec, but
@@ -98,7 +103,8 @@ use Temporal\Worker\Transport\Command\ServerResponseInterface;
  * replay rebuilds an identical one.
  *
  * Covered so far: workflow start/completion, timers, activities (regular and
- * local), signals, queries, cancellation (of the workflow, its timers,
+ * local), side effects (persisted through a private local activity), signals,
+ * queries, cancellation (of the workflow, its timers,
  * activities and child workflows), child workflows, continue-as-new, signalling
  * and cancelling external/child workflows, updates (validate/accept/reject/
  * complete), upserting search attributes (untyped and typed) and memo, panic
@@ -109,8 +115,21 @@ use Temporal\Worker\Transport\Command\ServerResponseInterface;
  */
 final class CoresdkWorkflowCodec implements CodecInterface
 {
+    private const GET_VERSION_PATCH_PREFIX = '__temporal_php_get_version:';
+
     private string $runId = '';
     private string $taskQueue = '';
+
+    /**
+     * Core eviction metadata observed while decoding activations.
+     *
+     * Live workers consume and discard this by default. Replay explicitly
+     * captures it so a NONDETERMINISM eviction can become a failed replay after
+     * the eviction activation has still been completed normally.
+     *
+     * @var list<array{runId: string, reason: int, reasonName: string, message: string}>
+     */
+    private array $evictions = [];
 
     /**
      * Per-run deterministic seq state, keyed by run id and surviving across the
@@ -137,6 +156,15 @@ final class CoresdkWorkflowCodec implements CodecInterface
      *     updates: array<string, string>,
      *     patchesNotified: array<string, true>,
      *     patchesMarked: array<string, true>,
+     *     versions: array<string, int>,
+     *     versioningBehavior: int,
+     *     localActivities: array<int, array{id: int, schedule: string}>,
+     *     localBackoffTimers: array<int, array{
+     *         id: int,
+     *         schedule: string,
+     *         attempt: int,
+     *         originalScheduleTime: string,
+     *     }>,
      * }>
      */
     private array $runs = [];
@@ -196,7 +224,13 @@ final class CoresdkWorkflowCodec implements CodecInterface
      */
     private array $versionResolutions = [];
 
-    public function __construct(private readonly DataConverterInterface $dataConverter) {}
+    /**
+     * @param null|callable(string, string): int $workflowVersioningBehavior
+     */
+    public function __construct(
+        private readonly DataConverterInterface $dataConverter,
+        private readonly mixed $workflowVersioningBehavior = null,
+    ) {}
 
     public function decode(string $batch, array $headers = []): iterable
     {
@@ -205,6 +239,7 @@ final class CoresdkWorkflowCodec implements CodecInterface
 
         $this->runId = $activation->getRunId();
         $this->taskQueue = $taskQueue = (string) ($headers['taskQueue'] ?? '');
+        $namespace = (string) ($headers['namespace'] ?? 'default');
         $this->isReplaying = $activation->getIsReplaying();
 
         $timestamp = $activation->getTimestamp();
@@ -217,7 +252,7 @@ final class CoresdkWorkflowCodec implements CodecInterface
         );
 
         foreach ($activation->getJobs() as $job) {
-            yield from $this->decodeJob($job, $tick, $taskQueue);
+            yield from $this->decodeJob($job, $tick, $taskQueue, $namespace);
         }
     }
 
@@ -291,7 +326,9 @@ final class CoresdkWorkflowCodec implements CodecInterface
         return [];
     }
 
-    /** Build the completion from the staged commands and query results. */
+    /**
+     * Build the completion from the staged commands and query results.
+     */
     public function encodeStaged(): string
     {
         /* A Panic staged this activation overrides everything: report a failed
@@ -308,11 +345,310 @@ final class CoresdkWorkflowCodec implements CodecInterface
         }
         $this->queryResults = [];
 
+        $successful = (new Success())->setCommands($wfCommands);
+        $versioningBehavior = $this->run()['versioningBehavior'];
+        if ($versioningBehavior !== 0) {
+            $successful->setVersioningBehavior($versioningBehavior);
+        }
+
         $completion = (new WorkflowActivationCompletion())
             ->setRunId($this->runId)
-            ->setSuccessful((new Success())->setCommands($wfCommands));
+            ->setSuccessful($successful);
 
         return $completion->serializeToString();
+    }
+
+    /**
+     * Build a failed activation completion for the current run. Used when applying
+     * the activation throws (a codec gap, an unmapped resolution, an engine or
+     * workflow-code error): reporting the workflow-task failure lets the core retry
+     * the task instead of leaving it to time out with no completion. force_cause is
+     * left unspecified, so the server treats it as a normal, retryable task failure
+     * rather than failing the workflow.
+     */
+    public function encodeFailure(\Throwable $e): string
+    {
+        /* A failed task reports no partial results or commands. */
+        $this->queryResults = [];
+        $this->staged = [];
+        $this->panic = null;
+        $this->versionResolutions = [];
+
+        $completion = (new WorkflowActivationCompletion())
+            ->setRunId($this->runId)
+            ->setFailed(
+                (new CompletionFailure())->setFailure(
+                    FailureConverter::mapExceptionToFailure($e, $this->dataConverter),
+                ),
+            );
+
+        return $completion->serializeToString();
+    }
+
+    /**
+     * @return list<array{runId: string, reason: int, reasonName: string, message: string}>
+     */
+    public function drainEvictions(): array
+    {
+        $evictions = $this->evictions;
+        $this->evictions = [];
+
+        return $evictions;
+    }
+
+    /**
+     * Translate one SDK UpdateResponse (the validation or completion phase) into a
+     * coresdk UpdateResponse command, stamped with the update's protocol instance.
+     * A failure — a rejected validator or a handler that threw after acceptance —
+     * is 'rejected' either way (per the core protocol); a passed validation is
+     * 'accepted'; a successful handler is 'completed' with its single result. The
+     * factory routes these here because UpdateResponse is a ResponseInterface, not
+     * a RequestInterface, so it never reaches {@see stage}.
+     */
+    public function stageUpdateResponse(UpdateResponse $response): void
+    {
+        $updateId = (string) ($response->getOptions()['id'] ?? '');
+        $protocolInstanceId = $this->runs[$this->runId]['updates'][$updateId]
+            ?? throw new \RuntimeException(
+                "no protocol instance for update {$updateId} on run {$this->runId}",
+            );
+
+        $update = (new CoresdkUpdateResponse())->setProtocolInstanceId($protocolInstanceId);
+
+        $failure = $response->getFailure();
+        if ($failure !== null) {
+            $update->setRejected(FailureConverter::mapExceptionToFailure($failure, $this->dataConverter));
+        } elseif ($response->getCommand() === UpdateResponse::COMMAND_VALIDATED) {
+            $update->setAccepted(new GPBEmpty());
+        } else {
+            $values = $response->getPayloads();
+            if ($values instanceof EncodedValues) {
+                $values->setDataConverter($this->dataConverter);
+            }
+            $payloads = $values?->toPayloads()->getPayloads();
+            $result = $payloads !== null && \count($payloads) > 0 ? $payloads[0] : new Payload();
+            $update->setCompleted($result);
+        }
+
+        $this->staged[] = (new WorkflowCommand())->setUpdateResponse($update);
+    }
+
+    /**
+     * Drain the getVersion resolutions captured this activation. The factory
+     * dispatches each as a SuccessResponse so the awaiting getVersion promise
+     * resolves and the workflow advances within the same activation.
+     *
+     * @return list<array{id: int, version: int}>
+     */
+    public function drainVersionResolutions(): array
+    {
+        $resolutions = $this->versionResolutions;
+        $this->versionResolutions = [];
+
+        return $resolutions;
+    }
+
+    /**
+     * Record a resolved query; emitted as a QueryResult command by encode().
+     */
+    public function recordQuerySuccess(string $queryId, ?ValuesInterface $values): void
+    {
+        if ($values instanceof EncodedValues) {
+            $values->setDataConverter($this->dataConverter);
+        }
+
+        $payloads = $values?->toPayloads()->getPayloads();
+        $response = $payloads !== null && \count($payloads) > 0 ? $payloads[0] : new Payload();
+
+        $this->queryResults[] = (new QueryResult())
+            ->setQueryId($queryId)
+            ->setSucceeded((new QuerySuccess())->setResponse($response));
+    }
+
+    /**
+     * Record a failed query (unknown type, handler threw); see encode().
+     */
+    public function recordQueryFailure(string $queryId, \Throwable $error): void
+    {
+        $this->queryResults[] = (new QueryResult())
+            ->setQueryId($queryId)
+            ->setFailed(FailureConverter::mapExceptionToFailure($error, $this->dataConverter));
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private static function protobufJson(object $message): array
+    {
+        return \json_decode(
+            $message->serializeToJsonString(),
+            true,
+            512,
+            JSON_THROW_ON_ERROR,
+        );
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private static function retryPolicyInfo(RetryPolicy $policy): array
+    {
+        return [
+            'initial_interval' => self::durationParts($policy->getInitialInterval()),
+            'backoff_coefficient' => $policy->getBackoffCoefficient(),
+            'maximum_interval' => self::durationParts($policy->getMaximumInterval()),
+            'maximum_attempts' => $policy->getMaximumAttempts(),
+            'non_retryable_error_types' => \iterator_to_array($policy->getNonRetryableErrorTypes()),
+        ];
+    }
+
+    /**
+     * @return array{seconds: int|string, nanos: int}
+     */
+    private static function durationParts(?Duration $duration): array
+    {
+        return [
+            'seconds' => $duration?->getSeconds() ?? 0,
+            'nanos' => $duration?->getNanos() ?? 0,
+        ];
+    }
+
+    private static function durationNanoseconds(?Duration $duration): int
+    {
+        return $duration === null
+            ? 0
+            : ((int) $duration->getSeconds() * 1_000_000_000) + $duration->getNanos();
+    }
+
+    /**
+     * Map the SDK's ValueType (its enum *value*, e.g. 'int64') to the search-
+     * attribute `type` metadata name the server tags payloads with (e.g. 'Int').
+     * Unknown types yield '' so the payload is sent untagged (the server can still
+     * resolve it from the registered attribute).
+     */
+    private static function searchAttributeType(string $valueType): string
+    {
+        return match ($valueType) {
+            'bool' => 'Bool',
+            'float64' => 'Double',
+            'int64' => 'Int',
+            'keyword' => 'Keyword',
+            'keyword_list' => 'KeywordList',
+            'string' => 'Text',
+            'datetime' => 'Datetime',
+            default => '',
+        };
+    }
+
+    private static function applyActivityTimeouts(ScheduleActivity $schedule, array $ao): void
+    {
+        if (($ns = (int) ($ao['ScheduleToCloseTimeout'] ?? 0)) > 0) {
+            $schedule->setScheduleToCloseTimeout(self::nsToDuration($ns));
+        }
+
+        if (($ns = (int) ($ao['ScheduleToStartTimeout'] ?? 0)) > 0) {
+            $schedule->setScheduleToStartTimeout(self::nsToDuration($ns));
+        }
+
+        if (($ns = (int) ($ao['StartToCloseTimeout'] ?? 0)) > 0) {
+            $schedule->setStartToCloseTimeout(self::nsToDuration($ns));
+        }
+
+        if (($ns = (int) ($ao['HeartbeatTimeout'] ?? 0)) > 0) {
+            $schedule->setHeartbeatTimeout(self::nsToDuration($ns));
+        }
+    }
+
+    private static function retryPolicy(array $r): RetryPolicy
+    {
+        $policy = new RetryPolicy();
+
+        $initial = $r['InitialInterval'] ?? $r['initial_interval'] ?? null;
+        if (\is_array($initial)) {
+            $policy->setInitialInterval(self::durationFromParts($initial));
+        }
+
+        $maximum = $r['MaximumInterval'] ?? $r['maximum_interval'] ?? null;
+        if (\is_array($maximum)) {
+            $policy->setMaximumInterval(self::durationFromParts($maximum));
+        }
+
+        $backoff = $r['BackoffCoefficient'] ?? $r['backoff_coefficient'] ?? null;
+        if ($backoff !== null) {
+            $policy->setBackoffCoefficient((float) $backoff);
+        }
+
+        $attempts = $r['MaximumAttempts'] ?? $r['maximum_attempts'] ?? null;
+        if ($attempts !== null) {
+            $policy->setMaximumAttempts((int) $attempts);
+        }
+
+        $nonRetryable = $r['NonRetryableErrorTypes'] ?? $r['non_retryable_error_types'] ?? [];
+        if (\is_array($nonRetryable) && $nonRetryable !== []) {
+            $policy->setNonRetryableErrorTypes(\array_values($nonRetryable));
+        }
+
+        return $policy;
+    }
+
+    private static function priority(array $value): Priority
+    {
+        return (new Priority())
+            ->setPriorityKey((int) ($value['PriorityKey'] ?? $value['priority_key'] ?? 0))
+            ->setFairnessKey((string) ($value['FairnessKey'] ?? $value['fairness_key'] ?? ''))
+            ->setFairnessWeight((float) ($value['FairnessWeight'] ?? $value['fairness_weight'] ?? 0.0));
+    }
+
+    private static function msToDuration(int $ms): Duration
+    {
+        return (new Duration())
+            ->setSeconds(\intdiv($ms, 1000))
+            ->setNanos(($ms % 1000) * 1_000_000);
+    }
+
+    private static function nsToDuration(int $ns): Duration
+    {
+        return (new Duration())
+            ->setSeconds(\intdiv($ns, 1_000_000_000))
+            ->setNanos($ns % 1_000_000_000);
+    }
+
+    private static function durationFromParts(array $d): Duration
+    {
+        return (new Duration())
+            ->setSeconds((int) ($d['seconds'] ?? 0))
+            ->setNanos((int) ($d['nanos'] ?? 0));
+    }
+
+    private static function versionPatchId(string $changeId, int $version): string
+    {
+        return self::GET_VERSION_PATCH_PREFIX . \rawurlencode($changeId) . ':' . $version;
+    }
+
+    /**
+     * @return array{changeId: string, version: int}|null
+     */
+    private static function versionFromPatchId(string $patchId): ?array
+    {
+        if (!\str_starts_with($patchId, self::GET_VERSION_PATCH_PREFIX)) {
+            return null;
+        }
+
+        $encoded = \substr($patchId, \strlen(self::GET_VERSION_PATCH_PREFIX));
+        $separator = \strrpos($encoded, ':');
+        if ($separator === false) {
+            return null;
+        }
+
+        $version = \substr($encoded, $separator + 1);
+        if (\preg_match('/^-?\d+$/D', $version) !== 1) {
+            return null;
+        }
+
+        return [
+            'changeId' => \rawurldecode(\substr($encoded, 0, $separator)),
+            'version' => (int) $version,
+        ];
     }
 
     /**
@@ -366,50 +702,27 @@ final class CoresdkWorkflowCodec implements CodecInterface
     }
 
     /**
-     * Build a failed activation completion for the current run. Used when applying
-     * the activation throws (a codec gap, an unmapped resolution, an engine or
-     * workflow-code error): reporting the workflow-task failure lets the core retry
-     * the task instead of leaving it to time out with no completion. force_cause is
-     * left unspecified, so the server treats it as a normal, retryable task failure
-     * rather than failing the workflow.
-     */
-    public function encodeFailure(\Throwable $e): string
-    {
-        /* A failed task reports no partial results or commands. */
-        $this->queryResults = [];
-        $this->staged = [];
-        $this->panic = null;
-        $this->versionResolutions = [];
-
-        $completion = (new WorkflowActivationCompletion())
-            ->setRunId($this->runId)
-            ->setFailed(
-                (new CompletionFailure())->setFailure(
-                    FailureConverter::mapExceptionToFailure($e, $this->dataConverter),
-                ),
-            );
-
-        return $completion->serializeToString();
-    }
-
-    /**
      * One job usually yields one engine command, but a few yield more (a failed
      * child start must reject both the start waiter and the result promise — the
      * core sends nothing further for that seq), hence the list.
      *
      * @return list<CommandInterface>
      */
-    private function decodeJob(WorkflowActivationJob $job, TickInfo $tick, string $taskQueue): array
-    {
+    private function decodeJob(
+        WorkflowActivationJob $job,
+        TickInfo $tick,
+        string $taskQueue,
+        string $namespace,
+    ): array {
         $variant = $job->getVariant();
 
         return match ($variant) {
-            'initialize_workflow' => [$this->startWorkflow($job, $tick, $taskQueue)],
+            'initialize_workflow' => [$this->startWorkflow($job, $tick, $taskQueue, $namespace)],
             'signal_workflow' => [$this->signalWorkflow($job, $tick)],
             'query_workflow' => [$this->queryWorkflow($job, $tick)],
             'cancel_workflow' => [$this->cancelWorkflow($tick)],
-            'fire_timer' => [$this->fireTimer($job, $tick)],
-            'resolve_activity' => [$this->resolveActivity($job, $tick)],
+            'fire_timer' => $this->fireTimer($job, $tick),
+            'resolve_activity' => $this->resolveActivity($job, $tick),
             'resolve_child_workflow_execution_start' => $this->resolveChildStart($job, $tick),
             'resolve_child_workflow_execution' => [$this->resolveChild($job, $tick)],
             'resolve_signal_external_workflow' => [$this->resolveSignalExternal($job, $tick)],
@@ -417,7 +730,7 @@ final class CoresdkWorkflowCodec implements CodecInterface
             'do_update' => [$this->doUpdate($job, $tick)],
             'notify_has_patch' => $this->notifyHasPatch($job),
             'update_random_seed' => $this->updateRandomSeed(),
-            'remove_from_cache' => [$this->removeFromCache($tick)],
+            'remove_from_cache' => [$this->removeFromCache($job, $tick)],
             default => throw new \RuntimeException("coresdk workflow job not yet supported: {$variant}"),
         };
     }
@@ -447,8 +760,22 @@ final class CoresdkWorkflowCodec implements CodecInterface
      * run's process down via the DestroyWorkflow route; the completion carries no
      * commands. Drop the seq map too so a later replay rebuilds it from scratch.
      */
-    private function removeFromCache(TickInfo $tick): ServerRequest
+    private function removeFromCache(WorkflowActivationJob $job, TickInfo $tick): ServerRequest
     {
+        $eviction = $job->getRemoveFromCache();
+        $reason = $eviction?->getReason() ?? EvictionReason::UNSPECIFIED;
+        try {
+            $reasonName = EvictionReason::name($reason);
+        } catch (\UnexpectedValueException) {
+            $reasonName = 'UNKNOWN';
+        }
+        $this->evictions[] = [
+            'runId' => $this->runId,
+            'reason' => $reason,
+            'reasonName' => $reasonName,
+            'message' => $eviction?->getMessage() ?? '',
+        ];
+
         $request = new ServerRequest(
             name: 'DestroyWorkflow',
             info: $tick,
@@ -465,13 +792,44 @@ final class CoresdkWorkflowCodec implements CodecInterface
      * seq we stamped on the StartTimer command; mapping it back to the current
      * run's SDK command id lets Client::dispatch resolve the matching promise.
      */
-    private function fireTimer(WorkflowActivationJob $job, TickInfo $tick): SuccessResponse
+    private function fireTimer(WorkflowActivationJob $job, TickInfo $tick): array
     {
-        return new SuccessResponse(
-            values: null,
-            id: $this->idForSeq($job->getFireTimer()->getSeq()),
-            info: $tick,
-        );
+        $seq = $job->getFireTimer()->getSeq();
+        $run = &$this->run();
+        $backoff = $run['localBackoffTimers'][$seq] ?? null;
+
+        if ($backoff === null) {
+            return [new SuccessResponse(
+                values: null,
+                id: $this->idForSeq($seq),
+                info: $tick,
+            )];
+        }
+
+        unset($run['localBackoffTimers'][$seq]);
+
+        $retrySeq = $this->remapSeqFor($backoff['id'], 'local-activity');
+        $schedule = new ScheduleLocalActivity();
+        $schedule->mergeFromString($backoff['schedule']);
+        $schedule
+            ->setSeq($retrySeq)
+            ->setAttempt($backoff['attempt']);
+
+        $originalScheduleTime = new \Google\Protobuf\Timestamp();
+        $originalScheduleTime->mergeFromString($backoff['originalScheduleTime']);
+        $schedule->setOriginalScheduleTime($originalScheduleTime);
+
+        $serialized = $schedule->serializeToString();
+        $run['localActivities'][$retrySeq] = [
+            'id' => $backoff['id'],
+            'schedule' => $serialized,
+        ];
+        $this->staged[] = (new WorkflowCommand())->setScheduleLocalActivity($schedule);
+
+        /* The timer only drives the retry state machine inside this codec. The
+           workflow's original local-activity promise must stay pending until
+           the retried local activity itself resolves. */
+        return [];
     }
 
     /**
@@ -480,13 +838,22 @@ final class CoresdkWorkflowCodec implements CodecInterface
      * Temporal failure the engine rejects the promise with. The job's seq maps
      * back to the current run's ScheduleActivity command id.
      */
-    private function resolveActivity(WorkflowActivationJob $job, TickInfo $tick): ServerResponseInterface
+    private function resolveActivity(WorkflowActivationJob $job, TickInfo $tick): array
     {
         $resolve = $job->getResolveActivity();
-        $id = $this->idForSeq($resolve->getSeq());
+        $seq = $resolve->getSeq();
+        $id = $this->idForSeq($seq);
         $resolution = $resolve->getResult();
 
-        return match ($resolution->getStatus()) {
+        if ($resolution->getStatus() === 'backoff') {
+            $this->stageLocalActivityBackoff($seq, $id, $resolution->getBackoff());
+
+            return [];
+        }
+
+        unset($this->run()['localActivities'][$seq]);
+
+        return [match ($resolution->getStatus()) {
             'completed' => $this->activityCompleted($resolution->getCompleted(), $id, $tick),
             'failed' => new FailureResponse(
                 failure: FailureConverter::mapFailureToException(
@@ -507,10 +874,56 @@ final class CoresdkWorkflowCodec implements CodecInterface
             default => throw new \RuntimeException(
                 "coresdk activity resolution not supported: {$resolution->getStatus()}",
             ),
-        };
+        }];
     }
 
-    /** A single optional result payload as decoded values, or null when absent. */
+    /**
+     * A local retry whose delay exceeds Core's local retry threshold is handed
+     * back to the language as DoBackoff. Keep the workflow's existing promise
+     * pending, schedule a deterministic workflow timer, then have fireTimer()
+     * issue the same local activity again with Core's attempt and original
+     * schedule time. This is the same two-stage state machine used by the Rust
+     * SDK; none of the delay occurs on the real TrueAsync reactor.
+     */
+    private function stageLocalActivityBackoff(
+        int $activitySeq,
+        int $commandId,
+        \Coresdk\ActivityResult\DoBackoff $backoff,
+    ): void {
+        $run = &$this->run();
+        $activity = $run['localActivities'][$activitySeq] ?? null;
+
+        if ($activity === null) {
+            throw new \RuntimeException(
+                "DoBackoff received for non-local or unknown activity seq {$activitySeq}",
+            );
+        }
+
+        $duration = $backoff->getBackoffDuration()
+            ?? throw new \RuntimeException("DoBackoff for seq {$activitySeq} has no duration");
+        $originalScheduleTime = $backoff->getOriginalScheduleTime()
+            ?? throw new \RuntimeException("DoBackoff for seq {$activitySeq} has no original schedule time");
+
+        unset($run['localActivities'][$activitySeq]);
+
+        $timerSeq = $this->remapSeqFor($commandId, 'timer');
+        $run['localBackoffTimers'][$timerSeq] = [
+            'id' => $commandId,
+            'schedule' => $activity['schedule'],
+            'attempt' => $backoff->getAttempt(),
+            'originalScheduleTime' => $originalScheduleTime->serializeToString(),
+        ];
+
+        $this->staged[] = (new WorkflowCommand())->setStartTimer(
+            (new StartTimer())
+                ->setSeq($timerSeq)
+                ->setStartToFireTimeout($duration),
+        );
+    }
+
+    /**
+     * A single optional result payload as decoded values, or null when absent.
+     */
     private function valuesFromPayload(?Payload $payload): ?ValuesInterface
     {
         return $payload !== null
@@ -552,15 +965,18 @@ final class CoresdkWorkflowCodec implements CodecInterface
 
         switch ($resolve->getStatus()) {
             case 'succeeded':
-                /* The keys follow WorkflowExecution's Marshal names: the stub
-                   hydrates the value via getValue(0, WorkflowExecution::class). */
-                $execution = [
-                    'ID' => $child['wfId'] ?? '',
-                    'RunID' => $resolve->getSucceeded()->getRunId(),
-                ];
-
                 return [new SuccessResponse(
-                    values: EncodedValues::fromValues([$execution], $this->dataConverter),
+                    /*
+                     * Values created with fromValues() are already decoded, so
+                     * getValue(..., WorkflowExecution::class) returns the value
+                     * verbatim. Return the DTO itself; returning its marshalled
+                     * array makes the typed child stub reject its deferred
+                     * signal callback with a TypeError.
+                     */
+                    values: EncodedValues::fromValues([new WorkflowExecution(
+                        $child['wfId'] ?? '',
+                        $resolve->getSucceeded()->getRunId(),
+                    )], $this->dataConverter),
                     id: $getId,
                     info: $tick,
                 )];
@@ -600,7 +1016,9 @@ final class CoresdkWorkflowCodec implements CodecInterface
         );
     }
 
-    /** The child workflow itself resolved: answer the ExecuteChildWorkflow promise. */
+    /**
+     * The child workflow itself resolved: answer the ExecuteChildWorkflow promise.
+     */
     private function resolveChild(WorkflowActivationJob $job, TickInfo $tick): ServerResponseInterface
     {
         $resolve = $job->getResolveChildWorkflowExecution();
@@ -715,59 +1133,16 @@ final class CoresdkWorkflowCodec implements CodecInterface
             ],
             payloads: EncodedValues::fromPayloads($payloads, $this->dataConverter),
             id: $this->runId,
+            header: Header::fromPayloadCollection($update->getHeaders(), $this->dataConverter),
         );
     }
 
     /**
-     * Translate one SDK UpdateResponse (the validation or completion phase) into a
-     * coresdk UpdateResponse command, stamped with the update's protocol instance.
-     * A failure — a rejected validator or a handler that threw after acceptance —
-     * is 'rejected' either way (per the core protocol); a passed validation is
-     * 'accepted'; a successful handler is 'completed' with its single result. The
-     * factory routes these here because UpdateResponse is a ResponseInterface, not
-     * a RequestInterface, so it never reaches {@see stage}.
-     */
-    public function stageUpdateResponse(UpdateResponse $response): void
-    {
-        $updateId = (string) ($response->getOptions()['id'] ?? '');
-        $protocolInstanceId = $this->runs[$this->runId]['updates'][$updateId]
-            ?? throw new \RuntimeException(
-                "no protocol instance for update {$updateId} on run {$this->runId}",
-            );
-
-        $update = (new CoresdkUpdateResponse())->setProtocolInstanceId($protocolInstanceId);
-
-        $failure = $response->getFailure();
-        if ($failure !== null) {
-            $update->setRejected(FailureConverter::mapExceptionToFailure($failure, $this->dataConverter));
-        } elseif ($response->getCommand() === UpdateResponse::COMMAND_VALIDATED) {
-            $update->setAccepted(new GPBEmpty());
-        } else {
-            $values = $response->getPayloads();
-            if ($values instanceof EncodedValues) {
-                $values->setDataConverter($this->dataConverter);
-            }
-            $payloads = $values?->toPayloads()->getPayloads();
-            $result = $payloads !== null && \count($payloads) > 0 ? $payloads[0] : new Payload();
-            $update->setCompleted($result);
-        }
-
-        $this->staged[] = (new WorkflowCommand())->setUpdateResponse($update);
-    }
-
-    /**
-     * Resolve a getVersion(changeId, minSupported, maxSupported) call against the
-     * coresdk patch mechanism. The core has only a boolean notion (a change id is
-     * either present in history or not), so the version is binary: a present
-     * change yields maxSupported, an absent one minSupported (which is
-     * Workflow::DEFAULT_VERSION when the change point was added to pre-existing
-     * code — the workflow then takes its original branch). A change in effect is
-     * recorded with a SetPatchMarker, once per run (patchesMarked) but re-issued
-     * after an eviction: on replay the core delivers notify_has_patch up front
-     * (populating patchesNotified, which decides the version), and the marker
-     * command must still be re-emitted to match the one already in history, or the
-     * core fails the task for non-determinism. The version is queued for the
-     * factory to dispatch back to the awaiting request.
+     * Resolve getVersion through Core's boolean patch primitive while retaining
+     * PHP's integer version semantics. The marker id embeds both change id and
+     * the version selected on the first live execution. On replay Core reports
+     * that exact id through notify_has_patch, so raising maxSupported later does
+     * not silently move existing executions to a newer branch.
      */
     private function stageGetVersion(RequestInterface $command): void
     {
@@ -777,26 +1152,57 @@ final class CoresdkWorkflowCodec implements CodecInterface
         $maxSupported = (int) ($options['maxSupported'] ?? 0);
 
         $run = &$this->run();
+        $version = $run['versions'][$changeId] ?? null;
+        $markerId = null;
 
-        /* The change is in effect if the core told us its marker is in history
-           (notify_has_patch), or this is a live task meeting it for the first
-           time. Replaying with no notification means the marker is not in this
-           run's history — the change was not part of it, so take the old branch. */
-        $present = isset($run['patchesNotified'][$changeId]) || !$this->isReplaying;
+        if ($version === null) {
+            foreach ($run['patchesNotified'] as $notifiedId => $_) {
+                $recorded = self::versionFromPatchId($notifiedId);
+                if ($recorded === null || $recorded['changeId'] !== $changeId) {
+                    continue;
+                }
+                if ($version !== null && $version !== $recorded['version']) {
+                    throw new \RuntimeException("Conflicting versions recorded for change {$changeId}.");
+                }
+                $version = $recorded['version'];
+                $markerId = $notifiedId;
+            }
 
-        if ($present && !isset($run['patchesMarked'][$changeId])) {
-            /* Issue the SetPatchMarker once per run. It must be re-issued on
-               replay too: the core fails the task for non-determinism if a
-               non-deprecated marker in history has no corresponding command. */
+            if ($version === null) {
+                $version = $this->isReplaying ? $minSupported : $maxSupported;
+                if (!$this->isReplaying) {
+                    $markerId = self::versionPatchId($changeId, $version);
+                }
+            }
+
+            $run['versions'][$changeId] = $version;
+        } else {
+            $candidate = self::versionPatchId($changeId, $version);
+            if (isset($run['patchesNotified'][$candidate]) || !$this->isReplaying) {
+                $markerId = $candidate;
+            }
+        }
+
+        if ($version < $minSupported || $version > $maxSupported) {
+            throw new \RuntimeException(\sprintf(
+                'Recorded version %d for change %s is outside the supported range [%d, %d].',
+                $version,
+                $changeId,
+                $minSupported,
+                $maxSupported,
+            ));
+        }
+
+        if ($markerId !== null && !isset($run['patchesMarked'][$markerId])) {
             $this->staged[] = (new WorkflowCommand())->setSetPatchMarker(
-                (new SetPatchMarker())->setPatchId($changeId),
+                (new SetPatchMarker())->setPatchId($markerId),
             );
-            $run['patchesMarked'][$changeId] = true;
+            $run['patchesMarked'][$markerId] = true;
         }
 
         $this->versionResolutions[] = [
             'id' => $command->getID(),
-            'version' => $present ? $maxSupported : $minSupported,
+            'version' => $version,
         ];
     }
 
@@ -831,21 +1237,6 @@ final class CoresdkWorkflowCodec implements CodecInterface
     }
 
     /**
-     * Drain the getVersion resolutions captured this activation. The factory
-     * dispatches each as a SuccessResponse so the awaiting getVersion promise
-     * resolves and the workflow advances within the same activation.
-     *
-     * @return list<array{id: int, version: int}>
-     */
-    public function drainVersionResolutions(): array
-    {
-        $resolutions = $this->versionResolutions;
-        $this->versionResolutions = [];
-
-        return $resolutions;
-    }
-
-    /**
      * Map an SDK command id to this run's deterministic seq, assigning the next
      * one on first sight. Stable across replays because the workflow issues its
      * commands in the same order every time, unlike the process-global id. The
@@ -868,11 +1259,44 @@ final class CoresdkWorkflowCodec implements CodecInterface
         return $seq;
     }
 
-    /** The current run's seq state, created on first touch. */
+    /**
+     * Assign a fresh seq to an existing SDK command id. Local activity timer
+     * backoff is one logical SDK promise but multiple Core operations (activity,
+     * timer, retry activity), so cancellation must always follow its currently
+     * active operation.
+     */
+    private function remapSeqFor(int $commandId, string $kind): int
+    {
+        $run = &$this->run();
+        $seq = $run['next']++;
+        $run['idToSeq'][$commandId] = $seq;
+        $run['seqToId'][$seq] = $commandId;
+        $run['kind'][$seq] = $kind;
+
+        return $seq;
+    }
+
+    /**
+     * The current run's seq state, created on first touch.
+     */
     private function &run(): array
     {
         $run = &$this->runs[$this->runId];
-        $run ??= ['next' => 1, 'idToSeq' => [], 'seqToId' => [], 'kind' => [], 'wfId' => '', 'children' => [], 'updates' => [], 'patchesNotified' => [], 'patchesMarked' => []];
+        $run ??= [
+            'next' => 1,
+            'idToSeq' => [],
+            'seqToId' => [],
+            'kind' => [],
+            'wfId' => '',
+            'children' => [],
+            'updates' => [],
+            'patchesNotified' => [],
+            'patchesMarked' => [],
+            'versions' => [],
+            'versioningBehavior' => 0,
+            'localActivities' => [],
+            'localBackoffTimers' => [],
+        ];
 
         return $run;
     }
@@ -908,41 +1332,29 @@ final class CoresdkWorkflowCodec implements CodecInterface
     private function queryWorkflow(WorkflowActivationJob $job, TickInfo $tick): ServerRequest
     {
         $query = $job->getQueryWorkflow();
+        // Core marks a query activation as replaying while it restores workflow
+        // state, but the query handler itself is a live read. The legacy host
+        // exposed that handler with replay=false, which is also what prevents
+        // its explicit logs from being suppressed.
+        $queryTick = new TickInfo(
+            time: $tick->time,
+            historyLength: $tick->historyLength,
+            historySize: $tick->historySize,
+            continueAsNewSuggested: $tick->continueAsNewSuggested,
+            isReplaying: false,
+        );
 
         $payloads = new Payloads();
         $payloads->setPayloads(\iterator_to_array($query->getArguments()));
 
-        return new QueryServerRequest(
+        return (new QueryServerRequest(
             queryId: $query->getQueryId(),
             name: 'InvokeQuery',
-            info: $tick,
+            info: $queryTick,
             options: ['name' => $query->getQueryType()],
             payloads: EncodedValues::fromPayloads($payloads, $this->dataConverter),
             id: $this->runId,
-        );
-    }
-
-    /** Record a resolved query; emitted as a QueryResult command by encode(). */
-    public function recordQuerySuccess(string $queryId, ?ValuesInterface $values): void
-    {
-        if ($values instanceof EncodedValues) {
-            $values->setDataConverter($this->dataConverter);
-        }
-
-        $payloads = $values?->toPayloads()->getPayloads();
-        $response = $payloads !== null && \count($payloads) > 0 ? $payloads[0] : new Payload();
-
-        $this->queryResults[] = (new QueryResult())
-            ->setQueryId($queryId)
-            ->setSucceeded((new QuerySuccess())->setResponse($response));
-    }
-
-    /** Record a failed query (unknown type, handler threw); see encode(). */
-    public function recordQueryFailure(string $queryId, \Throwable $error): void
-    {
-        $this->queryResults[] = (new QueryResult())
-            ->setQueryId($queryId)
-            ->setFailed(FailureConverter::mapExceptionToFailure($error, $this->dataConverter));
+        ))->withHeader(Header::fromPayloadCollection($query->getHeaders(), $this->dataConverter));
     }
 
     /**
@@ -964,26 +1376,100 @@ final class CoresdkWorkflowCodec implements CodecInterface
             options: ['name' => $signal->getSignalName()],
             payloads: EncodedValues::fromPayloads($payloads, $this->dataConverter),
             id: $this->runId,
+            header: Header::fromPayloadCollection($signal->getHeaders(), $this->dataConverter),
         );
     }
 
-    private function startWorkflow(WorkflowActivationJob $job, TickInfo $tick, string $taskQueue): ServerRequest
-    {
+    private function startWorkflow(
+        WorkflowActivationJob $job,
+        TickInfo $tick,
+        string $taskQueue,
+        string $namespace,
+    ): ServerRequest {
         $init = $job->getInitializeWorkflow();
 
         /* Remembered as the base of deterministic child workflow ids. */
-        $this->run()['wfId'] = $init->getWorkflowId();
+        $run = &$this->run();
+        $run['wfId'] = $init->getWorkflowId();
+        $run['versioningBehavior'] = $this->workflowVersioningBehavior === null
+            ? 0
+            : ($this->workflowVersioningBehavior)($taskQueue, $init->getWorkflowType());
+
+        $arguments = \iterator_to_array($init->getArguments());
+        $lastCompletion = $init->hasLastCompletionResult()
+            ? \iterator_to_array($init->getLastCompletionResult()->getPayloads())
+            : [];
 
         $payloads = new Payloads();
-        $payloads->setPayloads($init->getArguments());
+        $payloads->setPayloads([...$arguments, ...$lastCompletion]);
+
+        $parent = $init->hasParentWorkflowInfo()
+            ? $init->getParentWorkflowInfo()
+            : null;
+        $root = $init->hasRootWorkflow()
+            ? $init->getRootWorkflow()
+            : null;
+        $searchAttributes = $init->hasSearchAttributes()
+            ? $init->getSearchAttributes()
+            : null;
+        $retryPolicy = $init->hasRetryPolicy()
+            ? $init->getRetryPolicy()
+            : null;
+        $priority = $init->hasPriority()
+            ? $init->getPriority()
+            : null;
+
+        $info = [
+            'WorkflowType' => ['Name' => $init->getWorkflowType()],
+            'WorkflowExecution' => ['ID' => $init->getWorkflowId(), 'RunID' => $this->runId],
+            'TaskQueueName' => $taskQueue,
+            'WorkflowExecutionTimeout' => self::durationNanoseconds($init->getWorkflowExecutionTimeout()),
+            'WorkflowRunTimeout' => self::durationNanoseconds($init->getWorkflowRunTimeout()),
+            'WorkflowTaskTimeout' => self::durationNanoseconds($init->getWorkflowTaskTimeout()),
+            'Namespace' => $namespace,
+            'Attempt' => $init->getAttempt(),
+            'CronSchedule' => $init->getCronSchedule(),
+            'ContinuedExecutionRunID' => $init->getContinuedFromExecutionRunId(),
+            'FirstRunID' => $init->getFirstExecutionRunId(),
+            // The original execution is the current run. It differs from the
+            // first run after continue-as-new and equals it for an initial run.
+            'OriginalRunID' => $this->runId,
+            'ParentWorkflowNamespace' => $parent?->getNamespace(),
+            'RootWorkflowExecution' => $root === null
+                ? null
+                : ['ID' => $root->getWorkflowId(), 'RunID' => $root->getRunId()],
+            'ParentWorkflowExecution' => $parent === null
+                ? null
+                : ['ID' => $parent->getWorkflowId(), 'RunID' => $parent->getRunId()],
+            'SearchAttributes' => $searchAttributes === null
+                ? null
+                : self::protobufJson($searchAttributes),
+            'Memo' => $init->hasMemo()
+                ? self::protobufJson($init->getMemo())
+                : null,
+            'BinaryChecksum' => '',
+        ];
+
+        if ($priority !== null) {
+            $info['Priority'] = [
+                'PriorityKey' => $priority->getPriorityKey(),
+                'FairnessKey' => $priority->getFairnessKey(),
+                // The bridge protobuf stores this as float32. Normalize its
+                // binary round-off back to the user-provided decimal value.
+                'FairnessWeight' => \round($priority->getFairnessWeight(), 6),
+            ];
+        }
+
+        if ($retryPolicy !== null) {
+            $info['RetryPolicy'] = self::retryPolicyInfo($retryPolicy);
+        }
 
         $options = [
-            'info' => [
-                'WorkflowType' => ['Name' => $init->getWorkflowType()],
-                'WorkflowExecution' => ['ID' => $init->getWorkflowId(), 'RunID' => $this->runId],
-                'TaskQueueName' => $taskQueue,
-                'Attempt' => $init->getAttempt(),
-            ],
+            'info' => $info,
+            'lastCompletion' => \count($lastCompletion),
+            'search_attributes' => $searchAttributes === null
+                ? null
+                : $this->typedSearchAttributes($searchAttributes),
         ];
 
         return new ServerRequest(
@@ -992,7 +1478,30 @@ final class CoresdkWorkflowCodec implements CodecInterface
             options: $options,
             payloads: EncodedValues::fromPayloads($payloads, $this->dataConverter),
             id: $this->runId,
+            header: Header::fromPayloadCollection($init->getHeaders(), $this->dataConverter),
         );
+    }
+
+    /**
+     * @return array<string, array{type: string, value: mixed}>
+     */
+    private function typedSearchAttributes(SearchAttributes $attributes): array
+    {
+        $result = [];
+
+        foreach ($attributes->getIndexedFields() as $name => $payload) {
+            $metadata = $payload->getMetadata();
+            if (!isset($metadata['type']) || $metadata['type'] === '') {
+                continue;
+            }
+
+            $result[$name] = [
+                'type' => $metadata['type'],
+                'value' => $this->dataConverter->fromPayload($payload, null),
+            ];
+        }
+
+        return $result;
     }
 
     private function encodeCommand(RequestInterface $command): WorkflowCommand
@@ -1002,6 +1511,7 @@ final class CoresdkWorkflowCodec implements CodecInterface
             'NewTimer' => $this->startTimer($command),
             'ExecuteActivity' => $this->scheduleActivity($command),
             'ExecuteLocalActivity' => $this->scheduleLocalActivity($command),
+            'SideEffect' => $this->scheduleSideEffect($command),
             'ExecuteChildWorkflow' => $this->startChildWorkflow($command),
             'SignalExternalWorkflow' => $this->signalExternalWorkflow($command),
             'CancelExternalWorkflow' => $this->cancelExternalWorkflow($command),
@@ -1071,13 +1581,31 @@ final class CoresdkWorkflowCodec implements CodecInterface
         if (\is_array($co['RetryPolicy'] ?? null)) {
             $start->setRetryPolicy(self::retryPolicy($co['RetryPolicy']));
         }
+        if (\is_array($co['Priority'] ?? null)) {
+            $start->setPriority(self::priority($co['Priority']));
+        }
+        $searchAttributes = $co['SearchAttributes'] ?? null;
+        if (\is_array($searchAttributes) || \is_object($searchAttributes)) {
+            $fields = [];
+            foreach ((array) $searchAttributes as $name => $value) {
+                $fields[(string) $name] = $this->dataConverter->toPayload($value);
+            }
+
+            $start->setSearchAttributes(
+                (new SearchAttributes())->setIndexedFields($fields),
+            );
+        }
 
         $headers = $this->headerFields($command);
         if ($headers !== []) {
             $start->setHeaders($headers);
         }
 
-        return (new WorkflowCommand())->setStartChildWorkflowExecution($start);
+        return $this->withUserMetadata(
+            (new WorkflowCommand())->setStartChildWorkflowExecution($start),
+            (string) ($co['StaticSummary'] ?? ''),
+            (string) ($co['StaticDetails'] ?? ''),
+        );
     }
 
     /**
@@ -1205,26 +1733,6 @@ final class CoresdkWorkflowCodec implements CodecInterface
     }
 
     /**
-     * Map the SDK's ValueType (its enum *value*, e.g. 'int64') to the search-
-     * attribute `type` metadata name the server tags payloads with (e.g. 'Int').
-     * Unknown types yield '' so the payload is sent untagged (the server can still
-     * resolve it from the registered attribute).
-     */
-    private static function searchAttributeType(string $valueType): string
-    {
-        return match ($valueType) {
-            'bool' => 'Bool',
-            'float64' => 'Double',
-            'int64' => 'Int',
-            'keyword' => 'Keyword',
-            'keyword_list' => 'KeywordList',
-            'string' => 'Text',
-            'datetime' => 'Datetime',
-            default => '',
-        };
-    }
-
-    /**
      * Upsert (add, change or remove) the workflow's memo. Fire-and-forget: no seq
      * and no resolution. Each value is encoded to a Payload via the data converter
      * exactly as the client start path does (WorkflowOptions::toMemo), into the
@@ -1278,7 +1786,9 @@ final class CoresdkWorkflowCodec implements CodecInterface
         return (new WorkflowCommand())->setContinueAsNewWorkflowExecution($can);
     }
 
-    /** The command's header as a payload map, bound to our converter. */
+    /**
+     * The command's header as a payload map, bound to our converter.
+     */
     private function headerFields(RequestInterface $command): array
     {
         $header = $command->getHeader();
@@ -1300,11 +1810,11 @@ final class CoresdkWorkflowCodec implements CodecInterface
     {
         $ms = (int) ($command->getOptions()['ms'] ?? 0);
 
-        return (new WorkflowCommand())->setStartTimer(
+        return $this->withUserMetadata((new WorkflowCommand())->setStartTimer(
             (new StartTimer())
                 ->setSeq($this->seqFor($command->getID(), 'timer'))
                 ->setStartToFireTimeout(self::msToDuration($ms)),
-        );
+        ), (string) ($command->getOptions()['summary'] ?? ''));
     }
 
     /**
@@ -1349,8 +1859,14 @@ final class CoresdkWorkflowCodec implements CodecInterface
         if (\is_array($ao['RetryPolicy'] ?? null)) {
             $schedule->setRetryPolicy(self::retryPolicy($ao['RetryPolicy']));
         }
+        if (\is_array($ao['Priority'] ?? null)) {
+            $schedule->setPriority(self::priority($ao['Priority']));
+        }
 
-        return (new WorkflowCommand())->setScheduleActivity($schedule);
+        return $this->withUserMetadata(
+            (new WorkflowCommand())->setScheduleActivity($schedule),
+            (string) ($ao['Summary'] ?? ''),
+        );
     }
 
     /**
@@ -1364,9 +1880,9 @@ final class CoresdkWorkflowCodec implements CodecInterface
      * LocalActivityOptions marshals fewer fields than ActivityOptions: no task queue
      * (it never leaves the worker) and no activity id (defaults to the seq). attempt
      * is 1 for a fresh schedule; the core manages fast retries within
-     * local_retry_threshold itself. (A retry whose backoff exceeds that threshold
-     * resolves as DoBackoff — not yet handled; resolveActivity raises on it rather
-     * than hang.)
+     * local_retry_threshold itself. A retry whose backoff exceeds that threshold
+     * resolves as DoBackoff; the codec switches it to a deterministic workflow
+     * timer and reschedules the same logical local activity when that timer fires.
      */
     private function scheduleLocalActivity(RequestInterface $command): WorkflowCommand
     {
@@ -1382,13 +1898,17 @@ final class CoresdkWorkflowCodec implements CodecInterface
             ->setActivityId((string) $seq)
             ->setActivityType($name)
             ->setArguments($command->getPayloads()->toPayloads()->getPayloads())
-            ->setAttempt(1);
+            ->setAttempt(1)
+            ->setCancellationType(CoresdkActivityCancellationType::WAIT_CANCELLATION_COMPLETED);
 
         if (($ns = (int) ($lo['ScheduleToCloseTimeout'] ?? 0)) > 0) {
             $schedule->setScheduleToCloseTimeout(self::nsToDuration($ns));
         }
         if (($ns = (int) ($lo['StartToCloseTimeout'] ?? 0)) > 0) {
             $schedule->setStartToCloseTimeout(self::nsToDuration($ns));
+        }
+        if (($ns = (int) ($lo['LocalRetryThreshold'] ?? 0)) > 0) {
+            $schedule->setLocalRetryThreshold(self::nsToDuration($ns));
         }
 
         if (\is_array($lo['RetryPolicy'] ?? null)) {
@@ -1400,79 +1920,72 @@ final class CoresdkWorkflowCodec implements CodecInterface
             $schedule->setHeaders($headers);
         }
 
-        return (new WorkflowCommand())->setScheduleLocalActivity($schedule);
+        $this->run()['localActivities'][$seq] = [
+            'id' => $command->getID(),
+            'schedule' => $schedule->serializeToString(),
+        ];
+
+        return $this->withUserMetadata(
+            (new WorkflowCommand())->setScheduleLocalActivity($schedule),
+            (string) ($lo['Summary'] ?? ''),
+        );
     }
 
-    private static function applyActivityTimeouts(ScheduleActivity $schedule, array $ao): void
-    {
-        if (($ns = (int) ($ao['ScheduleToCloseTimeout'] ?? 0)) > 0) {
-            $schedule->setScheduleToCloseTimeout(self::nsToDuration($ns));
+    private function withUserMetadata(
+        WorkflowCommand $command,
+        string $summary = '',
+        string $details = '',
+    ): WorkflowCommand {
+        if ($summary === '' && $details === '') {
+            return $command;
         }
 
-        if (($ns = (int) ($ao['ScheduleToStartTimeout'] ?? 0)) > 0) {
-            $schedule->setScheduleToStartTimeout(self::nsToDuration($ns));
+        $metadata = new UserMetadata();
+        if ($summary !== '') {
+            $metadata->setSummary($this->dataConverter->toPayload($summary));
+        }
+        if ($details !== '') {
+            $metadata->setDetails($this->dataConverter->toPayload($details));
         }
 
-        if (($ns = (int) ($ao['StartToCloseTimeout'] ?? 0)) > 0) {
-            $schedule->setStartToCloseTimeout(self::nsToDuration($ns));
-        }
-
-        if (($ns = (int) ($ao['HeartbeatTimeout'] ?? 0)) > 0) {
-            $schedule->setHeartbeatTimeout(self::nsToDuration($ns));
-        }
+        return $command->setUserMetadata($metadata);
     }
 
-    private static function retryPolicy(array $r): RetryPolicy
+    /**
+     * Core has no generic RecordMarker command for language SDKs. Preserve the
+     * PHP SDK's side-effect contract with a private local activity: PHP executes
+     * the callback only on a live activation and sends its encoded result as the
+     * activity input; the activity loop echoes it, and Core records the local
+     * activity result in history. During replay Core resolves the same stable
+     * seq from that history instead of executing the activity, returning the
+     * original value to the workflow.
+     */
+    private function scheduleSideEffect(RequestInterface $command): WorkflowCommand
     {
-        $policy = new RetryPolicy();
+        $command->getPayloads()->setDataConverter($this->dataConverter);
+        $seq = $this->seqFor($command->getID(), 'local-activity');
 
-        $initial = $r['InitialInterval'] ?? $r['initial_interval'] ?? null;
-        if (\is_array($initial)) {
-            $policy->setInitialInterval(self::durationFromParts($initial));
-        }
+        $schedule = (new ScheduleLocalActivity())
+            ->setSeq($seq)
+            ->setActivityId("side-effect-{$seq}")
+            ->setActivityType(ActivityTaskTranslator::SIDE_EFFECT_ACTIVITY_TYPE)
+            ->setArguments($command->getPayloads()->toPayloads()->getPayloads())
+            ->setAttempt(1)
+            ->setScheduleToCloseTimeout(self::msToDuration(10_000))
+            ->setStartToCloseTimeout(self::msToDuration(10_000))
+            ->setRetryPolicy((new RetryPolicy())->setMaximumAttempts(1))
+            ->setCancellationType(CoresdkActivityCancellationType::WAIT_CANCELLATION_COMPLETED);
 
-        $maximum = $r['MaximumInterval'] ?? $r['maximum_interval'] ?? null;
-        if (\is_array($maximum)) {
-            $policy->setMaximumInterval(self::durationFromParts($maximum));
-        }
+        $serialized = $schedule->serializeToString();
+        $this->run()['localActivities'][$seq] = [
+            'id' => $command->getID(),
+            'schedule' => $serialized,
+        ];
 
-        $backoff = $r['BackoffCoefficient'] ?? $r['backoff_coefficient'] ?? null;
-        if ($backoff !== null) {
-            $policy->setBackoffCoefficient((float) $backoff);
-        }
-
-        $attempts = $r['MaximumAttempts'] ?? $r['maximum_attempts'] ?? null;
-        if ($attempts !== null) {
-            $policy->setMaximumAttempts((int) $attempts);
-        }
-
-        $nonRetryable = $r['NonRetryableErrorTypes'] ?? $r['non_retryable_error_types'] ?? [];
-        if (\is_array($nonRetryable) && $nonRetryable !== []) {
-            $policy->setNonRetryableErrorTypes(\array_values($nonRetryable));
-        }
-
-        return $policy;
-    }
-
-    private static function msToDuration(int $ms): Duration
-    {
-        return (new Duration())
-            ->setSeconds(\intdiv($ms, 1000))
-            ->setNanos(($ms % 1000) * 1_000_000);
-    }
-
-    private static function nsToDuration(int $ns): Duration
-    {
-        return (new Duration())
-            ->setSeconds(\intdiv($ns, 1_000_000_000))
-            ->setNanos($ns % 1_000_000_000);
-    }
-
-    private static function durationFromParts(array $d): Duration
-    {
-        return (new Duration())
-            ->setSeconds((int) ($d['seconds'] ?? 0))
-            ->setNanos((int) ($d['nanos'] ?? 0));
+        return $this->withUserMetadata(
+            (new WorkflowCommand())->setScheduleLocalActivity($schedule),
+            (string) ($command->getOptions()['summary'] ?? ''),
+        );
     }
 
     private function completeOrFail(RequestInterface $command): WorkflowCommand

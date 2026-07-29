@@ -8,12 +8,14 @@ use PHPUnit\Framework\Attributes\Test;
 use Temporal\Client\WorkflowClientInterface;
 use Temporal\Client\WorkflowOptions;
 use Temporal\DataConverter\Type;
+use Temporal\Exception\Client\CanceledException;
 use Temporal\Exception\Client\TimeoutException;
 use Temporal\Exception\Client\WorkflowFailedException;
 use Temporal\Exception\Client\WorkflowServiceException;
 use Temporal\Exception\Failure\CanceledFailure;
 use Temporal\Tests\Acceptance\App\Runtime\Feature;
 use Temporal\Tests\Acceptance\App\TestCase;
+use Temporal\Worker\TrueAsync\ActivityTaskTranslator;
 use Temporal\Workflow;
 use Temporal\Workflow\ReturnType;
 use Temporal\Workflow\WorkflowMethod;
@@ -42,8 +44,12 @@ class ResetWorkerTest extends TestCase
             $stub->query('die');
             self::fail('Query must fail with a timeout');
         } catch (WorkflowServiceException $e) {
-            # Should fail with a timeout
-            self::assertInstanceOf(TimeoutException::class, $e->getPrevious());
+            # Depending on whether the native RPC deadline or cancellation wins,
+            # the failed query is surfaced as timeout or cancellation.
+            self::assertContains($e->getPrevious()::class, [
+                TimeoutException::class,
+                CanceledException::class,
+            ]);
         }
 
         # Cancel Workflow
@@ -82,8 +88,12 @@ class ResetWorkerTest extends TestCase
             $stub->query('die');
             self::fail('Query must fail with a timeout');
         } catch (WorkflowServiceException $e) {
-            # Should fail with a timeout
-            self::assertInstanceOf(TimeoutException::class, $e->getPrevious());
+            # Depending on whether the native RPC deadline or cancellation wins,
+            # the failed query is surfaced as timeout or cancellation.
+            self::assertContains($e->getPrevious()::class, [
+                TimeoutException::class,
+                CanceledException::class,
+            ]);
         }
 
         $stub->signal('exit');
@@ -99,15 +109,38 @@ class ResetWorkerTest extends TestCase
         # Check that Side Effect was not lost
         $found = false;
         foreach ($client->getWorkflowHistory($stub->getExecution()) as $event) {
-            if ($event->hasMarkerRecordedEventAttributes()) {
-                $record = $event->getMarkerRecordedEventAttributes();
-                self::assertSame('SideEffect', $record->getMarkerName());
+            if (
+                $event->hasMarkerRecordedEventAttributes()
+                && self::isSideEffectMarker($event->getMarkerRecordedEventAttributes())
+            ) {
                 $found = true;
                 break;
             }
         }
 
         self::assertTrue($found, 'Side Effect must be found in the Workflow history');
+    }
+
+    private static function isSideEffectMarker(
+        \Temporal\Api\History\V1\MarkerRecordedEventAttributes $attributes,
+    ): bool {
+        if ($attributes->getMarkerName() === 'SideEffect') {
+            return true;
+        }
+        if ($attributes->getMarkerName() !== 'core_local_activity') {
+            return false;
+        }
+
+        $data = $attributes->getDetails()['data'] ?? null;
+        $payload = $data?->getPayloads()[0] ?? null;
+        if ($payload === null) {
+            return false;
+        }
+
+        $metadata = \json_decode($payload->getData(), true);
+
+        return \is_array($metadata)
+            && ($metadata['activity_type'] ?? null) === ActivityTaskTranslator::SIDE_EFFECT_ACTIVITY_TYPE;
     }
 }
 

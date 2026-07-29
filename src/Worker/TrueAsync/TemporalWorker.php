@@ -13,11 +13,10 @@ namespace Temporal\Worker\TrueAsync;
 
 use Temporal\DataConverter\DataConverter;
 use Temporal\DataConverter\DataConverterInterface;
+use Temporal\Worker\DispatcherInterface;
 use Temporal\Worker\Transport\RPCConnectionInterface;
 use Temporal\Worker\WorkerInterface;
 use TrueAsync\Temporal\Core\Worker as CoreWorker;
-use function Async\await_all;
-use function Async\spawn;
 
 /**
  * The idiomatic TrueAsync Temporal worker entry point: one object that serves a
@@ -38,8 +37,7 @@ final class TemporalWorker
     private readonly DataConverterInterface $dataConverter;
     private readonly WorkflowWorkerFactory $factory;
     private readonly WorkerInterface $worker;
-    private readonly WorkflowWorker $workflowLoop;
-    private readonly ActivityWorker $activityLoop;
+    private readonly NativeWorkerRuntime $runtime;
 
     public function __construct(
         private readonly CoreWorker $core,
@@ -55,13 +53,14 @@ final class TemporalWorker
 
         $this->factory = WorkflowWorkerFactory::create($this->dataConverter, $rpc);
         $this->worker = $this->factory->newWorker($taskQueue);
-        $this->workflowLoop = new WorkflowWorker($this->core, $this->factory, $taskQueue);
-        $this->activityLoop = new ActivityWorker(
-            $this->core,
-            $this->worker,
-            $this->dataConverter,
-            $taskQueue,
-            $rpc instanceof CoreRpcConnection ? $rpc : null,
+        \assert($this->worker instanceof DispatcherInterface);
+        $this->runtime = new NativeWorkerRuntime(
+            core: $this->core,
+            factory: $this->factory,
+            worker: $this->worker,
+            dataConverter: $this->dataConverter,
+            taskQueue: $taskQueue,
+            rpc: $rpc instanceof CoreRpcConnection ? $rpc : null,
         );
     }
 
@@ -85,14 +84,7 @@ final class TemporalWorker
      */
     public function run(): void
     {
-        $loops = [
-            spawn(fn() => $this->workflowLoop->run()),
-            spawn(fn() => $this->activityLoop->run()),
-        ];
-
-        await_all($loops);
-
-        $this->core->finalizeShutdown();
+        $this->runtime->run();
     }
 
     /**
@@ -101,6 +93,6 @@ final class TemporalWorker
      */
     public function shutdown(): void
     {
-        $this->core->initiateShutdown();
+        $this->runtime->shutdown();
     }
 }

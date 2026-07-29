@@ -14,7 +14,7 @@ use Temporal\Common\Versioning\WorkerDeploymentVersion;
 use Temporal\Testing\Environment;
 use Temporal\Tests\Acceptance\App\Attribute\Worker;
 use Temporal\Tests\Acceptance\App\Runtime\Feature;
-use Temporal\Tests\Acceptance\App\Runtime\RRStarter;
+use Temporal\Tests\Acceptance\App\Runtime\WorkerStarter;
 use Temporal\Tests\Acceptance\App\Runtime\TemporalStarter;
 use Temporal\Tests\Acceptance\App\TestCase;
 use Temporal\Worker\WorkerDeploymentOptions;
@@ -29,13 +29,13 @@ class DeploymentTest extends TestCase
     #[Test]
     public function defaultBehaviorAuto(
         Environment $environment,
-        RRStarter $roadRunnerStarter,
+        WorkerStarter $workerStarter,
         WorkflowClientInterface $client,
         Feature $feature,
     ): void {
         $behavior = self::executeWorkflow(
             $environment,
-            $roadRunnerStarter,
+            $workerStarter,
             $client,
             $feature,
             /** @see DefaultWorkflow */
@@ -48,14 +48,14 @@ class DeploymentTest extends TestCase
     #[Test]
     public function customBehaviorPinned(
         Environment $environment,
-        RRStarter $roadRunnerStarter,
+        WorkerStarter $workerStarter,
         WorkflowClientInterface $client,
         Feature $feature,
     ): void {
         $id = Uuid::v4();
         self::executeWorkflow(
             $environment,
-            $roadRunnerStarter,
+            $workerStarter,
             $client,
             $feature,
             /** @see PinnedWorkflow */
@@ -81,14 +81,14 @@ class DeploymentTest extends TestCase
     #[Test]
     public function versionBehaviorOverrideAutoUpgrade(
         Environment $environment,
-        RRStarter $roadRunnerStarter,
+        WorkerStarter $workerStarter,
         WorkflowClientInterface $client,
         Feature $feature,
     ): void {
         $id = Uuid::v4();
         self::executeWorkflow(
             $environment,
-            $roadRunnerStarter,
+            $workerStarter,
             $client,
             $feature,
             /** @see PinnedWorkflow */
@@ -114,13 +114,13 @@ class DeploymentTest extends TestCase
     #[Test]
     public function versionBehaviorOverridePinned(
         Environment $environment,
-        RRStarter $roadRunnerStarter,
+        WorkerStarter $workerStarter,
         WorkflowClientInterface $client,
         Feature $feature,
     ): void {
         $behavior = self::executeWorkflow(
             $environment,
-            $roadRunnerStarter,
+            $workerStarter,
             $client,
             $feature,
             /** @see PinnedWorkflow */
@@ -142,7 +142,7 @@ class DeploymentTest extends TestCase
      */
     private static function executeWorkflow(
         Environment $environment,
-        RRStarter $roadRunnerStarter,
+        WorkerStarter $workerStarter,
         WorkflowClientInterface $client,
         Feature $feature,
         string $workflowType,
@@ -191,8 +191,8 @@ class DeploymentTest extends TestCase
             $postAction === null or $postAction($behavior);
             return $behavior;
         } finally {
-            $roadRunnerStarter->stop();
-            $roadRunnerStarter->start();
+            $workerStarter->stop();
+            $workerStarter->start();
         }
     }
 }
@@ -215,6 +215,12 @@ class WorkerFactory
 
     public static function setCurrentDeployment(Environment $environment): void
     {
+        // The native Core worker registers its deployment on the first poll.
+        // WorkerStarter can only observe that the child process is alive, so
+        // give the initial poll a moment before routing workflows to the new
+        // deployment version. Subsequent worker restarts are already registered.
+        \usleep(250_000);
+
         $environment->executeTemporalCommand([
             'worker',
             'deployment',

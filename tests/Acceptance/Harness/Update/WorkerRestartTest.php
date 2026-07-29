@@ -6,14 +6,13 @@ namespace Temporal\Tests\Acceptance\Harness\Update\WorkerRestart;
 
 use PHPUnit\Framework\Attributes\DoesNotPerformAssertions;
 use PHPUnit\Framework\Attributes\Test;
-use Psr\Container\ContainerInterface;
-use Spiral\RoadRunner\KeyValue\StorageInterface;
 use Temporal\Activity\ActivityInterface;
 use Temporal\Activity\ActivityMethod;
 use Temporal\Activity\ActivityOptions;
 use Temporal\Client\WorkflowStubInterface;
 use Temporal\Tests\Acceptance\App\Attribute\Stub;
-use Temporal\Tests\Acceptance\App\Runtime\RRStarter;
+use Temporal\Tests\Acceptance\App\Runtime\SharedStore;
+use Temporal\Tests\Acceptance\App\Runtime\WorkerStarter;
 use Temporal\Tests\Acceptance\App\Runtime\TemporalStarter;
 use Temporal\Tests\Acceptance\App\TestCase;
 use Temporal\Workflow;
@@ -29,15 +28,15 @@ class WorkerRestartTest extends TestCase
     #[DoesNotPerformAssertions]
     public static function check(
         #[Stub('Harness_Update_WorkerRestart')]WorkflowStubInterface $stub,
-        ContainerInterface $c,
-        RRStarter $roadRunnerStarter,
+        SharedStore $store,
+        WorkerStarter $workerStarter,
     ): void {
         $handle = $stub->startUpdate('do_activities');
 
         # Wait for the activity to start.
         $deadline = \microtime(true) + 20;
         do {
-            if ($c->get(StorageInterface::class)->get(KV_ACTIVITY_STARTED, false)) {
+            if ($store->get(KV_ACTIVITY_STARTED, false)) {
                 break;
             }
 
@@ -46,10 +45,10 @@ class WorkerRestartTest extends TestCase
         } while (true);
 
         # Restart the worker.
-        $roadRunnerStarter->stop();
-        $roadRunnerStarter->start();
+        $workerStarter->stop();
+        $workerStarter->start();
         # Unblocks the activity.
-        $c->get(StorageInterface::class)->set(KV_ACTIVITY_BLOCKED, false);
+        $store->set(KV_ACTIVITY_BLOCKED, false);
 
         # Wait for Temporal restarts the activity
         $handle->getResult(30);
@@ -85,22 +84,22 @@ class FeatureWorkflow
 class FeatureActivity
 {
     public function __construct(
-        private StorageInterface $kv,
+        private SharedStore $store,
     ) {}
 
     #[ActivityMethod('blocks')]
     public function blocks(): string
     {
-        $this->kv->set(KV_ACTIVITY_STARTED, true);
+        $this->store->set(KV_ACTIVITY_STARTED, true);
 
         do {
-            $blocked = $this->kv->get(KV_ACTIVITY_BLOCKED, true);
+            $blocked = $this->store->get(KV_ACTIVITY_BLOCKED, true);
 
             if (!$blocked) {
                 break;
             }
 
-            \usleep(100_000);
+            \Async\delay(100);
         } while (true);
 
         return 'hi';

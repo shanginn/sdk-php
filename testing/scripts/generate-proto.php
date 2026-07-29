@@ -26,21 +26,6 @@ try {
     return;
 }
 
-try {
-    echo 'grpc_php_plugin: ';
-    $plugin = Process::run('which', 'grpc_php_plugin');
-    if (trim($plugin) === '') {
-        echo "not found\n";
-        return;
-    }
-
-    echo "{$plugin} [OK]\n";
-} catch (ProcessFailedException $e) {
-    echo $e->getMessage() . "\n";
-    return;
-}
-
-
 echo 'api dir: ';
 if (is_dir('api')) {
     echo "exists\n";
@@ -74,29 +59,8 @@ try {
     echo "generating client files: ";
     $result = exec(
         sprintf(
-            'protoc --php_out=api/testservice --plugin=protoc-gen-grpc=%s --grpc_out=./api/testservice -Iproto %s',
-            $plugin,
+            'protoc --php_out=api/testservice -Iproto %s',
             join(' ', $files)
-        )
-    );
-
-    if (trim($result) !== '') {
-        throw new Error($result);
-    }
-
-    echo "[OK]\n";
-} catch (Error $e) {
-    echo $e->getMessage() . "\n";
-    return;
-}
-
-try {
-    echo "generating dependencies: ";
-
-    $result = exec(
-        sprintf(
-            'protoc --php_out=api/testservice --plugin=protoc-gen-grpc=%s --grpc_out=./api/testservice',
-            $plugin,
         )
     );
 

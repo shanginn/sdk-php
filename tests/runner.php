@@ -11,6 +11,11 @@ declare(strict_types=1);
 $command = \implode(' ', \array_slice($argv, 1));
 $logFile = 'runtime/phpunit.xml';
 
+if (\file_exists($logFile) && !\unlink($logFile)) {
+    \fwrite(\STDERR, "Unable to remove stale PHPUnit log {$logFile}.\n");
+    exit(1);
+}
+
 \passthru(\sprintf("%s %s --log-junit=%s 2>&1", PHP_BINARY, $command, $logFile), $code);
 
 if (\file_exists($logFile)) {

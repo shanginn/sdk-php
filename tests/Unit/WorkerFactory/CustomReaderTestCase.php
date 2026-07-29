@@ -14,12 +14,13 @@ namespace Temporal\Tests\Unit\WorkerFactory;
 
 use Temporal\Tests\Unit\Declaration\Fixture\CustomReaderWorkerFactory;
 use Temporal\Tests\Unit\Declaration\Fixture\UnannotatedClass;
+use Temporal\Worker\TrueAsync\NullRpcConnection;
 
 class CustomReaderTestCase extends AbstractWorkerFactory
 {
     public function testCustomReader()
     {
-        $workerFactory = CustomReaderWorkerFactory::create();
+        $workerFactory = CustomReaderWorkerFactory::create(rpc: new NullRpcConnection());
         $worker = $workerFactory->newWorker()->registerActivityImplementations(new UnannotatedClass());
 
         // With default reader we would get no activities.

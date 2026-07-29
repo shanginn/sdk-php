@@ -93,7 +93,9 @@ final class CoreRpcConnection implements RPCConnectionInterface
         ];
     }
 
-    /** Drop a token's pending state once its activity has completed. */
+    /**
+     * Drop a token's pending state once its activity has completed.
+     */
     public function forget(string $taskToken): void
     {
         unset($this->cancellations[$taskToken]);

@@ -49,6 +49,14 @@ class LocalActivityOptions extends Options implements ActivityOptionsInterface
     public \DateInterval $startToCloseTimeout;
 
     /**
+     * Retry delays above this threshold are represented by a deterministic
+     * workflow timer instead of keeping the workflow task alive while Core waits
+     * locally. A zero value leaves Core's default threshold in effect.
+     */
+    #[Marshal(name: 'LocalRetryThreshold', type: DateIntervalType::class)]
+    public \DateInterval $localRetryThreshold;
+
+    /**
      * RetryPolicy specifies how to retry an Activity if an error occurs.
      *
      * More details are available at {@link https://docs.temporal.io/docs/concepts/activities}. RetryPolicy
@@ -82,6 +90,7 @@ class LocalActivityOptions extends Options implements ActivityOptionsInterface
     {
         $this->scheduleToCloseTimeout = CarbonInterval::seconds(0);
         $this->startToCloseTimeout = CarbonInterval::seconds(0);
+        $this->localRetryThreshold = CarbonInterval::seconds(0);
 
         parent::__construct();
     }
@@ -145,6 +154,26 @@ class LocalActivityOptions extends Options implements ActivityOptionsInterface
 
         $self = clone $this;
         $self->startToCloseTimeout = $timeout;
+        return $self;
+    }
+
+    /**
+     * Switch local retries whose delay exceeds this duration to a workflow timer.
+     *
+     * @psalm-suppress ImpureMethodCall
+     *
+     * @param DateIntervalValue $threshold
+     * @return $this
+     */
+    #[Pure]
+    public function withLocalRetryThreshold($threshold): self
+    {
+        \assert(DateInterval::assert($threshold));
+        $threshold = DateInterval::parse($threshold, DateInterval::FORMAT_SECONDS);
+        \assert($threshold->totalMicroseconds >= 0);
+
+        $self = clone $this;
+        $self->localRetryThreshold = $threshold;
         return $self;
     }
 

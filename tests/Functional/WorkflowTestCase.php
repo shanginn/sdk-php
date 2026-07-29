@@ -421,14 +421,6 @@ class WorkflowTestCase extends AbstractFunctional
         $worker->run($this, Splitter::createFromString($log)->getQueue());
     }
 
-    public function setUp(): void
-    {
-        parent::setUp();
-
-        // emulate connection to parent server
-        $_SERVER['RR_RPC'] = 'tcp://127.0.0.1:6001';
-    }
-
     /**
      * Fetch a private property from an object.
      *

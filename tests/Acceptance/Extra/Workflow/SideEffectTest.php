@@ -12,6 +12,7 @@ use Temporal\Common\SideEffectOptions;
 use Temporal\DataConverter\DataConverterInterface;
 use Temporal\Tests\Acceptance\App\Attribute\Stub;
 use Temporal\Tests\Acceptance\App\TestCase;
+use Temporal\Worker\TrueAsync\ActivityTaskTranslator;
 use Temporal\Workflow;
 use Temporal\Workflow\WorkflowInterface;
 use Temporal\Workflow\WorkflowMethod;
@@ -69,7 +70,7 @@ class SideEffectTest extends TestCase
             if (!$event->hasMarkerRecordedEventAttributes()) {
                 continue;
             }
-            if ($event->getMarkerRecordedEventAttributes()->getMarkerName() !== 'SideEffect') {
+            if (!self::isSideEffectMarker($event->getMarkerRecordedEventAttributes())) {
                 continue;
             }
 
@@ -93,7 +94,7 @@ class SideEffectTest extends TestCase
             if (!$event->hasMarkerRecordedEventAttributes()) {
                 continue;
             }
-            if ($event->getMarkerRecordedEventAttributes()->getMarkerName() !== 'SideEffect') {
+            if (!self::isSideEffectMarker($event->getMarkerRecordedEventAttributes())) {
                 continue;
             }
 
@@ -103,6 +104,28 @@ class SideEffectTest extends TestCase
         }
 
         return $summaries;
+    }
+
+    private static function isSideEffectMarker(
+        \Temporal\Api\History\V1\MarkerRecordedEventAttributes $attributes,
+    ): bool {
+        if ($attributes->getMarkerName() === 'SideEffect') {
+            return true;
+        }
+        if ($attributes->getMarkerName() !== 'core_local_activity') {
+            return false;
+        }
+
+        $data = $attributes->getDetails()['data'] ?? null;
+        $payload = $data?->getPayloads()[0] ?? null;
+        if ($payload === null) {
+            return false;
+        }
+
+        $metadata = \json_decode($payload->getData(), true);
+
+        return \is_array($metadata)
+            && ($metadata['activity_type'] ?? null) === ActivityTaskTranslator::SIDE_EFFECT_ACTIVITY_TYPE;
     }
 }
 

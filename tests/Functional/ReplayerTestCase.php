@@ -108,14 +108,16 @@ final class ReplayerTestCase extends TestCase
 
         $this->expectException(NonDeterministicWorkflowException::class);
 
-        (new WorkflowReplayer())->replayFromJSON('WorkflowWithSequence', $file);
+        (new WorkflowReplayer(workflowTypes: [WorkflowWithSequence::class]))
+            ->replayFromJSON('WorkflowWithSequence', $file);
     }
 
     public function testReplayNonDetermenisticWorkflowThroughFirstDetermenisticEvents(): void
     {
         $file = \dirname(__DIR__, 1) . '/Fixtures/history/squence-workflow-damaged.json';
 
-        (new WorkflowReplayer())->replayFromJSON('WorkflowWithSequence', $file, lastEventId: 11);
+        (new WorkflowReplayer(workflowTypes: [WorkflowWithSequence::class]))
+            ->replayFromJSON('WorkflowWithSequence', $file, lastEventId: 11);
 
         $this->assertTrue(true);
     }

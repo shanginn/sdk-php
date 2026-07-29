@@ -12,9 +12,7 @@ declare(strict_types=1);
 namespace Temporal\Client\GRPC;
 
 use Carbon\CarbonInterval;
-use Grpc\UnaryCall;
 use Temporal\Api\Workflowservice\V1\GetSystemInfoRequest;
-use Temporal\Api\Workflowservice\V1\WorkflowServiceClient;
 use Temporal\Client\Common\BackoffThrottler;
 use Temporal\Client\Common\RpcRetryOptions;
 use Temporal\Client\Common\ServerCapabilities;
@@ -25,6 +23,8 @@ use Temporal\Exception\Client\ServiceClientException;
 use Temporal\Exception\Client\TimeoutException;
 use Temporal\Interceptor\GrpcClientInterceptor;
 use Temporal\Internal\Interceptor\Pipeline;
+use Temporal\Internal\Transport\NativeUnaryClient;
+use TrueAsync\Temporal\Core\Connection as CoreConnection;
 
 abstract class BaseClient implements ServiceClientInterface
 {
@@ -34,6 +34,9 @@ abstract class BaseClient implements ServiceClientInterface
         StatusCode::UNKNOWN,
     ];
 
+    /** @var array<non-empty-string, class-string> */
+    private static array $responseClasses = [];
+
     /** @var null|\Closure(string $method, object $arg, ContextInterface $ctx): object */
     private ?\Closure $invokePipeline = null;
 
@@ -42,23 +45,16 @@ abstract class BaseClient implements ServiceClientInterface
     private \Stringable|string $apiKey = '';
 
     /**
-     * @param WorkflowServiceClient|\Closure(): WorkflowServiceClient $workflowService Service Client or its factory
+     * @private Use static factory methods instead.
      *
-     * @private Use static factory methods instead
      * @see self::create()
      * @see self::createSSL()
      */
-    final public function __construct(WorkflowServiceClient|\Closure $workflowService)
+    final public function __construct(CoreConnection|Connection $connection)
     {
-        if ($workflowService instanceof WorkflowServiceClient) {
-            \trigger_error(
-                'Creating a ServiceClient instance via constructor is deprecated. Use static factory methods instead.',
-                \E_USER_DEPRECATED,
-            );
-            $workflowService = static fn(): WorkflowServiceClient => $workflowService;
-        }
-
-        $this->connection = new Connection($workflowService);
+        $this->connection = $connection instanceof Connection
+            ? $connection
+            : new Connection($connection);
         $this->context = Context::default();
     }
 
@@ -68,14 +64,7 @@ abstract class BaseClient implements ServiceClientInterface
      */
     public static function create(string $address): static
     {
-        if (!\extension_loaded('grpc')) {
-            throw new \RuntimeException('The gRPC extension is required to use Temporal Client.');
-        }
-
-        return new static(static fn(): WorkflowServiceClient => new WorkflowServiceClient(
-            $address,
-            ['credentials' => \Grpc\ChannelCredentials::createInsecure()],
-        ));
+        return new static(new CoreConnection($address));
     }
 
     /**
@@ -86,8 +75,6 @@ abstract class BaseClient implements ServiceClientInterface
      * @param non-empty-string|null $clientPem Client certificate chain string or file in PEM format.
      * @param non-empty-string|null $overrideServerName
      *
-     * @psalm-suppress UndefinedClass
-     * @psalm-suppress UnusedVariable
      */
     public static function createSSL(
         string $address,
@@ -96,10 +83,6 @@ abstract class BaseClient implements ServiceClientInterface
         ?string $clientPem = null,
         ?string $overrideServerName = null,
     ): static {
-        if (!\extension_loaded('grpc')) {
-            throw new \RuntimeException('The gRPC extension is required to use Temporal Client.');
-        }
-
         $loadCert = static function (?string $cert): ?string {
             return match (true) {
                 $cert === null, $cert === '' => null,
@@ -110,20 +93,14 @@ abstract class BaseClient implements ServiceClientInterface
             };
         };
 
-        $options = [
-            'credentials' => \Grpc\ChannelCredentials::createSsl(
-                $loadCert($crt),
-                $loadCert($clientKey),
-                $loadCert($clientPem),
-            ),
-        ];
-
-        if ($overrideServerName !== null) {
-            $options['grpc.default_authority'] = $overrideServerName;
-            $options['grpc.ssl_target_name_override'] = $overrideServerName;
-        }
-
-        return new static(static fn(): WorkflowServiceClient => new WorkflowServiceClient($address, $options));
+        return new static(new CoreConnection(
+            address: $address,
+            tls: true,
+            tlsServerRootCaCert: $loadCert($crt),
+            tlsClientCert: $loadCert($clientPem),
+            tlsClientPrivateKey: $loadCert($clientKey),
+            tlsServerName: $overrideServerName,
+        ));
     }
 
     public function getContext(): ContextInterface
@@ -255,10 +232,10 @@ abstract class BaseClient implements ServiceClientInterface
     /**
      * Perform a single wire call and return the decoded response message.
      *
-     * This is the one transport seam: {@see call()} keeps the retry loop,
-     * deadline handling and exception mapping, and delegates the actual RPC to
-     * this method. Alternative transports (e.g. the TrueAsync Rust core) override
-     * only this, inheriting everything else.
+     * The retry loop, deadline handling, interceptor pipeline and exception
+     * mapping stay in PHP. A single attempt is delegated to the native
+     * TrueAsync Temporal bridge, which parks this coroutine while the Rust core
+     * performs the RPC.
      *
      * @param non-empty-string $method
      *
@@ -266,17 +243,32 @@ abstract class BaseClient implements ServiceClientInterface
      */
     protected function performCall(string $method, object $arg, ContextInterface $ctx, array $options): object
     {
-        /** @var UnaryCall $call */
-        $call = $this->connection->getWorkflowService()->{$method}($arg, $ctx->getMetadata(), $options);
-        [$result, $status] = $call->wait();
+        $responseClass = self::$responseClasses[$method] ??= self::resolveResponseClass($method);
+        $timeoutMs = isset($options['timeout'])
+            ? (int) \ceil(((int) $options['timeout']) / 1000)
+            : 0;
 
-        if ($status->code !== 0) {
-            throw new ServiceClientException($status);
+        return (new NativeUnaryClient(
+            $this->connection->getCore(),
+            NativeUnaryClient::SERVICE_WORKFLOW,
+        ))->call($method, $arg, $responseClass, $timeoutMs, $ctx->getMetadata());
+    }
+
+    /**
+     * Resolve the response protobuf from the authoritative generated client
+     * interface instead of relying on a method-name convention.
+     *
+     * @return class-string
+     */
+    private static function resolveResponseClass(string $method): string
+    {
+        $type = (new \ReflectionMethod(ServiceClientInterface::class, $method))->getReturnType();
+
+        if (!$type instanceof \ReflectionNamedType || $type->isBuiltin()) {
+            throw new \LogicException("Cannot resolve a response message type for RPC {$method}.");
         }
 
-        \assert($result !== null);
-
-        return $result;
+        return $type->getName();
     }
 
     /**

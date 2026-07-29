@@ -6,7 +6,7 @@ namespace Temporal\Testing;
 
 use PHPUnit\Framework\Assert;
 use Temporal\Worker\ChildWorkflowInvocationCache\ChildWorkflowInvocationCacheInterface;
-use Temporal\Worker\ChildWorkflowInvocationCache\RoadRunnerChildWorkflowInvocationCache;
+use Temporal\Worker\ChildWorkflowInvocationCache\FileChildWorkflowInvocationCache;
 
 final class WorkflowMocker
 {
@@ -14,7 +14,7 @@ final class WorkflowMocker
 
     public function __construct(?ChildWorkflowInvocationCacheInterface $cache = null)
     {
-        $this->cache = $cache ?? RoadRunnerChildWorkflowInvocationCache::create();
+        $this->cache = $cache ?? new FileChildWorkflowInvocationCache();
     }
 
     public function clear(): void

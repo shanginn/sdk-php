@@ -19,7 +19,9 @@ use Coresdk\ActivityResult\WillCompleteAsync;
 use Coresdk\ActivityTask\ActivityTask;
 use Coresdk\ActivityTask\Start;
 use Coresdk\ActivityTaskCompletion;
+use Google\Protobuf\Duration;
 use Google\Protobuf\Timestamp;
+use Temporal\Api\Common\V1\RetryPolicy;
 use Temporal\Api\Common\V1\Payload;
 use Temporal\Api\Common\V1\Payloads;
 use Temporal\DataConverter\DataConverterInterface;
@@ -29,6 +31,7 @@ use Temporal\Exception\Client\ActivityCanceledException;
 use Temporal\Exception\DoNotCompleteOnResultException;
 use Temporal\Exception\Failure\CanceledFailure;
 use Temporal\Exception\Failure\FailureConverter;
+use Temporal\Interceptor\Header;
 use Temporal\Worker\Transport\Command\Server\ServerRequest;
 use Temporal\Worker\Transport\Command\Server\TickInfo;
 
@@ -44,6 +47,12 @@ use Temporal\Worker\Transport\Command\Server\TickInfo;
  */
 final class ActivityTaskTranslator
 {
+    /**
+     * A private local-activity type used to persist the result of the legacy
+     * Workflow::sideEffect() API in Temporal history.
+     */
+    public const SIDE_EFFECT_ACTIVITY_TYPE = '__temporal_php_side_effect';
+
     public function __construct(
         private readonly DataConverterInterface $dataConverter,
         private readonly string $taskQueue,
@@ -70,6 +79,7 @@ final class ActivityTaskTranslator
         $payloads->setPayloads(\array_merge($input, $heartbeat));
 
         $options = [
+            'name' => $start->getActivityType(),
             'info' => $this->info($start, $task->getTaskToken()),
             'heartbeatDetails' => \count($heartbeat),
         ];
@@ -79,10 +89,35 @@ final class ActivityTaskTranslator
             info: new TickInfo(time: $this->time($start->getStartedTime()) ?? new \DateTimeImmutable()),
             options: $options,
             payloads: EncodedValues::fromPayloads($payloads, $this->dataConverter),
+            header: Header::fromPayloadCollection($start->getHeaderFields(), $this->dataConverter),
         );
     }
 
-    /** A successful completion carrying the activity's single return value. */
+    public function isSideEffect(ActivityTask $task): bool
+    {
+        return $task->getVariant() === 'start'
+            && $task->getStart()->getActivityType() === self::SIDE_EFFECT_ACTIVITY_TYPE;
+    }
+
+    /**
+     * Complete the private side-effect local activity by echoing its already
+     * encoded value. Core records this result and supplies it during replay, so
+     * the user callback is executed only on the original non-replay activation.
+     */
+    public function sideEffect(ActivityTask $task): ActivityTaskCompletion
+    {
+        $input = $task->getStart()->getInput();
+        $value = \count($input) > 0 ? $input[0] : new Payload();
+
+        return $this->completion(
+            $task->getTaskToken(),
+            (new ActivityExecutionResult())->setCompleted((new Success())->setResult($value)),
+        );
+    }
+
+    /**
+     * A successful completion carrying the activity's single return value.
+     */
     public function success(string $taskToken, ValuesInterface $result): ActivityTaskCompletion
     {
         /* InvokeActivity resolves with raw, unencoded values; bind our converter
@@ -142,6 +177,8 @@ final class ActivityTaskTranslator
     private function info(Start $start, string $taskToken): array
     {
         $execution = $start->getWorkflowExecution();
+        $priority = $start->getPriority();
+        $retryPolicy = $start->getRetryPolicy();
 
         return [
             'TaskToken' => \base64_encode($taskToken),
@@ -159,10 +196,47 @@ final class ActivityTaskTranslator
             'StartedTime' => $this->time($start->getStartedTime()),
             'Deadline' => $this->deadline($start),
             'Attempt' => $start->getAttempt(),
+            'Priority' => [
+                'PriorityKey' => $priority?->getPriorityKey() ?? 0,
+                'FairnessKey' => $priority?->getFairnessKey() ?? '',
+                // The bridge protobuf stores this as float32. Normalize its
+                // binary round-off back to the user-provided decimal value.
+                'FairnessWeight' => \round($priority?->getFairnessWeight() ?? 0.0, 6),
+            ],
+            'RetryPolicy' => $retryPolicy === null
+                ? null
+                : $this->retryPolicy($retryPolicy),
         ];
     }
 
-    /** Per-attempt deadline = started + start_to_close, falling back to started. */
+    /**
+     * @return array<string, mixed>
+     */
+    private function retryPolicy(RetryPolicy $policy): array
+    {
+        return [
+            'initial_interval' => $this->durationParts($policy->getInitialInterval()),
+            'backoff_coefficient' => $policy->getBackoffCoefficient(),
+            'maximum_interval' => $this->durationParts($policy->getMaximumInterval()),
+            'maximum_attempts' => $policy->getMaximumAttempts(),
+            'non_retryable_error_types' => \iterator_to_array($policy->getNonRetryableErrorTypes()),
+        ];
+    }
+
+    /**
+     * @return array{seconds: int|string, nanos: int}
+     */
+    private function durationParts(?Duration $duration): array
+    {
+        return [
+            'seconds' => $duration?->getSeconds() ?? 0,
+            'nanos' => $duration?->getNanos() ?? 0,
+        ];
+    }
+
+    /**
+     * Per-attempt deadline = started + start_to_close, falling back to started.
+     */
     private function deadline(Start $start): ?\DateTimeInterface
     {
         $started = $this->time($start->getStartedTime());

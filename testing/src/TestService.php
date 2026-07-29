@@ -8,24 +8,39 @@ use Carbon\Carbon;
 use Google\Protobuf\Duration;
 use Google\Protobuf\GPBEmpty;
 use Google\Protobuf\Timestamp;
-use Grpc\ChannelCredentials;
 use Temporal\Api\Testservice\V1\GetCurrentTimeResponse;
+use Temporal\Api\Testservice\V1\LockTimeSkippingResponse;
 use Temporal\Api\Testservice\V1\LockTimeSkippingRequest;
 use Temporal\Api\Testservice\V1\SleepRequest;
+use Temporal\Api\Testservice\V1\SleepResponse;
 use Temporal\Api\Testservice\V1\SleepUntilRequest;
-use Temporal\Api\Testservice\V1\TestServiceClient;
 use Temporal\Api\Testservice\V1\UnlockTimeSkippingRequest;
-use Temporal\Exception\Client\ServiceClientException;
+use Temporal\Api\Testservice\V1\UnlockTimeSkippingResponse;
+use Temporal\Internal\Transport\NativeUnaryClient;
+use TrueAsync\Temporal\Core\Connection;
 
 final class TestService
 {
-    private TestServiceClient $testServiceClient;
+    private const RESPONSES = [
+        'LockTimeSkipping' => LockTimeSkippingResponse::class,
+        'UnlockTimeSkipping' => UnlockTimeSkippingResponse::class,
+        'Sleep' => SleepResponse::class,
+        'SleepUntil' => SleepResponse::class,
+        'UnlockTimeSkippingWithSleep' => SleepResponse::class,
+        'GetCurrentTime' => GetCurrentTimeResponse::class,
+    ];
 
+    private NativeUnaryClient $client;
     private int $lockDelta = 0;
 
-    public function __construct(TestServiceClient $testServiceClient)
+    public function __construct(Connection $connection)
     {
-        $this->testServiceClient = $testServiceClient;
+        $this->client = new NativeUnaryClient($connection, NativeUnaryClient::SERVICE_TEST);
+    }
+
+    public static function create(string $host): self
+    {
+        return new self(new Connection($host));
     }
 
     /**
@@ -37,13 +52,6 @@ final class TestService
     public function lockDelta(): int
     {
         return $this->lockDelta;
-    }
-
-    public static function create(string $host): self
-    {
-        return new self(
-            new TestServiceClient($host, ['credentials' => ChannelCredentials::createInsecure()]),
-        );
     }
 
     /**
@@ -113,7 +121,7 @@ final class TestService
     public function sleepUntil(int $timestamp): void
     {
         $request = (new SleepUntilRequest())->setTimestamp((new Timestamp())->setSeconds($timestamp));
-        $this->invoke('sleepUntil', $request);
+        $this->invoke('SleepUntil', $request);
     }
 
     /**
@@ -128,13 +136,9 @@ final class TestService
 
     private function invoke(string $method, object $request): object
     {
-        $call = $this->testServiceClient->{$method}($request);
-        [$result, $status] = $call->wait();
+        $responseClass = self::RESPONSES[$method]
+            ?? throw new \LogicException("Unknown Temporal test-service method {$method}.");
 
-        if ($status->code !== 0) {
-            throw new ServiceClientException($status);
-        }
-
-        return $result;
+        return $this->client->call($method, $request, $responseClass);
     }
 }

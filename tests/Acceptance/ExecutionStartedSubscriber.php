@@ -7,14 +7,8 @@ namespace Temporal\Tests\Acceptance;
 use PHPUnit\Event\Code\TestMethod;
 use PHPUnit\Event\TestRunner\ExecutionStarted;
 use PHPUnit\Event\TestRunner\ExecutionStartedSubscriber as ExecutionStartedSubscriberInterface;
-use Psr\Container\ContainerInterface;
 use Psr\Log\LoggerInterface;
-use Spiral\Core\Attribute\Proxy;
 use Spiral\Core\Container;
-use Spiral\Goridge\RPC\RPC;
-use Spiral\Goridge\RPC\RPCInterface;
-use Spiral\RoadRunner\KeyValue\Factory;
-use Spiral\RoadRunner\KeyValue\StorageInterface;
 use Temporal\Client\ClientOptions;
 use Temporal\Client\GRPC\ServiceClient;
 use Temporal\Client\GRPC\ServiceClientInterface;
@@ -30,7 +24,8 @@ use Temporal\Tests\Acceptance\App\Feature\WorkflowStubInjector;
 use Temporal\Testing\Transcript\TranscriptStore;
 use Temporal\Testing\Transcript\TranscriptWriter;
 use Temporal\Tests\Acceptance\App\Runtime\ContainerFacade;
-use Temporal\Tests\Acceptance\App\Runtime\RRStarter;
+use Temporal\Tests\Acceptance\App\Runtime\SharedStore;
+use Temporal\Tests\Acceptance\App\Runtime\WorkerStarter;
 use Temporal\Tests\Acceptance\App\Runtime\State;
 use Temporal\Tests\Acceptance\App\Runtime\TemporalStarter;
 use Temporal\Tests\Acceptance\App\RuntimeBuilder;
@@ -106,9 +101,11 @@ final class ExecutionStartedSubscriber implements ExecutionStartedSubscriberInte
         $container->bindSingleton(TranscriptWriter::class, $testTranscript);
 
         $temporalRunner = new TemporalStarter($environment);
-        $rrRunner = new RRStarter($state, $environment);
+        $workerRunner = new WorkerStarter($state, $environment);
+        $sharedStore = SharedStore::fromEnvironment($state->workDir);
+        $sharedStore->clear();
         $temporalRunner->start();
-        $rrRunner->start();
+        $workerRunner->start();
 
         $serviceClient = $state->command->tlsKey === null && $state->command->tlsCert === null
             ? ServiceClient::create($state->address)
@@ -141,17 +138,13 @@ final class ExecutionStartedSubscriber implements ExecutionStartedSubscriberInte
             converter: $converter,
         )->withTimeout(5);
 
-        $container->bindSingleton(RRStarter::class, $rrRunner);
+        $container->bindSingleton(WorkerStarter::class, $workerRunner);
         $container->bindSingleton(TemporalStarter::class, $temporalRunner);
         $container->bindSingleton(ServiceClientInterface::class, $serviceClient);
         $container->bindSingleton(WorkflowClientInterface::class, $workflowClient);
         $container->bindSingleton(ScheduleClientInterface::class, $scheduleClient);
         $container->bindInjector(WorkflowStubInterface::class, WorkflowStubInjector::class);
         $container->bindSingleton(DataConverterInterface::class, $converter);
-        $container->bind(RPCInterface::class, static fn() => RPC::create(\getenv('RR_RPC_ADDRESS') ?: 'tcp://127.0.0.1:6001'));
-        $container->bind(
-            StorageInterface::class,
-            static fn(#[Proxy] ContainerInterface $container): StorageInterface => $container->get(Factory::class)->select('harness'),
-        );
+        $container->bindSingleton(SharedStore::class, $sharedStore);
     }
 }

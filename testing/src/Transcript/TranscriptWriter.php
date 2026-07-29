@@ -323,11 +323,6 @@ final class TranscriptWriter
             }
         }
 
-        $temporalFrame = WireFrameDecoder::decode($frame);
-        if ($temporalFrame !== null) {
-            return $temporalFrame;
-        }
-
         return [
             'encoding' => 'raw',
             'preview_base64' => \base64_encode(\substr($frame, 0, 512)),

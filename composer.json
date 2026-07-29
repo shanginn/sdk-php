@@ -3,7 +3,7 @@
     "license": "MIT",
     "type": "library",
     "description": "Temporal SDK",
-    "homepage": "https://temporal.io",
+    "homepage": "https://github.com/shanginn/sdk-php",
     "keywords": [
         "sdk",
         "api",
@@ -17,12 +17,14 @@
     "support": {
         "forum": "https://community.temporal.io",
         "docs": "https://docs.temporal.io",
-        "issues": "https://github.com/temporalio/sdk-php/issues",
-        "source": "https://github.com/temporalio/sdk-php"
+        "issues": "https://github.com/shanginn/sdk-php/issues",
+        "source": "https://github.com/shanginn/sdk-php"
     },
     "require": {
-        "php": ">=8.1",
+        "php": ">=8.6",
         "ext-json": "*",
+        "ext-temporal": "*",
+        "ext-true_async": "*",
         "google/common-protos": "^4.9",
         "google/protobuf": "^4.33.6 || ^5.34.0",
         "internal/destroy": "^1.0",
@@ -31,7 +33,11 @@
         "psr/log": "^2.0 || ^3.0.2",
         "ramsey/uuid": "^4.7.6",
         "spiral/attributes": "^3.1.8",
-        "symfony/polyfill-php83": "^1.31.0"
+        "symfony/console": "^6.4.13 || ^7.0 || ^8.0",
+        "symfony/filesystem": "^6.4.13 || ^7.0 || ^8.0",
+        "symfony/http-client": "^6.4.17 || ^7.0 || ^8.0",
+        "symfony/polyfill-php83": "^1.31.0",
+        "symfony/process": "^6.4.15 || ^7.0 || ^8.0"
     },
     "autoload": {
         "psr-4": {
@@ -77,17 +83,12 @@
         }
     },
     "suggest": {
-        "ext-grpc": "For Client calls",
         "ext-protobuf": "For better performance",
         "buggregator/trap": "For better debugging",
-        "roadrunner/psr-logger": "RoadRunner PSR-3 logger integration",
         "internal/toml": "To load TOML config files"
     },
     "scripts": {
-        "get:binaries": [
-            "dload get --no-interaction -vv",
-            "Temporal\\Worker\\Transport\\RoadRunnerVersionChecker::postUpdate"
-        ],
+        "get:binaries": "dload get --no-interaction -vv",
         "cs:diff": "php-cs-fixer fix --dry-run -v --diff --show-progress dots",
         "cs:fix": "php-cs-fixer fix -v",
         "psalm": "psalm",

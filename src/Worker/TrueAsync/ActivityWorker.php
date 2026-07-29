@@ -50,48 +50,107 @@ final class ActivityWorker
      */
     public function run(): void
     {
+        /** @var array<int, \Async\Coroutine> $inflight */
         $inflight = [];
         $live = [];
         $seq = 0;
+        $failure = null;
 
-        while (($bytes = $this->core->pollActivityTask()) !== null) {
-            $task = new ActivityTask();
-            $task->mergeFromString($bytes);
-            $token = $task->getTaskToken();
+        $recordFailure = function (\Throwable $error) use (&$failure): void {
+            if ($failure !== null) {
+                return;
+            }
 
-            /* A cancel arrives as its own task while the start task's coroutine is
-               still running; it carries no work and needs no completion, so record
-               it inline (no coroutine) for the activity's next heartbeat to
-               observe. Skip one whose activity has already finished — no heartbeat
-               will read it, so recording it would leak (the core does not normally
-               send this, but be defensive). The start side is always polled before
-               its cancel, so the live token is registered by the time we get here. */
-            if ($task->getVariant() === 'cancel') {
-                if (isset($live[$token])) {
-                    $this->rpc?->markCancellation($token, $task->getCancel());
+            $failure = $error;
+            try {
+                // Wake the sibling workflow poll and this loop's current/next
+                // activity poll. NativeWorkerRuntime performs the final drain.
+                $this->core->initiateShutdown();
+            } catch (\Throwable) {
+                // Preserve the causative poll/completion failure.
+            }
+        };
+
+        try {
+            while (($bytes = $this->core->pollActivityTask()) !== null) {
+                $this->reapCompleted($inflight);
+
+                $task = new ActivityTask();
+                $task->mergeFromString($bytes);
+                $token = $task->getTaskToken();
+
+                /* A cancel arrives as its own task while the start task's coroutine is
+                   still running; it carries no work and needs no completion, so record
+                   it inline (no coroutine) for the activity's next heartbeat to
+                   observe. Skip one whose activity has already finished — no heartbeat
+                   will read it, so recording it would leak (the core does not normally
+                   send this, but be defensive). The start side is always polled before
+                   its cancel, so the live token is registered by the time we get here. */
+                if ($task->getVariant() === 'cancel') {
+                    if (isset($live[$token])) {
+                        $this->rpc?->markCancellation($token, $task->getCancel());
+                    }
+                    continue;
                 }
+
+                $key = $seq++;
+                $live[$token] = true;
+                $inflight[$key] = \Async\spawn(
+                    function () use ($task, $token, &$live, $recordFailure): void {
+                        try {
+                            $this->handle($task);
+                        } catch (\Throwable $error) {
+                            $recordFailure($error);
+                        } finally {
+                            unset($live[$token]);
+                        }
+                    },
+                );
+            }
+        } catch (\Throwable $error) {
+            $recordFailure($error);
+        } finally {
+            if ($inflight !== []) {
+                // Do not let cancellation of the parent poll coroutine orphan
+                // already-started activities.
+                \Async\protect(static fn() => \Async\await_all_or_fail(\array_values($inflight)));
+            }
+        }
+
+        if ($failure !== null) {
+            throw $failure;
+        }
+    }
+
+    /**
+     * Remove settled activity coroutines after observing their result. Child
+     * wrappers record transport failures themselves, so completed tasks resolve
+     * successfully here.
+     *
+     * @param array<int, \Async\Coroutine> $inflight
+     */
+    private function reapCompleted(array &$inflight): void
+    {
+        foreach ($inflight as $key => $coroutine) {
+            if (!$coroutine->isCompleted()) {
                 continue;
             }
 
-            $key = $seq++;
-            $live[$token] = true;
-            $inflight[$key] = \Async\spawn(function () use ($task, $key, $token, &$inflight, &$live): void {
-                try {
-                    $this->handle($task);
-                } finally {
-                    unset($inflight[$key], $live[$token]);
-                }
-            });
-        }
-
-        if ($inflight !== []) {
-            \Async\await_all(\array_values($inflight));
+            \Async\await($coroutine);
+            unset($inflight[$key]);
         }
     }
 
     private function handle(ActivityTask $task): void
     {
         /* Cancels are handled inline in run(); only start tasks reach here. */
+        if ($this->translator->isSideEffect($task)) {
+            $this->core->completeActivityTask(
+                $this->translator->sideEffect($task)->serializeToString(),
+            );
+            return;
+        }
+
         $request = $this->translator->toServerRequest($task);
 
         if ($request === null) {
@@ -104,8 +163,12 @@ final class ActivityWorker
 
         try {
             $this->dispatcher->dispatch($request, [])->then(
-                static function ($value) use (&$result): void { $result = $value; },
-                static function (\Throwable $reason) use (&$error): void { $error = $reason; },
+                static function ($value) use (&$result): void {
+                    $result = $value;
+                },
+                static function (\Throwable $reason) use (&$error): void {
+                    $error = $reason;
+                },
             );
         } catch (\Throwable $e) {
             $error = $e;

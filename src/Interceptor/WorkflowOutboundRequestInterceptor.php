@@ -17,7 +17,7 @@ use Temporal\Internal\Interceptor\Interceptor;
 use Temporal\Worker\Transport\Command\RequestInterface;
 
 /**
- * Intercept a request before it's sent to RoadRunner.
+ * Intercept a deterministic request before it is encoded for Temporal Core.
  *
  * It's recommended to use {@see WorkflowOutboundRequestInterceptorTrait} when implementing this interface because
  * the interface might be extended in the future. The trait will provide forward compatibility.

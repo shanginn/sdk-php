@@ -17,7 +17,6 @@ use Temporal\Plugin\WorkerPluginTrait;
 use Temporal\Worker\WorkerFactoryInterface;
 use Temporal\Worker\WorkerInterface;
 use Temporal\Worker\WorkerOptions;
-use Temporal\Worker\Transport\HostConnectionInterface;
 use Temporal\Worker\Transport\RPCConnectionInterface;
 use Temporal\WorkerFactory;
 
@@ -406,7 +405,7 @@ class WorkerFactoryPluginTestCase extends TestCase
             pluginRegistry: new PluginRegistry([$plugin]),
         );
 
-        $factory->run($this->mockHost());
+        $factory->run();
 
         self::assertTrue($called);
     }
@@ -438,7 +437,7 @@ class WorkerFactoryPluginTestCase extends TestCase
             pluginRegistry: new PluginRegistry([$plugin]),
         );
 
-        $factory->run($this->mockHost());
+        $factory->run();
 
         self::assertSame($factory, $receivedFactory);
     }
@@ -495,7 +494,7 @@ class WorkerFactoryPluginTestCase extends TestCase
             pluginRegistry: new PluginRegistry([$plugin1, $plugin2]),
         );
 
-        $factory->run($this->mockHost());
+        $factory->run();
 
         // First plugin is outermost: before in forward order, after in reverse (LIFO)
         self::assertSame([
@@ -536,7 +535,7 @@ class WorkerFactoryPluginTestCase extends TestCase
             pluginRegistry: new PluginRegistry([$plugin]),
         );
 
-        $factory->run($this->mockHost());
+        $factory->run();
 
         self::assertTrue($cleanupCalled);
     }
@@ -583,13 +582,13 @@ class WorkerFactoryPluginTestCase extends TestCase
             pluginRegistry: new PluginRegistry([$outerPlugin, $innerPlugin]),
         );
 
-        $result = $factory->run($this->mockHost());
+        $result = $factory->run();
 
         self::assertSame(42, $result);
         self::assertFalse($innerCalled);
     }
 
-    public function testRunHookFullLifecycleOrder(): void
+    public function testRunHookLifecycleOrder(): void
     {
         $order = [];
 
@@ -637,13 +636,10 @@ class WorkerFactoryPluginTestCase extends TestCase
             $this->mockRpc(),
             pluginRegistry: new PluginRegistry([$plugin]),
         );
-        $factory->newWorker();
-        $factory->run($this->mockHost());
+        $factory->run();
 
         self::assertSame([
             'configureWorkerFactory',
-            'configureWorker',
-            'initializeWorker',
             'run:before',
             'run:after',
         ], $order);
@@ -656,7 +652,7 @@ class WorkerFactoryPluginTestCase extends TestCase
             $this->mockRpc(),
         );
 
-        $result = $factory->run($this->mockHost());
+        $result = $factory->run();
 
         self::assertSame(0, $result);
     }
@@ -671,7 +667,7 @@ class WorkerFactoryPluginTestCase extends TestCase
             pluginRegistry: new PluginRegistry([$plugin]),
         );
 
-        $result = $factory->run($this->mockHost());
+        $result = $factory->run();
 
         self::assertSame(0, $result);
     }
@@ -681,14 +677,4 @@ class WorkerFactoryPluginTestCase extends TestCase
         return $this->createMock(RPCConnectionInterface::class);
     }
 
-    /**
-     * Create a mock host that immediately returns null (empty run loop).
-     */
-    private function mockHost(): HostConnectionInterface
-    {
-        $host = $this->createMock(HostConnectionInterface::class);
-        $host->method('waitBatch')->willReturn(null);
-
-        return $host;
-    }
 }

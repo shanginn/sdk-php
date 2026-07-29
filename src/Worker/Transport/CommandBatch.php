@@ -12,7 +12,7 @@ declare(strict_types=1);
 namespace Temporal\Worker\Transport;
 
 /**
- * Carries multiple commands between host and worker process (use proper codec to read command content).
+ * Carries multiple commands for an encoded engine test batch.
  */
 final class CommandBatch
 {

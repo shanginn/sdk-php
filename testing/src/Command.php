@@ -43,7 +43,7 @@ final class Command
     }
 
     /**
-     * Used in RR worker
+     * Used by a standalone native worker process.
      */
     public static function fromCommandLine(array $argv): self
     {

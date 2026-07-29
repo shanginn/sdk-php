@@ -16,12 +16,12 @@ use Temporal\DataConverter\DataConverter;
 use Temporal\Exception\Failure\FailureConverter;
 use Temporal\Tests\TestCase;
 use Temporal\Worker\Transport\Command\Client\Request;
-use Temporal\Worker\Transport\HostConnectionInterface;
+use Temporal\Worker\Transport\Codec\JsonCodec;
 use Temporal\Worker\WorkerFactoryInterface;
 use Temporal\WorkerFactory;
 use Temporal\Worker\Transport\CommandBatch;
 
-class WorkerMock implements HostConnectionInterface
+class WorkerMock
 {
     private WorkerFactoryInterface $factory;
 
@@ -39,8 +39,6 @@ class WorkerMock implements HostConnectionInterface
 
     public static function createMock(): WorkerMock
     {
-        $_SERVER['RR_CODEC'] = 'json';
-
         $mock = new self();
 
         $mock->factory = WorkerFactory::create();
@@ -83,7 +81,22 @@ class WorkerMock implements HostConnectionInterface
 
         $this->testCase = $testCase;
 
-        $this->factory->run($this);
+        if (!$this->factory instanceof WorkerFactory) {
+            throw new \LogicException('Engine fixture requires the concrete WorkerFactory.');
+        }
+
+        $codec = new JsonCodec($this->factory->getDataConverter());
+        while ($message = $this->waitBatch()) {
+            try {
+                $this->send($this->factory->processEngineBatch(
+                    $codec,
+                    $message->messages,
+                    $message->context,
+                ));
+            } catch (\Throwable $error) {
+                $this->error($error);
+            }
+        }
     }
 
     public function waitBatch(): ?CommandBatch

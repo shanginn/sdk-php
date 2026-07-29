@@ -2,13 +2,7 @@
 
 declare(strict_types=1);
 
-use Psr\Container\ContainerInterface;
 use Psr\Log\LoggerInterface;
-use Spiral\Core\Attribute\Proxy;
-use Spiral\Goridge\RPC\RPC;
-use Spiral\Goridge\RPC\RPCInterface;
-use Spiral\RoadRunner\KeyValue\Factory;
-use Spiral\RoadRunner\KeyValue\StorageInterface;
 use Temporal\Client\ClientOptions;
 use Temporal\Client\GRPC\ServiceClient;
 use Temporal\Client\GRPC\ServiceClientInterface;
@@ -30,14 +24,14 @@ use Temporal\Testing\Transcript\TranscriptWriter;
 use Temporal\Testing\Transcript\TranscriptPlugin;
 use Temporal\Tests\Acceptance\App\Runtime\FatalHandler;
 use Temporal\Tests\Acceptance\App\Runtime\Feature;
+use Temporal\Tests\Acceptance\App\Runtime\SharedStore;
 use Temporal\Tests\Acceptance\App\Runtime\State;
 use Temporal\Tests\Acceptance\App\RuntimeBuilder;
 use Temporal\Worker\Logger\StderrLogger;
-use Temporal\Tests\Acceptance\App\Transport\RecordingHost;
-use Temporal\Worker\Transport\RoadRunner;
 use Temporal\Worker\WorkerFactoryInterface;
 use Temporal\Worker\WorkerInterface;
 use Temporal\WorkerFactory;
+use TrueAsync\Temporal\Core\Connection;
 
 \chdir(__DIR__ . '/../..');
 require './vendor/autoload.php';
@@ -98,11 +92,31 @@ try {
     $container->bindSingleton(DataConverter::class, $converter);
 
     $plugins = [new TranscriptPlugin($workerTranscript)];
+    $loadCertificate = static function (?string $path): ?string {
+        if ($path === null || $path === '') {
+            return null;
+        }
+
+        $contents = \file_get_contents($path);
+
+        return $contents === false
+            ? throw new \RuntimeException("Cannot read TLS material from {$path}.")
+            : $contents;
+    };
+    $coreConnection = new Connection(
+        address: $runtime->address,
+        tls: $run->tlsKey !== null || $run->tlsCert !== null,
+        tlsClientCert: $loadCertificate($run->tlsCert),
+        tlsClientPrivateKey: $loadCertificate($run->tlsKey),
+    );
+
     $container->bindSingleton(
         WorkerFactoryInterface::class,
         WorkerFactory::create(
             converter: $converter,
             pluginRegistry: new PluginRegistry($plugins),
+            connection: $coreConnection,
+            namespace: $runtime->namespace,
         )
     );
 
@@ -127,11 +141,7 @@ try {
     $container->bindSingleton(ServiceClientInterface::class, $serviceClient);
     $container->bindSingleton(WorkflowClientInterface::class, $workflowClient);
     $container->bindSingleton(ScheduleClientInterface::class, $scheduleClient);
-    $container->bindSingleton(RPCInterface::class, RPC::create(\getenv('ROADRUNNER_ADDRESS') ?: 'tcp://127.0.0.1:6001'));
-    $container->bind(
-        StorageInterface::class,
-        static fn(#[Proxy] ContainerInterface $c): StorageInterface => $c->get(Factory::class)->select('harness'),
-    );
+    $container->bindSingleton(SharedStore::class, SharedStore::fromEnvironment($runtime->workDir));
 
     foreach ($runtime->workflows() as $feature => $workflow) {
         $getWorker($feature)->registerWorkflowTypes($workflow);
@@ -141,8 +151,7 @@ try {
         $getWorker($feature)->registerActivityImplementations($container->make($activity));
     }
 
-    $host = new RecordingHost(RoadRunner::create(), $workerTranscript);
-    $container->get(WorkerFactoryInterface::class)->run($host);
+    $container->get(WorkerFactoryInterface::class)->run();
 } catch (\Throwable $e) {
     $workerTranscript->writeFatal($e);
     $workerTranscript->flush();

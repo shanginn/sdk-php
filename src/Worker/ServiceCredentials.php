@@ -7,7 +7,7 @@ namespace Temporal\Worker;
 use Temporal\Internal\Traits\CloneWith;
 
 /**
- * DTO with credential configuration for connecting RoadRunner to the Temporal service.
+ * Credential configuration used when creating a native Temporal Core connection.
  */
 final class ServiceCredentials
 {
@@ -28,18 +28,12 @@ final class ServiceCredentials
     /**
      * Set the authentication token for API calls.
      *
-     * To update the API key in runtime, call the `UpdateAPIKey` RPC method with the new key:
-     *
-     * ```
-     *  $result = \Temporal\Worker\Transport\Goridge::create()->call(
-     *      'temporal.UpdateAPIKey',
-     *      $newApiKey,
-     *  );
-     * ```
+     * Create a new factory/connection when rotating a worker API key. Client
+     * calls may use {@see \Temporal\Client\GRPC\BaseClient::withAuthKey()} for a
+     * dynamically resolved token.
      *
      * @link https://docs.temporal.io/cloud/api-keys
      * @since SDK 2.12.0
-     * @since RoadRunner 2024.3.0
      */
     public function withApiKey(string $key): static
     {

@@ -8,8 +8,10 @@ declare(strict_types=1);
  * ScheduleLocalActivity). A local activity runs in-process and is recorded as a
  * marker rather than dispatched to the server, but the core delivers it through
  * the same activity-task channel and resolves it through the same resolve_activity
- * job, so only the encode is special. Drives two local activities in sequence to
- * confirm the seq-based command/resolution correlation holds across replays.
+ * job, so only the encode is special. The first execution fails once with a retry
+ * delay above localRetryThreshold; that forces Core's DoBackoff response and
+ * verifies that the codec drives the deterministic timer + reschedule state
+ * machine before running a second local activity.
  * Requires the `temporal` extension and a running Temporal frontend.
  *
  *   php -d extension=temporal.so tests/truasync/workflow_local_activity.php [address]
@@ -25,6 +27,7 @@ use Temporal\Activity\LocalActivityOptions;
 use Temporal\Client\GRPC\TrueAsyncServiceClient;
 use Temporal\Client\WorkflowClient;
 use Temporal\Client\WorkflowOptions;
+use Temporal\Common\RetryOptions;
 use Temporal\Workflow;
 use Temporal\Workflow\WorkflowMethod;
 use Temporal\Worker\TrueAsync\TemporalWorker;
@@ -41,7 +44,14 @@ class TrueAsyncLocalActivityWorkflow
     {
         // Passing LocalActivityOptions routes executeActivity down the local path
         // (the typed-stub proxy instead keys off a #[LocalActivityInterface] attr).
-        $options = LocalActivityOptions::new()->withStartToCloseTimeout(10);
+        $options = LocalActivityOptions::new()
+            ->withStartToCloseTimeout(10)
+            ->withLocalRetryThreshold('10 milliseconds')
+            ->withRetryOptions(
+                RetryOptions::new()
+                    ->withInitialInterval(1)
+                    ->withMaximumAttempts(2),
+            );
 
         $a = yield Workflow::executeActivity('TrueAsyncLocalActivity.upper', [$input], $options);
         $b = yield Workflow::executeActivity('TrueAsyncLocalActivity.upper', [$a . '-2'], $options);
@@ -53,9 +63,17 @@ class TrueAsyncLocalActivityWorkflow
 #[ActivityInterface(prefix: 'TrueAsyncLocalActivity.')]
 class TrueAsyncLocalActivity
 {
+    /** @var array<string, int> */
+    private array $attempts = [];
+
     #[ActivityMethod]
     public function upper(string $input): string
     {
+        $this->attempts[$input] = ($this->attempts[$input] ?? 0) + 1;
+        if ($input === 'hello' && $this->attempts[$input] === 1) {
+            throw new \RuntimeException('retry me through a workflow timer');
+        }
+
         return \strtoupper($input);
     }
 }

@@ -20,7 +20,7 @@ final class Environment
     public readonly SymfonyStyle $io;
     private ?Process $temporalTestServerProcess = null;
     private ?Process $temporalServerProcess = null;
-    private ?Process $roadRunnerProcess = null;
+    private ?Process $workerProcess = null;
     private bool $externalTemporalProcessActive = false;
 
     public function __construct(
@@ -138,16 +138,30 @@ final class Environment
 
     public function startTemporalTestServer(int $commandTimeout = 10): void
     {
+        $temporalServerAddress = $this->command->address;
+        if ($temporalServerAddress === null) {
+            $this->io->error('Temporal server address is not set.');
+            exit(1);
+        }
         $temporalPort = \parse_url((string) $this->command->address, PHP_URL_PORT);
 
         $process = new Process([$this->systemInfo->temporalServerExecutable, $temporalPort, '--enable-time-skipping']);
         $process->setTimeout($commandTimeout);
         $this->temporalTestServerProcess = $process;
 
-        $this->runProcess('Temporal Test', $process, $commandTimeout, static function (): bool {
-            \sleep(1);
+        $this->runProcess('Temporal Test', $process, $commandTimeout, function () use ($temporalServerAddress): bool {
+            $check = new Process([
+                $this->systemInfo->temporalCliExecutable,
+                'operator',
+                'cluster',
+                'health',
+                '--address',
+                $temporalServerAddress,
+            ]);
+            $check->setTimeout(1);
+            $check->run();
 
-            return true;
+            return \str_contains($check->getOutput(), 'SERVING');
         }, onFailure: function (Process $process): void {
             $errorOutput = $process->getErrorOutput();
 
@@ -166,35 +180,33 @@ final class Environment
     /**
      * @param array<string, mixed> $envs
      */
-    public function startRoadRunner(array $rrCommand, int $commandTimeout = 10, array $envs = [], string $configFile = '.rr.yaml'): void
+    public function startWorker(array $command, int $commandTimeout = 10, array $envs = []): void
     {
         if (!$this->isTemporalRunning() && !$this->isTemporalTestRunning()) {
             $this->io->error([
-                'Temporal server is not running. Please start it before starting RoadRunner.',
+                'Temporal server is not running. Please start it before starting a worker.',
             ]);
             exit(1);
         }
 
-        $process = new Process(command: $rrCommand, env: $envs, timeout: $commandTimeout);
-        $this->roadRunnerProcess = $process;
+        if ($command === []) {
+            throw new \InvalidArgumentException('Worker command cannot be empty.');
+        }
 
-        $this->runProcess('RoadRunner', $process, $commandTimeout, function () use ($process, $configFile) {
-            $output = $process->getOutput();
-            if (!\str_contains($output, 'RoadRunner server started')) {
-                return false;
-            }
+        $process = new Process(command: $command, env: $envs, timeout: null);
+        $this->workerProcess = $process;
 
-            $check = new Process([$this->systemInfo->rrExecutable, 'workers', '-c', $configFile]);
-            $check->setTimeout(1);
-            $check->run();
-
-            return \str_contains($check->getOutput(), 'Workers of');
-        });
+        $this->runProcess(
+            'Temporal worker',
+            $process,
+            $commandTimeout,
+            static fn(): bool => $process->isRunning(),
+        );
     }
 
     public function stop(): void
     {
-        $this->stopRoadRunner();
+        $this->stopWorker();
         $this->stopTemporalTestServer();
         $this->stopTemporalServer();
     }
@@ -232,13 +244,13 @@ final class Environment
         }
     }
 
-    public function stopRoadRunner(): void
+    public function stopWorker(): void
     {
-        if ($this->isRoadRunnerRunning()) {
-            $this->io->info('Stopping RoadRunner... ');
-            $this->roadRunnerProcess->stop();
-            $this->roadRunnerProcess = null;
-            $this->io->info('RoadRunner server stopped.');
+        if ($this->isWorkerRunning()) {
+            $this->io->info('Stopping Temporal worker... ');
+            $this->workerProcess->stop();
+            $this->workerProcess = null;
+            $this->io->info('Temporal worker stopped.');
         }
     }
 
@@ -252,11 +264,11 @@ final class Environment
     }
 
     /**
-     * @psalm-assert Process $this->roadRunnerProcess
+     * @psalm-assert Process $this->workerProcess
      */
-    public function isRoadRunnerRunning(): bool
+    public function isWorkerRunning(): bool
     {
-        return $this->roadRunnerProcess?->isRunning() === true;
+        return $this->workerProcess?->isRunning() === true;
     }
 
     /**
@@ -275,15 +287,17 @@ final class Environment
         $process->start();
 
         $deadline = \microtime(true) + (float) $commandTimeout;
+        $ready = false;
 
         while ($process->isRunning() && \microtime(true) < $deadline) {
             if ($readiness()) {
+                $ready = true;
                 break;
             }
             \usleep(10_000);
         }
 
-        if (!$process->isRunning()) {
+        if (!$ready) {
             ($onFailure ?? function (Process $process) use ($name): void {
                 $this->io->error(\sprintf(
                     'Failed to start until %s is ready. Status: "%s". Stderr: "%s". Stdout: "%s".',

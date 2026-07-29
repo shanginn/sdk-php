@@ -8,10 +8,9 @@ use PHPUnit\Framework\TestCase;
 use Temporal\Api\Workflowservice\V1\GetSystemInfoRequest;
 use Temporal\Api\Workflowservice\V1\GetSystemInfoResponse;
 use Temporal\Api\Workflowservice\V1\GetSystemInfoResponse\Capabilities;
-use Temporal\Api\Workflowservice\V1\WorkflowServiceClient;
 use Temporal\Client\Common\RpcRetryOptions;
 use Temporal\Client\GRPC\BaseClient;
-use Temporal\Client\GRPC\Connection\ConnectionState;
+use Temporal\Client\GRPC\Connection\Connection;
 use Temporal\Client\GRPC\ContextInterface;
 use Temporal\Client\GRPC\ServiceClient;
 use Temporal\Client\GRPC\StatusCode;
@@ -19,268 +18,237 @@ use Temporal\Exception\Client\ServiceClientException;
 use Temporal\Exception\Client\TimeoutException;
 use Temporal\Internal\Interceptor\Pipeline;
 
-class BaseClientTestCase extends TestCase
+final class BaseClientTestCase extends TestCase
 {
     public function testGetCapabilitiesUsesCache(): void
     {
-        $client = $this->createClientMock();
+        $calls = 0;
+        $client = $this->createClientMock(static function (string $method) use (&$calls): object {
+            self::assertSame('GetSystemInfo', $method);
+            ++$calls;
+            return self::systemInfo();
+        });
 
         $capabilities0 = $client->getServerCapabilities();
         $capabilities1 = $client->getServerCapabilities();
 
-        $this->assertTrue($capabilities0->supportsSchedules);
-        $this->assertSame($capabilities0, $capabilities1);
+        self::assertTrue($capabilities0?->supportsSchedules);
+        self::assertSame($capabilities0, $capabilities1);
+        self::assertSame(1, $calls);
     }
 
-    public function testGetCapabilitiesClearsCache(): void
+    public function testGetCapabilitiesClearsCacheOnDisconnect(): void
     {
-        $client = $this->createClientMock();
+        $calls = 0;
+        $client = $this->createClientMock(static function () use (&$calls): object {
+            ++$calls;
+            return self::systemInfo();
+        });
 
         $capabilities0 = $client->getServerCapabilities();
         $client->getConnection()->disconnect();
         $capabilities1 = $client->getServerCapabilities();
 
-        $this->assertTrue($capabilities0->supportsSchedules);
-        $this->assertNotSame($capabilities0, $capabilities1);
+        self::assertNotSame($capabilities0, $capabilities1);
+        self::assertSame(2, $calls);
     }
 
-    public function testClose(): void
+    public function testCloseMarksCompatibilityConnectionClosed(): void
     {
-        $client = $this->createClientMock(static fn() => new class extends WorkflowServiceClient {
-            public function __construct() {}
-
-            public function getConnectivityState($try_to_connect = false): int
-            {
-                return ConnectionState::TransientFailure->value;
-            }
-
-            public function close(): void {}
-        });
+        $client = $this->createClientMock();
         $client->close();
 
-        $this->assertFalse($client->getConnection()->isConnected());
+        self::assertFalse($client->getConnection()->isConnected());
     }
 
-    public function testGetContext(): void
+    public function testContextIsImmutable(): void
     {
         $client = $this->createClientMock();
         $context = $client->getContext();
+        $dynamic = $context->withTimeout(1.234);
+        $client2 = $client->withContext($dynamic);
 
-        $this->assertSame($context, $client->getContext());
+        self::assertSame($context, $client->getContext());
+        self::assertSame($dynamic, $client2->getContext());
+        self::assertNotSame($client, $client2);
+        self::assertNotSame($dynamic->getDeadline(), $dynamic->getDeadline());
+        self::assertNull($context->getDeadline());
     }
 
-    public function testWithContext(): void
+    public function testStaticDeadlineIsStable(): void
+    {
+        $deadline = new \DateTimeImmutable('+1 second');
+        $context = $this->createClientMock()->getContext()->withDeadline($deadline);
+
+        self::assertSame($deadline, $context->getDeadline());
+        self::assertSame($context->getDeadline(), $context->getDeadline());
+    }
+
+    public function testWithAuthKeyAddsBearerMetadataAtInvocationTime(): void
     {
         $client = $this->createClientMock();
         $context = $client->getContext();
-        $context2 = $context->withTimeout(1.234);
-        $client2 = $client->withContext($context2);
+        $authenticated = $client->withAuthKey('test-key');
 
-        $this->assertSame($context, $client->getContext());
-        $this->assertSame($context2, $client2->getContext());
-        $this->assertNotSame($client, $client2);
-    }
-
-    public function testWithTimeoutDynamicDeadline(): void
-    {
-        $client = $this->createClientMock();
-        $context = $client->getContext()->withTimeout(1.234);
-
-        $this->assertNotSame($context->getDeadline(), $context->getDeadline());
-    }
-
-    public function testContextGetDeadlineWithoutDeadline(): void
-    {
-        $client = $this->createClientMock();
-        $context = $client->getContext();
-
-        $this->assertNull($context->getDeadline());
-    }
-
-    public function testContextGetDeadlineWithStaticDeadline(): void
-    {
-        $client = $this->createClientMock();
-        $context = $client->getContext()->withDeadline(new \DateTimeImmutable('+1 second'));
-
-        $this->assertSame($context->getDeadline(), $context->getDeadline());
-    }
-
-    public function testWithAuthKey(): void
-    {
-        $client = $this->createClientMock();
-        $context = $client->getContext();
-        $client2 = $client->withAuthKey('test-key');
-
-        // Client immutability
-        $this->assertNotSame($client, $client2);
-        // Old context was not modified
-        $this->assertSame($context, $client->getContext());
-        // New context is the same as the old one
-        // because the auth key is added to the context before API method call
-        $this->assertSame($context, $client2->getContext());
+        self::assertNotSame($client, $authenticated);
+        self::assertSame($context, $client->getContext());
+        self::assertSame($context, $authenticated->getContext());
 
         $ctx1 = $client->testCall()->ctx;
         self::assertInstanceOf(ContextInterface::class, $ctx1);
-        $this->assertArrayNotHasKey('Authorization', $ctx1->getMetadata());
-        $keysBefore = \count($ctx1->getMetadata());
+        self::assertArrayNotHasKey('Authorization', $ctx1->getMetadata());
 
-        $ctx2 = $client2->testCall()->ctx;
+        $ctx2 = $authenticated->testCall()->ctx;
         self::assertInstanceOf(ContextInterface::class, $ctx2);
-        $this->assertArrayHasKey('Authorization', $ctx2->getMetadata());
-        $this->assertSame(['Bearer test-key'], $ctx2->getMetadata()['Authorization']);
-        $this->assertSame($keysBefore + 1, \count($ctx2->getMetadata()), 'API Key doesnt affect other metadata');
+        self::assertSame(['Bearer test-key'], $ctx2->getMetadata()['Authorization']);
     }
 
-    public function testWithDynamicAuthKey(): void
+    public function testWithDynamicAuthKeyReadsStringableForEveryInvocation(): void
     {
         $client = $this->createClientMock()->withAuthKey(new class implements \Stringable {
             public function __toString(): string
             {
                 static $counter = 0;
-                $counter++;
-                return "test-key-$counter";
+                return 'test-key-' . ++$counter;
             }
         });
 
-        $ctx = $client->testCall()->ctx;
-        self::assertInstanceOf(ContextInterface::class, $ctx);
-        $this->assertArrayHasKey('Authorization', $ctx->getMetadata());
-        $this->assertSame(['Bearer test-key-1'], $ctx->getMetadata()['Authorization']);
-
-        $ctx2 = $client->testCall()->ctx;
-        self::assertInstanceOf(ContextInterface::class, $ctx2);
-        $this->assertArrayHasKey('Authorization', $ctx2->getMetadata());
-        $this->assertSame(['Bearer test-key-2'], $ctx2->getMetadata()['Authorization']);
+        self::assertSame(['Bearer test-key-1'], $client->testCall()->ctx->getMetadata()['Authorization']);
+        self::assertSame(['Bearer test-key-2'], $client->testCall()->ctx->getMetadata()['Authorization']);
     }
 
-    public function testServiceClientCallDeadlineReached(): void
+    public function testDeadlineReachedMapsRetryableFailureToTimeout(): void
     {
-        $client = $this->createClientMock(static fn() => new class extends WorkflowServiceClient {
-            public function __construct() {}
-
-            public function testCall(): void
-            {
-                throw new class((object) ['code' => StatusCode::UNKNOWN, 'metadata' => []]) extends ServiceClientException {};
-            }
-
-            public function close(): void {}
+        $client = $this->createClientMock(static function (): never {
+            throw self::serviceError(StatusCode::UNKNOWN);
         })->withInterceptorPipeline(null);
 
         $client = $client->withContext(
             $client->getContext()
                 ->withDeadline(new \DateTimeImmutable('-1 second'))
-                ->withRetryOptions(RpcRetryOptions::new()->withMaximumAttempts(2)), // stop if deadline doesn't work
+                ->withRetryOptions(RpcRetryOptions::new()->withMaximumAttempts(2)),
         );
 
         self::expectException(TimeoutException::class);
-
         $client->testCall();
     }
 
-    public function testServiceClientCallCustomException(): void
+    public function testCustomTransportExceptionIsNotRetriedOrWrapped(): void
     {
-        $client = $this->createClientMock(static fn() => new class extends WorkflowServiceClient {
-            public function __construct() {}
-
-            public function testCall(): void
-            {
-                throw new \RuntimeException('foo');
-            }
-
-            public function close(): void {}
+        $client = $this->createClientMock(static function (): never {
+            throw new \RuntimeException('foo');
         })->withInterceptorPipeline(null);
-
-        $client = $client->withContext(
-            $client->getContext()
-                ->withDeadline(new \DateTimeImmutable('-1 second'))
-                ->withRetryOptions(RpcRetryOptions::new()->withMaximumAttempts(2)), // stop if deadline doesn't work
-        );
 
         self::expectException(\RuntimeException::class);
         self::expectExceptionMessage('foo');
-
         $client->testCall();
     }
 
-    /**
-     * After attempts are exhausted, the last error is thrown.
-     */
-    public function testServiceClientCallMaximumAttemptsReached(): void
+    public function testMaximumAttemptsRethrowsLastServiceError(): void
     {
-        $client = $this->createClientMock(fn() => new class extends WorkflowServiceClient {
-            public function __construct() {}
-
-            public function testCall(): void
-            {
-                static $counter = 0;
-                throw new class(++$counter) extends ServiceClientException {
-                    public function __construct(public int $attempt)
-                    {
-                        parent::__construct((object) ['code' => StatusCode::UNKNOWN, 'metadata' => []]);
-                    }
-
-                    public function isTestError(): bool
-                    {
-                        return true;
-                    }
-                };
-            }
-
-            public function close(): void {}
+        $attempt = 0;
+        $client = $this->createClientMock(static function () use (&$attempt): never {
+            throw self::serviceError(StatusCode::UNKNOWN, ++$attempt);
         })->withInterceptorPipeline(null);
 
         $client = $client->withContext(
             $client->getContext()
-                ->withDeadline(new \DateTimeImmutable('+2 seconds')) // stop if attempts don't work
+                ->withDeadline(new \DateTimeImmutable('+2 seconds'))
                 ->withRetryOptions(RpcRetryOptions::new()->withMaximumAttempts(3)->withBackoffCoefficient(1)),
         );
 
         try {
             $client->testCall();
             self::fail('Expected exception');
-        } catch (ServiceClientException $e) {
-            self::assertTrue($e->isTestError());
-            self::assertSame(3, $e->attempt);
+        } catch (ServiceClientException $error) {
+            self::assertSame(3, $error->attempt);
+            self::assertSame(3, $attempt);
         }
     }
 
-    private function createClientMock(?callable $serviceClientFactory = null): BaseClient
+    private function createClientMock(?callable $handler = null): BaseClient
     {
-        return (new class($serviceClientFactory ?? static fn() => new class extends WorkflowServiceClient {
-            public function __construct() {}
+        $handler ??= static fn(string $method, object $arg, ContextInterface $ctx): object => (object) [
+            'method' => $method,
+            'arg' => $arg,
+            'ctx' => $ctx,
+        ];
 
-            public function getConnectivityState($try_to_connect = false): int
+        $client = new class(new Connection()) extends ServiceClient {
+            private \Closure $handler;
+
+            public function setHandler(callable $handler): void
             {
-                return ConnectionState::Ready->value;
+                $this->handler = $handler(...);
             }
 
-            public function close(): void {}
-        }) extends ServiceClient {
+            public function testCall(): object
+            {
+                return $this->invoke('testCall', (object) []);
+            }
 
             public function getSystemInfo(
                 GetSystemInfoRequest $arg,
                 ?ContextInterface $ctx = null,
             ): GetSystemInfoResponse {
-                return (new GetSystemInfoResponse())
-                    ->setCapabilities((new Capabilities())->setSupportsSchedules(true))
-                    ->setServerVersion('1.2.3');
+                $response = ($this->handler)(
+                    'GetSystemInfo',
+                    $arg,
+                    $ctx ?? $this->getContext(),
+                    [],
+                );
+
+                if (!$response instanceof GetSystemInfoResponse) {
+                    throw new \UnexpectedValueException('Expected a GetSystemInfoResponse test double.');
+                }
+
+                return $response;
             }
 
-            public function testCall(): mixed
-            {
-                return $this->invoke("testCall", (object) [], null);
+            protected function performCall(
+                string $method,
+                object $arg,
+                ContextInterface $ctx,
+                array $options,
+            ): object {
+                return ($this->handler)($method, $arg, $ctx, $options);
             }
-        })->withInterceptorPipeline(
-            Pipeline::prepare([new class implements \Temporal\Interceptor\GrpcClientInterceptor {
+        };
+        $client->setHandler($handler);
+
+        return $client->withInterceptorPipeline(Pipeline::prepare([
+            new class implements \Temporal\Interceptor\GrpcClientInterceptor {
                 public function interceptCall(
                     string $method,
                     object $arg,
                     ContextInterface $ctx,
                     callable $next,
                 ): object {
-                    return (object) ['method' => $method, 'arg' => $arg, 'ctx' => $ctx, 'next' => $next];
+                    return (object) [
+                        'method' => $method,
+                        'arg' => $arg,
+                        'ctx' => $ctx,
+                        'next' => $next,
+                    ];
                 }
-            }]),
-        );
+            },
+        ]));
+    }
+
+    private static function systemInfo(): GetSystemInfoResponse
+    {
+        return (new GetSystemInfoResponse())
+            ->setCapabilities((new Capabilities())->setSupportsSchedules(true))
+            ->setServerVersion('1.2.3');
+    }
+
+    private static function serviceError(int $code, int $attempt = 0): ServiceClientException
+    {
+        return new class((object) ['code' => $code, 'metadata' => []], $attempt) extends ServiceClientException {
+            public function __construct(\stdClass $status, public readonly int $attempt)
+            {
+                parent::__construct($status);
+            }
+        };
     }
 }

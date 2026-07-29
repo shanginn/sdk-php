@@ -6,15 +6,23 @@ All contributors must complete the Temporal Contributor License Agreement (CLA) 
 
 ## Development environment
 
-- [PHP 8.1+](https://www.php.net/downloads.php)
+- PHP 8.6+ built from [`true-async/php-src`](https://github.com/true-async/php-src)
+- [`ext-true_async`](https://github.com/true-async/php-async)
+- [`ext-temporal`](https://github.com/shanginn/php-temporal)
 - [Composer](https://getcomposer.org/download/)
 
 ## Build
 
+Run Composer with a stock PHP CLI while installing this repository's development
+tooling. Composer 2 and `composer-patches` currently use stream-context callbacks
+that PHP 8.6 TrueAsync rejects. This does not affect the SDK runtime; all test and
+worker commands below must use the TrueAsync PHP executable with `ext-temporal`
+loaded.
+
 ```bash
-composer install              # Downloads regular dependencies
-composer run get:binaries     # Downloads dependencies for local development
-pecl install grpc             # Required by the Temporal client
+SYSTEM_PHP=/path/to/stock/php
+"$SYSTEM_PHP" "$(command -v composer)" install --ignore-platform-reqs
+"$SYSTEM_PHP" "$(command -v composer)" get:binaries
 pecl install protobuf         # Improves performance of protobuf serialization
 ```
 

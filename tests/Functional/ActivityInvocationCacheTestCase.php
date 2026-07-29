@@ -9,18 +9,18 @@ use Exception;
 use Temporal\DataConverter\EncodedValues;
 use Temporal\DataConverter\ValuesInterface;
 use Temporal\Exception\Failure\ApplicationFailure;
-use Temporal\Worker\ActivityInvocationCache\RoadRunnerActivityInvocationCache;
+use Temporal\Worker\ActivityInvocationCache\InMemoryActivityInvocationCache;
 use Temporal\Worker\Transport\Command\Server\ServerRequest;
 use Temporal\Worker\Transport\Command\Server\TickInfo;
 use Temporal\Worker\Transport\Command\ServerRequestInterface;
 
 class ActivityInvocationCacheTestCase extends AbstractFunctional
 {
-    private RoadRunnerActivityInvocationCache $cache;
+    private InMemoryActivityInvocationCache $cache;
 
     protected function setUp(): void
     {
-        $this->cache = RoadRunnerActivityInvocationCache::create();
+        $this->cache = new InMemoryActivityInvocationCache();
         parent::setUp();
     }
 

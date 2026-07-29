@@ -1,4 +1,4 @@
-# The true-async branch runs its own pipeline (truasync-ci.yml): it needs
+# The true-async branch runs its own pipeline (trueasync-ci.yml): it needs
 # the TrueAsync PHP build, and upstream auto-fixes must not touch the fork.
 on:
   push:

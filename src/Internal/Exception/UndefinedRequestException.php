@@ -15,7 +15,7 @@ use Temporal\Internal\Transport\Request\UndefinedResponse;
 
 /**
  * The exception is converted into {@see UndefinedResponse} and sent to the client.
- * This kind of failure raises panic in the Temporal Worker on the RoadRunner side.
+ * This kind of failure is reported as a failed workflow activation.
  *
  * @internal
  */

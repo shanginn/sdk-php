@@ -20,7 +20,7 @@ use Temporal\Worker\Transport\Command\RequestInterface;
 use Temporal\Worker\Transport\Command\ServerRequestInterface;
 
 /**
- * A request from RoadRunner to the worker.
+ * A request from the native Temporal runtime to the SDK worker engine.
  *
  * @psalm-import-type RequestOptions from RequestInterface
  * @psalm-immutable

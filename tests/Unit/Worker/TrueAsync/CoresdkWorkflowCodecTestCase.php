@@ -1,0 +1,465 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Temporal\Tests\Unit\Worker\TrueAsync;
+
+use Coresdk\Common\NamespacedWorkflowExecution;
+use Coresdk\WorkflowActivation\InitializeWorkflow;
+use Coresdk\WorkflowActivation\NotifyHasPatch;
+use Coresdk\WorkflowActivation\RemoveFromCache;
+use Coresdk\WorkflowActivation\RemoveFromCache\EvictionReason;
+use Coresdk\WorkflowActivation\ResolveChildWorkflowExecutionStart;
+use Coresdk\WorkflowActivation\ResolveChildWorkflowExecutionStartSuccess;
+use Coresdk\WorkflowActivation\WorkflowActivation;
+use Coresdk\WorkflowActivation\WorkflowActivationJob;
+use Google\Protobuf\Duration;
+use PHPUnit\Framework\TestCase;
+use Temporal\Api\Common\V1\Payloads;
+use Temporal\Api\Common\V1\Priority;
+use Temporal\Api\Common\V1\RetryPolicy;
+use Temporal\Api\Common\V1\SearchAttributes;
+use Temporal\Api\Common\V1\WorkflowExecution;
+use Temporal\Api\Enums\V1\VersioningBehavior;
+use Temporal\DataConverter\DataConverter;
+use Temporal\DataConverter\EncodedValues;
+use Temporal\Interceptor\Header;
+use Temporal\Internal\Transport\Request\ExecuteChildWorkflow;
+use Temporal\Internal\Transport\Request\GetChildWorkflowExecution;
+use Temporal\Worker\Transport\Command\Client\Request;
+use Temporal\Worker\TrueAsync\CoresdkWorkflowCodec;
+use Temporal\Worker\Transport\Command\Server\ServerRequest;
+use Temporal\Worker\Transport\Command\Server\SuccessResponse;
+use Temporal\Workflow\WorkflowExecution as SdkWorkflowExecution;
+
+final class CoresdkWorkflowCodecTestCase extends TestCase
+{
+    public function testWorkflowVersioningBehaviorIsReportedToCore(): void
+    {
+        $codec = new CoresdkWorkflowCodec(
+            DataConverter::createDefault(),
+            static fn(string $taskQueue, string $workflowType): int => match ([$taskQueue, $workflowType]) {
+                ['queue', 'PinnedWorkflow'] => VersioningBehavior::VERSIONING_BEHAVIOR_PINNED,
+                default => VersioningBehavior::VERSIONING_BEHAVIOR_UNSPECIFIED,
+            },
+        );
+
+        \iterator_to_array($codec->decode(
+            (new WorkflowActivation())
+                ->setRunId('run-versioned')
+                ->setJobs([
+                    (new WorkflowActivationJob())->setInitializeWorkflow(
+                        (new InitializeWorkflow())
+                            ->setWorkflowType('PinnedWorkflow')
+                            ->setWorkflowId('workflow-id'),
+                    ),
+                ])
+                ->serializeToString(),
+            ['taskQueue' => 'queue'],
+        ));
+
+        $completion = new \Coresdk\WorkflowCompletion\WorkflowActivationCompletion();
+        $completion->mergeFromString($codec->encodeStaged());
+
+        self::assertSame(
+            VersioningBehavior::VERSIONING_BEHAVIOR_PINNED,
+            $completion->getSuccessful()->getVersioningBehavior(),
+        );
+    }
+
+    public function testEvictionMetadataIsCapturedAndDrained(): void
+    {
+        $activation = (new WorkflowActivation())
+            ->setRunId('run-1')
+            ->setJobs([
+                (new WorkflowActivationJob())->setRemoveFromCache(
+                    (new RemoveFromCache())
+                        ->setReason(EvictionReason::NONDETERMINISM)
+                        ->setMessage('timer command does not match history'),
+                ),
+            ]);
+
+        $codec = new CoresdkWorkflowCodec(DataConverter::createDefault());
+        $commands = \iterator_to_array($codec->decode(
+            $activation->serializeToString(),
+            ['taskQueue' => 'replay'],
+        ));
+
+        self::assertCount(1, $commands);
+        self::assertInstanceOf(ServerRequest::class, $commands[0]);
+        self::assertSame('DestroyWorkflow', $commands[0]->getName());
+        self::assertSame([[
+            'runId' => 'run-1',
+            'reason' => EvictionReason::NONDETERMINISM,
+            'reasonName' => 'NONDETERMINISM',
+            'message' => 'timer command does not match history',
+        ]], $codec->drainEvictions());
+        self::assertSame([], $codec->drainEvictions());
+    }
+
+    public function testWorkflowStartCarriesCoreExecutionContext(): void
+    {
+        $converter = DataConverter::createDefault();
+        $searchAttribute = $converter->toPayload('search-value');
+        $searchAttribute->getMetadata()['type'] = 'Keyword';
+
+        $activation = (new WorkflowActivation())
+            ->setRunId('current-run')
+            ->setJobs([
+                (new WorkflowActivationJob())->setInitializeWorkflow(
+                    (new InitializeWorkflow())
+                        ->setWorkflowType('ExampleWorkflow')
+                        ->setWorkflowId('workflow-id')
+                        ->setArguments([$converter->toPayload('argument')])
+                        ->setHeaders(['trace-id' => $converter->toPayload('trace-value')])
+                        ->setParentWorkflowInfo(
+                            (new NamespacedWorkflowExecution())
+                                ->setNamespace('parent-namespace')
+                                ->setWorkflowId('parent-id')
+                                ->setRunId('parent-run'),
+                        )
+                        ->setRootWorkflow(
+                            (new WorkflowExecution())
+                                ->setWorkflowId('root-id')
+                                ->setRunId('root-run'),
+                        )
+                        ->setWorkflowExecutionTimeout((new Duration())->setSeconds(30))
+                        ->setWorkflowRunTimeout((new Duration())->setSeconds(20))
+                        ->setWorkflowTaskTimeout((new Duration())->setSeconds(10))
+                        ->setContinuedFromExecutionRunId('previous-run')
+                        ->setFirstExecutionRunId('first-run')
+                        ->setAttempt(2)
+                        ->setCronSchedule('0 * * * *')
+                        ->setLastCompletionResult(
+                            (new Payloads())->setPayloads([$converter->toPayload('previous-result')]),
+                        )
+                        ->setSearchAttributes(
+                            (new SearchAttributes())->setIndexedFields([
+                                'CustomKeywordField' => $searchAttribute,
+                            ]),
+                        )
+                        ->setRetryPolicy(
+                            (new RetryPolicy())
+                                ->setInitialInterval((new Duration())->setSeconds(1))
+                                ->setBackoffCoefficient(3)
+                                ->setMaximumInterval((new Duration())->setSeconds(120))
+                                ->setMaximumAttempts(10),
+                        )
+                        ->setPriority(
+                            (new Priority())
+                                ->setPriorityKey(2)
+                                ->setFairnessKey('tenant')
+                                ->setFairnessWeight(1.5),
+                        ),
+                ),
+            ]);
+
+        $codec = new CoresdkWorkflowCodec($converter);
+        $commands = \iterator_to_array($codec->decode(
+            $activation->serializeToString(),
+            ['taskQueue' => 'queue', 'namespace' => 'application'],
+        ));
+
+        self::assertCount(1, $commands);
+        self::assertInstanceOf(ServerRequest::class, $commands[0]);
+        self::assertSame('StartWorkflow', $commands[0]->getName());
+
+        $options = $commands[0]->getOptions();
+        self::assertSame(1, $options['lastCompletion']);
+        self::assertSame([
+            'ID' => 'workflow-id',
+            'RunID' => 'current-run',
+        ], $options['info']['WorkflowExecution']);
+        self::assertSame('application', $options['info']['Namespace']);
+        self::assertSame(30_000_000_000, $options['info']['WorkflowExecutionTimeout']);
+        self::assertSame(20_000_000_000, $options['info']['WorkflowRunTimeout']);
+        self::assertSame(10_000_000_000, $options['info']['WorkflowTaskTimeout']);
+        self::assertSame('previous-run', $options['info']['ContinuedExecutionRunID']);
+        self::assertSame('first-run', $options['info']['FirstRunID']);
+        self::assertSame('current-run', $options['info']['OriginalRunID']);
+        self::assertSame('parent-namespace', $options['info']['ParentWorkflowNamespace']);
+        self::assertSame([
+            'ID' => 'parent-id',
+            'RunID' => 'parent-run',
+        ], $options['info']['ParentWorkflowExecution']);
+        self::assertSame([
+            'ID' => 'root-id',
+            'RunID' => 'root-run',
+        ], $options['info']['RootWorkflowExecution']);
+        self::assertSame(3.0, $options['info']['RetryPolicy']['backoff_coefficient']);
+        self::assertSame(10, $options['info']['RetryPolicy']['maximum_attempts']);
+        self::assertSame(2, $options['info']['Priority']['PriorityKey']);
+        self::assertSame([
+            'CustomKeywordField' => [
+                'type' => 'Keyword',
+                'value' => 'search-value',
+            ],
+        ], $options['search_attributes']);
+
+        self::assertSame('argument', $commands[0]->getPayloads()->getValue(0));
+        self::assertSame('previous-result', $commands[0]->getPayloads()->getValue(1));
+        self::assertSame('trace-value', $commands[0]->getHeader()->getValue('trace-id'));
+    }
+
+    public function testChildStartResolvesWithTypedWorkflowExecution(): void
+    {
+        $converter = DataConverter::createDefault();
+        $codec = new CoresdkWorkflowCodec($converter);
+
+        \iterator_to_array($codec->decode(
+            (new WorkflowActivation())
+                ->setRunId('parent-run')
+                ->setJobs([
+                    (new WorkflowActivationJob())->setInitializeWorkflow(
+                        (new InitializeWorkflow())
+                            ->setWorkflowType('ParentWorkflow')
+                            ->setWorkflowId('parent-id'),
+                    ),
+                ])
+                ->serializeToString(),
+            ['taskQueue' => 'queue', 'namespace' => 'default'],
+        ));
+
+        $execute = new ExecuteChildWorkflow(
+            'ChildWorkflow',
+            EncodedValues::empty(),
+            ['Namespace' => 'default'],
+            Header::empty(),
+        );
+        $getExecution = new GetChildWorkflowExecution($execute);
+        $codec->stage($execute);
+        $codec->stage($getExecution);
+
+        $responses = \iterator_to_array($codec->decode(
+            (new WorkflowActivation())
+                ->setRunId('parent-run')
+                ->setJobs([
+                    (new WorkflowActivationJob())->setResolveChildWorkflowExecutionStart(
+                        (new ResolveChildWorkflowExecutionStart())
+                            ->setSeq(1)
+                            ->setSucceeded(
+                                (new ResolveChildWorkflowExecutionStartSuccess())
+                                    ->setRunId('child-run'),
+                            ),
+                    ),
+                ])
+                ->serializeToString(),
+            ['taskQueue' => 'queue', 'namespace' => 'default'],
+        ));
+
+        self::assertCount(1, $responses);
+        self::assertInstanceOf(SuccessResponse::class, $responses[0]);
+        self::assertSame($getExecution->getID(), $responses[0]->getID());
+
+        $execution = $responses[0]->getPayloads()->getValue(0, SdkWorkflowExecution::class);
+        self::assertInstanceOf(SdkWorkflowExecution::class, $execution);
+        self::assertSame('parent-id_1', $execution->getID());
+        self::assertSame('child-run', $execution->getRunID());
+    }
+
+    public function testChildStartCarriesSearchAttributes(): void
+    {
+        $converter = DataConverter::createDefault();
+        $codec = new CoresdkWorkflowCodec($converter);
+
+        \iterator_to_array($codec->decode(
+            (new WorkflowActivation())
+                ->setRunId('parent-run')
+                ->setJobs([
+                    (new WorkflowActivationJob())->setInitializeWorkflow(
+                        (new InitializeWorkflow())
+                            ->setWorkflowType('ParentWorkflow')
+                            ->setWorkflowId('parent-id'),
+                    ),
+                ])
+                ->serializeToString(),
+            ['taskQueue' => 'queue', 'namespace' => 'default'],
+        ));
+
+        $codec->stage(new ExecuteChildWorkflow(
+            'ChildWorkflow',
+            EncodedValues::empty(),
+            [
+                'Namespace' => 'default',
+                'SearchAttributes' => (object) [
+                    'CustomKeywordField' => 'search-value',
+                ],
+            ],
+            Header::empty(),
+        ));
+
+        $completion = new \Coresdk\WorkflowCompletion\WorkflowActivationCompletion();
+        $completion->mergeFromString($codec->encodeStaged());
+
+        $commands = $completion->getSuccessful()->getCommands();
+        self::assertCount(1, $commands);
+
+        $start = $commands[0]->getStartChildWorkflowExecution();
+        self::assertTrue($start->hasSearchAttributes());
+        self::assertSame(
+            'search-value',
+            $converter->fromPayload(
+                $start->getSearchAttributes()->getIndexedFields()['CustomKeywordField'],
+                null,
+            ),
+        );
+
+        $codec->stage(new ExecuteChildWorkflow(
+            'ChildWorkflow',
+            EncodedValues::empty(),
+            [
+                'Namespace' => 'default',
+                'SearchAttributes' => (object) [],
+            ],
+            Header::empty(),
+        ));
+
+        $completion = new \Coresdk\WorkflowCompletion\WorkflowActivationCompletion();
+        $completion->mergeFromString($codec->encodeStaged());
+
+        $empty = $completion->getSuccessful()->getCommands()[0]
+            ->getStartChildWorkflowExecution();
+        self::assertTrue($empty->hasSearchAttributes());
+        self::assertCount(0, $empty->getSearchAttributes()->getIndexedFields());
+    }
+
+    public function testCommandsCarryUserMetadata(): void
+    {
+        $converter = DataConverter::createDefault();
+        $codec = new CoresdkWorkflowCodec($converter);
+
+        \iterator_to_array($codec->decode(
+            (new WorkflowActivation())
+                ->setRunId('parent-run')
+                ->setJobs([
+                    (new WorkflowActivationJob())->setInitializeWorkflow(
+                        (new InitializeWorkflow())
+                            ->setWorkflowType('ParentWorkflow')
+                            ->setWorkflowId('parent-id'),
+                    ),
+                ])
+                ->serializeToString(),
+            ['taskQueue' => 'queue', 'namespace' => 'default'],
+        ));
+
+        $codec->stage(new Request('NewTimer', [
+            'ms' => 1_000,
+            'summary' => 'timer summary',
+        ]));
+        $codec->stage(new Request('ExecuteActivity', [
+            'name' => 'Activity.run',
+            'options' => ['Summary' => 'activity summary'],
+        ]));
+        $codec->stage(new Request('ExecuteLocalActivity', [
+            'name' => 'LocalActivity.run',
+            'options' => ['Summary' => 'local activity summary'],
+        ]));
+        $codec->stage(new Request('ExecuteChildWorkflow', [
+            'name' => 'ChildWorkflow',
+            'options' => [
+                'Namespace' => 'default',
+                'StaticSummary' => 'child summary',
+                'StaticDetails' => 'child details',
+            ],
+        ]));
+        $codec->stage(new Request(
+            'SideEffect',
+            ['summary' => 'side effect summary'],
+            EncodedValues::fromValues([42], $converter),
+        ));
+
+        $completion = new \Coresdk\WorkflowCompletion\WorkflowActivationCompletion();
+        $completion->mergeFromString($codec->encodeStaged());
+        $commands = $completion->getSuccessful()->getCommands();
+
+        self::assertCount(5, $commands);
+        self::assertSame(
+            'timer summary',
+            $converter->fromPayload($commands[0]->getUserMetadata()->getSummary(), null),
+        );
+        self::assertSame(
+            'activity summary',
+            $converter->fromPayload($commands[1]->getUserMetadata()->getSummary(), null),
+        );
+        self::assertSame(
+            'local activity summary',
+            $converter->fromPayload($commands[2]->getUserMetadata()->getSummary(), null),
+        );
+        self::assertSame(
+            'child summary',
+            $converter->fromPayload($commands[3]->getUserMetadata()->getSummary(), null),
+        );
+        self::assertSame(
+            'child details',
+            $converter->fromPayload($commands[3]->getUserMetadata()->getDetails(), null),
+        );
+        self::assertSame(
+            'side effect summary',
+            $converter->fromPayload($commands[4]->getUserMetadata()->getSummary(), null),
+        );
+    }
+
+    public function testGetVersionPersistsTheSelectedIntegerInPatchId(): void
+    {
+        $converter = DataConverter::createDefault();
+        $live = new CoresdkWorkflowCodec($converter);
+        \iterator_to_array($live->decode(
+            (new WorkflowActivation())
+                ->setRunId('live-run')
+                ->setJobs([
+                    (new WorkflowActivationJob())->setInitializeWorkflow(
+                        (new InitializeWorkflow())
+                            ->setWorkflowType('VersionedWorkflow')
+                            ->setWorkflowId('workflow-id'),
+                    ),
+                ])
+                ->serializeToString(),
+            ['taskQueue' => 'queue', 'namespace' => 'default'],
+        ));
+
+        $live->stage(new Request('GetVersion', [
+            'changeID' => 'feature/name',
+            'minSupported' => -1,
+            'maxSupported' => 2,
+        ]));
+        self::assertSame(2, $live->drainVersionResolutions()[0]['version']);
+
+        $completion = new \Coresdk\WorkflowCompletion\WorkflowActivationCompletion();
+        $completion->mergeFromString($live->encodeStaged());
+        $patchId = $completion->getSuccessful()->getCommands()[0]->getSetPatchMarker()->getPatchId();
+        self::assertSame('__temporal_php_get_version:feature%2Fname:2', $patchId);
+
+        $replay = new CoresdkWorkflowCodec($converter);
+        \iterator_to_array($replay->decode(
+            (new WorkflowActivation())
+                ->setRunId('replay-run')
+                ->setIsReplaying(true)
+                ->setJobs([
+                    (new WorkflowActivationJob())->setNotifyHasPatch(
+                        (new NotifyHasPatch())->setPatchId($patchId),
+                    ),
+                    (new WorkflowActivationJob())->setInitializeWorkflow(
+                        (new InitializeWorkflow())
+                            ->setWorkflowType('VersionedWorkflow')
+                            ->setWorkflowId('workflow-id'),
+                    ),
+                ])
+                ->serializeToString(),
+            ['taskQueue' => 'queue', 'namespace' => 'default'],
+        ));
+
+        $replay->stage(new Request('GetVersion', [
+            'changeID' => 'feature/name',
+            'minSupported' => -1,
+            'maxSupported' => 3,
+        ]));
+        self::assertSame(2, $replay->drainVersionResolutions()[0]['version']);
+
+        $completion->clear();
+        $completion->mergeFromString($replay->encodeStaged());
+        self::assertSame(
+            $patchId,
+            $completion->getSuccessful()->getCommands()[0]->getSetPatchMarker()->getPatchId(),
+        );
+    }
+}

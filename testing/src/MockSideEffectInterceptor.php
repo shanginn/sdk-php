@@ -10,7 +10,7 @@ use Temporal\Interceptor\Trait\WorkflowOutboundCallsInterceptorTrait;
 use Temporal\Interceptor\WorkflowOutboundCalls\SideEffectInput;
 use Temporal\Interceptor\WorkflowOutboundCallsInterceptor;
 use Temporal\Worker\ChildWorkflowInvocationCache\ChildWorkflowInvocationCacheInterface;
-use Temporal\Worker\ChildWorkflowInvocationCache\RoadRunnerChildWorkflowInvocationCache;
+use Temporal\Worker\ChildWorkflowInvocationCache\FileChildWorkflowInvocationCache;
 
 final class MockSideEffectInterceptor implements WorkflowOutboundCallsInterceptor
 {
@@ -22,7 +22,7 @@ final class MockSideEffectInterceptor implements WorkflowOutboundCallsIntercepto
         ?ChildWorkflowInvocationCacheInterface $cache = null,
         ?DataConverterInterface $dataConverter = null,
     ) {
-        $this->cache = $cache ?? RoadRunnerChildWorkflowInvocationCache::create(
+        $this->cache = $cache ?? new FileChildWorkflowInvocationCache(
             $dataConverter ?? DataConverter::createDefault(),
         );
     }

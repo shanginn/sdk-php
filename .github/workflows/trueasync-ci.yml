@@ -5,6 +5,7 @@ on:
     branches: [true-async]
   pull_request:
     branches: [true-async]
+  workflow_dispatch:
 
 env:
   PHP_PREFIX: /opt/trueasync-php
@@ -16,10 +17,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Capture system dependency tooling
+        run: |
+          echo "SYSTEM_PHP=$(command -v php)" >> "$GITHUB_ENV"
+          echo "COMPOSER_BIN=$(command -v composer)" >> "$GITHUB_ENV"
+
       - name: Check out the php-temporal extension
         uses: actions/checkout@v4
         with:
-          repository: true-async/php-temporal
+          repository: shanginn/php-temporal
           ref: main
           path: php-temporal
           submodules: true
@@ -29,7 +35,7 @@ jobs:
       - name: Resolve TrueAsync php-src + php-async revisions
         id: phpsrc
         run: |
-          echo "sha=$(git ls-remote https://github.com/true-async/php-src refs/heads/true-async | cut -f1)" >> "$GITHUB_OUTPUT"
+          echo "sha=$(git ls-remote https://github.com/true-async/php-src refs/heads/true-async-stable | cut -f1)" >> "$GITHUB_OUTPUT"
           echo "asha=$(git ls-remote https://github.com/true-async/php-async refs/heads/main | cut -f1)" >> "$GITHUB_OUTPUT"
 
       - name: Cache TrueAsync PHP
@@ -43,9 +49,10 @@ jobs:
         if: steps.php-cache.outputs.cache-hit != 'true'
         run: |
           sudo apt-get update
-          sudo apt-get install -y bison re2c libuv1-dev libssl-dev zlib1g-dev libonig-dev
-          git clone --depth 1 --branch true-async https://github.com/true-async/php-src /tmp/php-src
-          # ext/async lives in its own repo, nested into the php-src tree;
+          sudo apt-get install -y \
+            bison re2c libuv1-dev libssl-dev zlib1g-dev libonig-dev libxml2-dev
+          git clone --depth 1 --branch true-async-stable https://github.com/true-async/php-src /tmp/php-src
+          # ext/true_async lives in its own repo, nested into the php-src tree;
           # without it buildconf does not even know --enable-async.
           git clone --depth 1 https://github.com/true-async/php-async /tmp/php-src/ext/async
           cd /tmp/php-src
@@ -57,7 +64,9 @@ jobs:
             --enable-zts --enable-async \
             --enable-sockets --enable-pcntl --enable-posix \
             --enable-mbstring --enable-ctype --enable-filter \
-            --enable-tokenizer --enable-phar \
+            --enable-tokenizer --enable-phar --enable-session \
+            --enable-dom --enable-simplexml --enable-xmlreader --enable-xmlwriter \
+            --enable-fileinfo \
             --with-openssl --with-zlib
           make -j"$(nproc)"
           sudo make install
@@ -95,7 +104,45 @@ jobs:
           ./configure --enable-temporal --with-php-config="$PHP_PREFIX/bin/php-config"
           make -j"$(nproc)"
 
-      # ---- Live Temporal dev server ----
+      - name: Enable the native Temporal extension
+        run: |
+          echo "extension=$GITHUB_WORKSPACE/php-temporal/modules/temporal.so" > "$GITHUB_WORKSPACE/trueasync-php.ini"
+          echo "PHPRC=$GITHUB_WORKSPACE/trueasync-php.ini" >> "$GITHUB_ENV"
+          PHPRC="$GITHUB_WORKSPACE/trueasync-php.ini" php -r '
+            foreach (["true_async", "temporal"] as $extension) {
+                if (!extension_loaded($extension)) {
+                    fwrite(STDERR, "Missing required extension: $extension\n");
+                    exit(1);
+                }
+            }
+          '
+
+      # ---- SDK dependencies and native test suites ----
+
+      - name: Install SDK dependencies
+        run: |
+          "$SYSTEM_PHP" "$COMPOSER_BIN" config -g github-oauth.github.com "${{ secrets.GITHUB_TOKEN }}"
+          # composer.lock is gitignored upstream (library policy), so this is a
+          # full resolution. Composer and composer-patches currently depend on
+          # stream callback behaviour PHP 8.6 tightened, so dependency tooling
+          # runs under the runner's stock PHP. Only this command's runtime ABI
+          # requirements are ignored; all tests still run on TrueAsync PHP.
+          "$SYSTEM_PHP" "$COMPOSER_BIN" validate --strict
+          "$SYSTEM_PHP" "$COMPOSER_BIN" update --no-interaction --no-progress \
+            --ignore-platform-req=php \
+            --ignore-platform-req=ext-temporal \
+            --ignore-platform-req=ext-true_async
+
+      - name: Download Temporal test binaries
+        run: "$SYSTEM_PHP" "$COMPOSER_BIN" get:binaries
+
+      - name: SDK unit tests
+        run: php tests/runner.php vendor/bin/phpunit --testsuite=Unit --color=always --testdox
+
+      - name: SDK functional tests with native worker
+        run: php tests/runner.php vendor/bin/phpunit --testsuite=Functional --color=always --testdox
+
+      # ---- Live Temporal dev server and native integration scripts ----
 
       - name: Start the Temporal dev server
         run: |
@@ -109,28 +156,19 @@ jobs:
           docker logs temporal-dev >&2 || true
           exit 1
 
-      # ---- SDK integration tests ----
-
-      - name: Install SDK dependencies
-        run: |
-          composer config -g github-oauth.github.com "${{ secrets.GITHUB_TOKEN }}"
-          # composer.lock is gitignored upstream (library policy), so this is a
-          # full resolution and it validates require-dev platform needs too:
-          # phpunit/psalm want dom/simplexml, laminas caps php <= released
-          # versions while ours is 8.6.0-dev. --no-dev skips installing them;
-          # --ignore-platform-reqs silences their platform pins during
-          # resolution. The runtime deps are pure PHP + ext-json.
-          composer update --no-interaction --no-progress --no-dev --ignore-platform-reqs
-
       - name: SDK integration tests
         run: |
           status=0
           for t in tests/truasync/*.php; do
             echo "::group::$t"
-            if ! php -d extension="$GITHUB_WORKSPACE/php-temporal/modules/temporal.so" "$t"; then
+            if ! php "$t"; then
               echo "FAILED: $t"
               status=1
             fi
             echo "::endgroup::"
           done
           exit $status
+
+      - name: Stop the external dev server
+        if: always()
+        run: docker rm -f temporal-dev || true

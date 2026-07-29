@@ -23,14 +23,6 @@ use Temporal\Tests\Workflow\TestContextLeakWorkflow;
  */
 class ConcurrentWorkflowContextTestCase extends AbstractClient
 {
-    public function setUp(): void
-    {
-        parent::setUp();
-
-        // emulate connection to parent server
-        $_SERVER['RR_RPC'] = 'tcp://127.0.0.1:6001';
-    }
-
     public function testConcurrentWorkflowContext(): void
     {
         $client = $this->createClient();

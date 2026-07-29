@@ -20,19 +20,19 @@ final class State
 
     /**
      * @var list<class-string> Test classes the worker pool was bootstrapped with.
-     *   Honored by RRStarter on initial start AND on every restart, so failure-triggered
+     *   Honored by WorkerStarter on initial start and every restart, so failure-triggered
      *   restarts preserve the same selection instead of falling back to "register all".
      */
     public array $allowedTestClasses = [];
 
     /**
-     * @param non-empty-string $rrConfigDir Dir with rr.yaml
+     * @param non-empty-string $workerDir Dir containing worker.php
      * @param non-empty-string $workDir Dir where tests are run
      * @param iterable<non-empty-string, non-empty-string> $testCasesDir [Namespace => Dir] with test cases
      */
     public function __construct(
         public readonly Command $command,
-        public readonly string $rrConfigDir,
+        public readonly string $workerDir,
         public readonly string $workDir,
         public readonly iterable $testCasesDir,
         public readonly int $activityWorkers,

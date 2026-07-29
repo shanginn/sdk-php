@@ -12,6 +12,7 @@ use Temporal\Api\Common\V1\WorkflowType;
 use Temporal\Api\Enums\V1\EventType;
 use Temporal\Api\History\V1\ActivityTaskScheduledEventAttributes;
 use Temporal\Api\History\V1\HistoryEvent;
+use Temporal\Api\History\V1\MarkerRecordedEventAttributes;
 use Temporal\Api\History\V1\SignalExternalWorkflowExecutionInitiatedEventAttributes;
 use Temporal\Api\History\V1\StartChildWorkflowExecutionInitiatedEventAttributes;
 use Temporal\Api\History\V1\TimerStartedEventAttributes;
@@ -106,6 +107,19 @@ final class WorkflowInteractionsTestCase extends TestCase
         $interactions->signal('other')->assertNeverSent();
     }
 
+    public function testLocalActivitySupportsLegacyAndCoreMarkers(): void
+    {
+        $legacy = WorkflowInteractions::fromEvents([
+            $this->localActivityEvent('LocalActivity', ['ActivityType' => 'Legacy.echo']),
+        ], $this->converter);
+        $core = WorkflowInteractions::fromEvents([
+            $this->localActivityEvent('core_local_activity', ['activity_type' => 'Core.echo']),
+        ], $this->converter);
+
+        $legacy->localActivity('Legacy.echo')->assertCalledOnce();
+        $core->localActivity('Core.echo')->assertCalledOnce();
+    }
+
     public function testAssertNoOtherActivitiesFailsForUnqueriedActivity(): void
     {
         $interactions = WorkflowInteractions::fromEvents([
@@ -166,6 +180,20 @@ final class WorkflowInteractionsTestCase extends TestCase
         return (new HistoryEvent())
             ->setEventType(EventType::EVENT_TYPE_SIGNAL_EXTERNAL_WORKFLOW_EXECUTION_INITIATED)
             ->setSignalExternalWorkflowExecutionInitiatedEventAttributes($attributes);
+    }
+
+    /**
+     * @param array<string, mixed> $data
+     */
+    private function localActivityEvent(string $marker, array $data): HistoryEvent
+    {
+        $attributes = (new MarkerRecordedEventAttributes())
+            ->setMarkerName($marker)
+            ->setDetails(['data' => $this->payloads([$data])]);
+
+        return (new HistoryEvent())
+            ->setEventType(EventType::EVENT_TYPE_MARKER_RECORDED)
+            ->setMarkerRecordedEventAttributes($attributes);
     }
 
     /**

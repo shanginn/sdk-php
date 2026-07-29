@@ -65,25 +65,6 @@ abstract class Facade
     }
 
     /**
-     * The current coroutine's local context under TrueAsync, or null without
-     * the extension (RoadRunner), where the plain static is correct: RR runs
-     * one task at a time per process.
-     *
-     * Why a static cannot be used under TrueAsync: workflow and activity tasks
-     * run in concurrent coroutines of one process, so a process-global "current
-     * context" would be clobbered whenever another task is dispatched while
-     * this one is parked — e.g. an activity suspended in delay() would lose its
-     * context to a workflow activation, breaking Activity::heartbeat() on
-     * resume.
-     */
-    private static function coroutineStorage(): ?\Async\Context
-    {
-        return \function_exists('Async\coroutine_context')
-            ? \Async\coroutine_context()
-            : null;
-    }
-
-    /**
      * @throws OutOfContextException
      */
     public static function getContextId(): int
@@ -104,5 +85,23 @@ abstract class Facade
         $context = self::getCurrentContext();
 
         return $context->$name(...$arguments);
+    }
+
+    /**
+     * The current coroutine's local context under TrueAsync, or null when no
+     * coroutine context is active.
+     *
+     * Why a static cannot be used under TrueAsync: workflow and activity tasks
+     * run in concurrent coroutines of one process, so a process-global "current
+     * context" would be clobbered whenever another task is dispatched while
+     * this one is parked — e.g. an activity suspended in delay() would lose its
+     * context to a workflow activation, breaking Activity::heartbeat() on
+     * resume.
+     */
+    private static function coroutineStorage(): ?\Async\Context
+    {
+        return \function_exists('Async\coroutine_context')
+            ? \Async\coroutine_context()
+            : null;
     }
 }

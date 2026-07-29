@@ -1,6 +1,6 @@
 name: Testing
 
-# The true-async branch runs its own pipeline (truasync-ci.yml).
+# The true-async branch runs its own native pipeline (trueasync-ci.yml).
 on:
   push:
     branches-ignore: ["true-async"]

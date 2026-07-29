@@ -15,21 +15,16 @@ $systemInfo = SystemInfo::detect();
 $environment = Environment::create(systemInfo: $systemInfo);
 $environment->startTemporalTestServer();
 (new SearchAttributeTestInvoker())();
-$environment->startRoadRunner(
-    rrCommand: [
-        $systemInfo->rrExecutable,
-        'serve',
-        '-c', '.rr.silent.yaml',
-        '-w', 'tests/Functional',
-        '-o',
-        'server.command=' . \implode(',', [
-            PHP_BINARY,
-            ...$environment->command->getPhpBinaryArguments(),
-            'worker.php',
-            ...$environment->command->getCommandLineArguments(),
-        ]),
+$environment->startWorker(
+    command: [
+        PHP_BINARY,
+        ...$environment->command->getPhpBinaryArguments(),
+        'tests/Functional/worker.php',
     ],
-    configFile: 'tests/Functional/.rr.silent.yaml',
+    envs: [
+        'TEMPORAL_ADDRESS' => (string) $environment->command->address,
+        'TEMPORAL_NAMESPACE' => (string) $environment->command->namespace,
+    ],
 );
 
 \register_shutdown_function(static fn() => $environment->stop());
