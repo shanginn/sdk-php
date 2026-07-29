@@ -140,7 +140,8 @@ jobs:
           "$SYSTEM_PHP" "$COMPOSER_BIN" get:binaries
 
       - name: SDK unit tests
-        run: php tests/runner.php vendor/bin/phpunit --testsuite=Unit --color=always --testdox
+        timeout-minutes: 10
+        run: php tests/runner.php vendor/bin/phpunit --testsuite=Unit --colors=always --debug
 
       - name: SDK functional tests with native worker
         run: php tests/runner.php vendor/bin/phpunit --testsuite=Functional --color=always --testdox
