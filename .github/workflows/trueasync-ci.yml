@@ -65,7 +65,7 @@ jobs:
             --enable-sockets --enable-pcntl --enable-posix \
             --enable-mbstring --enable-ctype --enable-filter \
             --enable-tokenizer --enable-phar --enable-session \
-            --enable-libxml --enable-dom --enable-simplexml \
+            --with-libxml --enable-dom --enable-simplexml \
             --enable-xmlreader --enable-xmlwriter \
             --enable-fileinfo \
             --with-openssl --with-zlib
