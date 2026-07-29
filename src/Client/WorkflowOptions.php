@@ -187,7 +187,6 @@ final class WorkflowOptions extends Options
      * Override the version the Workflow will start on.
      *
      * @since SDK 2.16.0
-     * @since RoadRunner 2025.1.3
      * @internal Experimental
      */
     #[Marshal(name: 'VersioningOverride')]
@@ -536,7 +535,6 @@ final class WorkflowOptions extends Options
      * Sets the versioning override to use when starting this workflow.
      *
      * @since SDK 2.16.0
-     * @since RoadRunner 2025.1.3
      * @internal Experimental
      */
     public function withVersioningOverride(?VersioningOverride $override): self

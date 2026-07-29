@@ -15,7 +15,6 @@ namespace Temporal\Common\Versioning;
  * @see \Temporal\Api\Enums\V1\VersioningBehavior
  *
  * @since SDK 2.16.0
- * @since RoadRunner 2025.1.3
  */
 enum VersioningBehavior: int
 {

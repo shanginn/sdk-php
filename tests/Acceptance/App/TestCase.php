@@ -118,7 +118,7 @@ abstract class TestCase extends \Temporal\Tests\TestCase
                     }
 
                     if (!$e instanceof SkippedTest) {
-                        // Restart RR if a Error occurs
+                        // Restart the worker after an error.
                         $workerStarter = $container->get(WorkerStarter::class);
                         $workerStarter->stop();
                         $workerStarter->start();

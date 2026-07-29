@@ -30,7 +30,6 @@ class SideEffectOptions extends Options
      *
      * @experimental This API is experimental and may change in the future.
      *
-     * @since RoadRunner 2025.1.2
      */
     #[Marshal(name: 'summary')]
     public string $summary = '';

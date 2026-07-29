@@ -15,11 +15,9 @@ Thumbs.db
 .php_cs.cache
 
 # Other
-/.rr.yaml
 *.exe
 # Downloaded dev binaries (dload.xml); anchored to repo root so they do not
 # match source paths such as resources/proto/temporal/.
-/rr
 /temporal
 /temporal-test-server
 .ai

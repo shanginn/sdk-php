@@ -127,7 +127,6 @@ class ActivityOptions extends Options implements ActivityOptionsInterface
      *
      * @experimental This API is experimental and may change in the future.
      *
-     * @since RoadRunner 2025.1.2
      */
     #[Marshal(name: 'Summary')]
     public string $summary = '';

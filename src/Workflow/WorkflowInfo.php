@@ -68,7 +68,6 @@ final class WorkflowInfo
      *
      * @var int<0, max>
      * @since SDK 2.6.0
-     * @since RoadRunner 2023.2. With lower versions, this field is always 0.
      */
     #[Marshal(name: 'HistoryLength')]
     public int $historyLength = 0;
@@ -79,7 +78,6 @@ final class WorkflowInfo
      *
      * @var int<0, max>
      * @since SDK 2.11.0
-     * @since RoadRunner 2024.2. With lower versions, this field is always 0.
      */
     #[Marshal(name: 'HistorySize')]
     public int $historySize = 0;
@@ -89,7 +87,6 @@ final class WorkflowInfo
      * This value changes during the lifetime of a Workflow Execution.
      *
      * @since SDK 2.11.0
-     * @since RoadRunner 2024.2. With lower versions, this field is always false.
      */
     #[Marshal(name: 'ShouldContinueAsNew')]
     public bool $shouldContinueAsNew = false;
@@ -130,7 +127,6 @@ final class WorkflowInfo
 
     /**
      * @since SDK 2.13.0
-     * @since RoadRunner 2024.3.2
      * @link https://docs.temporal.io/visibility#search-attribute
      */
     #[Marshal(name: 'TypedSearchAttributes')]

@@ -14,7 +14,6 @@ use Temporal\Internal\Traits\CloneWith;
  * @see \Temporal\Api\Deployment\V1\WorkerDeploymentVersion
  *
  * @since SDK 2.16.0
- * @since RoadRunner 2025.1.3
  */
 class WorkerDeploymentVersion implements \Stringable
 {

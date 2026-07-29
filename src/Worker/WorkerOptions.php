@@ -317,7 +317,6 @@ class WorkerOptions
      * Optional: If set it configures Worker Versioning for this worker.
      *
      * @since SDK 2.16.0
-     * @since RoadRunner 2025.1.3
      */
     #[Marshal(name: 'DeploymentOptions')]
     public WorkerDeploymentOptions $deploymentOptions;
@@ -843,7 +842,6 @@ class WorkerOptions
      * Set deployment options for the worker.
      *
      * @since SDK 2.16.0
-     * @since RoadRunner 2025.1.3
      */
     #[Pure]
     public function withDeploymentOptions(WorkerDeploymentOptions $deploymentOptions): self
