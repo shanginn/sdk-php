@@ -88,6 +88,13 @@ $factory = WorkerFactory::create(
 );
 ```
 
+## Nexus
+
+The SDK supports calling Nexus services from Workflows and implementing
+synchronous or Workflow-backed Nexus operations directly in TrueAsync PHP
+workers. See the [Nexus guide](docs/nexus.md) for endpoint setup, handler and
+caller examples, timeouts, cancellation, links, errors, and test coverage.
+
 ## Development and testing
 
 Start a local Temporal service:

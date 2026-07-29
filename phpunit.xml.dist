@@ -20,9 +20,13 @@
          displayDetailsOnTestsThatTriggerNotices="true"
          displayDetailsOnTestsThatTriggerWarnings="true">
     <testsuites>
+        <testsuite name="Nexus-Acceptance">
+            <directory suffix="Test.php">tests/Acceptance/Extra/Nexus</directory>
+        </testsuite>
         <testsuite name="Acceptance-Fast">
             <directory suffix="Test.php">tests/Acceptance/Extra</directory>
             <directory suffix="Test.php">tests/Acceptance/Harness</directory>
+            <exclude>tests/Acceptance/Extra/Nexus</exclude>
             <exclude>tests/Acceptance/Harness/Query/TimeoutDueToNoActiveWorkersTest.php</exclude>
             <exclude>tests/Acceptance/Harness/EagerWorkflow/SuccessfulStartTest.php</exclude>
             <exclude>tests/Acceptance/Extra/Stability/ResetWorkerTest.php</exclude>
@@ -69,6 +73,7 @@
         <testsuite name="Acceptance">
             <directory suffix="Test.php">tests/Acceptance/Extra</directory>
             <directory suffix="Test.php">tests/Acceptance/Harness</directory>
+            <exclude>tests/Acceptance/Extra/Nexus</exclude>
         </testsuite>
         <testsuite name="Arch">
             <directory suffix="Test.php">tests/Arch</directory>

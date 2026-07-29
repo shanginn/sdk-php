@@ -14,7 +14,7 @@ namespace Temporal\Nexus\Validation;
 use Temporal\Nexus\Exception\InvalidArgumentException;
 
 /**
- * Operation token — printable non-whitespace ASCII (Nexus spec).
+ * Operation token — a non-empty valid HTTP field value.
  */
 final class OperationTokenValidator
 {
@@ -28,6 +28,6 @@ final class OperationTokenValidator
      */
     public static function assert(string $token): void
     {
-        PrintableAsciiValidator::assert($token, 'Operation Token');
+        HttpHeaderFieldValueValidator::assertNonEmpty($token, 'Operation Token');
     }
 }

@@ -17,14 +17,14 @@ namespace Temporal\Nexus\Handler;
  * @template R
  * @extends OperationStartResult<R>
  */
-final readonly class SyncOperationStartResult extends OperationStartResult
+final class SyncOperationStartResult extends OperationStartResult
 {
     /**
      * @internal
      * @param R|null $value
      */
     public function __construct(
-        public mixed $value,
+        public readonly mixed $value,
     ) {
         parent::__construct();
     }

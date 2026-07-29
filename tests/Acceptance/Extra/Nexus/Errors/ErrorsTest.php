@@ -164,11 +164,8 @@ class ErrorsTest extends TestCase
         self::assertStringContainsString('bye', $resp, 'Failure message should be propagated');
     }
 
-    /**
-     * Verifies the failure cause/stack-trace forwarding (Fix 3).
-     */
     #[Test]
-    public function handlerExceptionForwardsCauseChainInResponse(
+    public function internalHandlerExceptionDoesNotLeakCauseChain(
         State $state,
         NexusEndpoints $endpoints,
         NexusHttpClient $http,
@@ -182,8 +179,9 @@ class ErrorsTest extends TestCase
         [$code, $resp, ] = $http->post($endpoint, 'ErrorService', 'failWithCause', 'outer-fail');
 
         self::assertSame(500, $code, "Body: {$resp}");
-        self::assertStringContainsString('outer-fail', $resp);
-        self::assertStringContainsString('CAUSE_CHAIN_MARKER', $resp);
+        self::assertStringNotContainsString('outer-fail', $resp);
+        self::assertStringNotContainsString('middle of', $resp);
+        self::assertStringNotContainsString('CAUSE_CHAIN_MARKER', $resp);
     }
 
     private function endpoint(NexusEndpoints $endpoints, string $namespace): NexusEndpoint
@@ -240,9 +238,8 @@ class ErrorService
     #[Operation]
     public function failWithCause(string $reason): string
     {
-        // Two-level cause chain. The marker in the inner cause's
-        // message is what the acceptance test asserts to prove the
-        // chain reached the caller.
+        // This cause chain is useful in handler-side logs, but none of it may
+        // cross the Nexus boundary in an Internal handler error.
         $inner = new \RuntimeException('CAUSE_CHAIN_MARKER: db unavailable');
         $middle = new \LogicException("middle of {$reason}", 0, $inner);
         throw HandlerException::create(

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Temporal\Tests\Unit\Nexus;
 
 use Google\Rpc\Code;
+use Psr\Log\LoggerInterface;
 use Temporal\DataConverter\EncodedValues;
 use Temporal\Exception\Client\ServiceClientException;
 use Temporal\Exception\Failure\ApplicationFailure;
@@ -90,12 +91,16 @@ class TestGreetingServiceImpl implements TestGreetingService
     /** @var string|null Task queue seen by the most recent start dispatch. */
     public static ?string $capturedStartTaskQueue = null;
 
+    /** @var string|null Endpoint seen by the most recent start dispatch. */
+    public static ?string $capturedStartEndpoint = null;
+
     public function sayHello(string $name): string
     {
         self::$capturedStartHeaders = Nexus::getCurrentOperationContext()->headers->all();
         if (Nexus::getCurrentContext()->operation !== null) {
             self::$capturedStartNamespace = Nexus::getOperationContext()->namespace;
             self::$capturedStartTaskQueue = Nexus::getOperationContext()->taskQueue;
+            self::$capturedStartEndpoint = Nexus::getOperationContext()->endpoint;
         }
         return "Hello, {$name}!";
     }
@@ -389,6 +394,32 @@ final class NexusTaskHandlerTestCase extends AbstractUnit
         self::assertSame('wire-tq', TestGreetingServiceImpl::$capturedStartTaskQueue);
     }
 
+    public function testStartOperationFallsBackToRequestEndpoint(): void
+    {
+        $request = $this->buildStartRequest('TestGreetingService', 'sayHello', 'World');
+        $request->setEndpoint('wire-endpoint');
+
+        $operationContext = new NexusOperationContext(namespace: 'wire-ns', taskQueue: 'wire-tq');
+        $this->handler->handleStartOperation($request, $operationContext);
+
+        self::assertSame('wire-endpoint', TestGreetingServiceImpl::$capturedStartEndpoint);
+    }
+
+    public function testStartOperationPrefersExplicitContextEndpoint(): void
+    {
+        $request = $this->buildStartRequest('TestGreetingService', 'sayHello', 'World');
+        $request->setEndpoint('request-endpoint');
+
+        $operationContext = new NexusOperationContext(
+            namespace: 'wire-ns',
+            taskQueue: 'wire-tq',
+            endpoint: 'context-endpoint',
+        );
+        $this->handler->handleStartOperation($request, $operationContext);
+
+        self::assertSame('context-endpoint', TestGreetingServiceImpl::$capturedStartEndpoint);
+    }
+
     public function testStartOperationHasNoTaskQueueWhenWireAbsent(): void
     {
         $request = $this->buildStartRequest('TestGreetingService', 'sayHello', 'World');
@@ -420,7 +451,8 @@ final class NexusTaskHandlerTestCase extends AbstractUnit
             self::fail('Expected HandlerException');
         } catch (HandlerException $e) {
             self::assertSame(ErrorType::NotFound, $e->errorType);
-            self::assertInstanceOf(ServiceClientException::class, $e->getPrevious());
+            self::assertNull($e->getPrevious());
+            self::assertStringNotContainsString('workflow vanished', $e->getMessage());
         }
     }
 
@@ -440,25 +472,83 @@ final class NexusTaskHandlerTestCase extends AbstractUnit
     public function testGenericThrowableNeverEscapesAsRawException(): void
     {
         $request = $this->buildStartRequest('TestGreetingService', 'genericFailingOp', 'input');
+        $logger = $this->createMock(LoggerInterface::class);
+        $logger->expects(self::once())
+            ->method('error')
+            ->with(
+                'Unhandled exception while executing a Nexus operation.',
+                self::callback(static fn(array $context): bool =>
+                    ($context['exception'] ?? null) instanceof \RuntimeException
+                    && $context['exception']->getMessage() === 'something blew up'),
+            );
+        $handler = new NexusTaskHandler(
+            self::buildRepository(new TestGreetingServiceImpl()),
+            $this->dataConverter,
+            $this->env,
+            logger: $logger,
+        );
 
         try {
-            $this->handler->handleStartOperation($request, new NexusOperationContext());
+            $handler->handleStartOperation($request, new NexusOperationContext());
             self::fail('Expected HandlerException');
         } catch (HandlerException $e) {
             self::assertSame(ErrorType::Internal, $e->errorType);
-            self::assertInstanceOf(\RuntimeException::class, $e->getPrevious());
+            self::assertSame('Internal Nexus handler error', $e->getMessage());
+            self::assertNull($e->getPrevious());
         }
     }
 
-    public function testStartOperationWithMalformedTimeoutHeaderIsIgnored(): void
+    public function testServiceHandlerUsesTaskHandlerLoggerForSerdeFailures(): void
+    {
+        $request = $this->buildStartRequest('TestGreetingService', 'sayHello', 'World');
+        $converter = $this->createMock(DataConverterInterface::class);
+        $converter->method('fromPayload')
+            ->willThrowException(new \RuntimeException('secret converter detail'));
+
+        $logger = $this->createMock(LoggerInterface::class);
+        $logger->expects(self::once())
+            ->method('error')
+            ->with(
+                'Failed deserializing Nexus operation input.',
+                self::callback(static fn(array $context): bool =>
+                    ($context['service'] ?? null) === 'TestGreetingService'
+                    && ($context['operation'] ?? null) === 'sayHello'
+                    && ($context['exception'] ?? null) instanceof \RuntimeException),
+            );
+
+        $handler = new NexusTaskHandler(
+            self::buildRepository(new TestGreetingServiceImpl()),
+            $converter,
+            $this->env,
+            logger: $logger,
+        );
+
+        try {
+            $handler->handleStartOperation($request, new NexusOperationContext());
+            self::fail('Expected HandlerException');
+        } catch (HandlerException $e) {
+            self::assertSame(ErrorType::BadRequest, $e->errorType);
+            self::assertStringNotContainsString('secret converter detail', $e->getMessage());
+            self::assertNull($e->getPrevious());
+        }
+    }
+
+    public function testStartOperationWithMalformedTimeoutHeaderIsBadRequest(): void
     {
         $request = $this->buildStartRequest('TestGreetingService', 'deadlineEchoOp', 'input');
         $request->setHeader(['Request-Timeout' => 'not-a-duration']);
 
-        $response = $this->handler->handleStartOperation($request, new NexusOperationContext());
-
-        self::assertTrue($response->getStartOperation()->hasSyncSuccess());
-        self::assertSame('none', $this->decodeSyncStringResult($response->getStartOperation()));
+        try {
+            $this->handler->handleStartOperation($request, new NexusOperationContext());
+            self::fail('Expected malformed Request-Timeout to be rejected.');
+        } catch (HandlerException $e) {
+            self::assertSame(ErrorType::BadRequest, $e->errorType);
+            self::assertFalse($e->isRetryable());
+            self::assertInstanceOf(
+                \Temporal\Nexus\Exception\InvalidArgumentException::class,
+                $e->getPrevious(),
+            );
+        }
     }
 
     public function testStartOperationWithValidTimeoutHeaderSetsDeadline(): void
@@ -503,6 +593,21 @@ final class NexusTaskHandlerTestCase extends AbstractUnit
             $delta,
             'deadline must derive from Request-Timeout (5s), not Operation-Timeout (120s)',
         );
+    }
+
+    public function testDeadlineFromHeadersRejectsMalformedRequestTimeoutAsBadRequest(): void
+    {
+        try {
+            NexusTaskHandler::deadlineFromHeaders(['Request-Timeout' => ' 5s']);
+            self::fail('Expected malformed Request-Timeout to be rejected.');
+        } catch (\Temporal\Nexus\Exception\HandlerException $e) {
+            self::assertSame(\Temporal\Nexus\Exception\ErrorType::BadRequest, $e->errorType);
+            self::assertFalse($e->isRetryable());
+            self::assertInstanceOf(
+                \Temporal\Nexus\Exception\InvalidArgumentException::class,
+                $e->getPrevious(),
+            );
+        }
     }
 
     public function testCancelOperationSetsDeadlineFromRequestTimeout(): void
@@ -587,6 +692,7 @@ final class NexusTaskHandlerTestCase extends AbstractUnit
         TestGreetingServiceImpl::$capturedCancelHeaders = [];
         TestGreetingServiceImpl::$capturedStartNamespace = null;
         TestGreetingServiceImpl::$capturedStartTaskQueue = null;
+        TestGreetingServiceImpl::$capturedStartEndpoint = null;
 
         $this->handler = new NexusTaskHandler(
             self::buildRepository(new TestGreetingServiceImpl()),

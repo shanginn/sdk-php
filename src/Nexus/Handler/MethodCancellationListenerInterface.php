@@ -19,8 +19,9 @@ namespace Temporal\Nexus\Handler;
 interface MethodCancellationListenerInterface
 {
     /**
-     * Invoked exactly once. To get the reason, read it from the owning
-     * {@see MethodCanceller}.
+     * Invoked at most once after cancellation is observed during registration,
+     * a later inspection, or compatible direct delivery. To get the reason,
+     * read it from the owning {@see MethodCanceller}.
      */
     public function cancelled(): void;
 }

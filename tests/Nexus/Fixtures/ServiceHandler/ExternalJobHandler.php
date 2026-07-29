@@ -28,6 +28,10 @@ final class ExternalJobHandler implements OperationHandlerInterface
         OperationStartDetails $details,
         mixed $param,
     ): OperationStartResult {
+        if (\is_string($param) && \str_starts_with($param, 'sync:')) {
+            return OperationStartResult::sync(\substr($param, 5));
+        }
+
         return OperationStartResult::async(new OperationInfo('ext-' . $param, OperationState::Running));
     }
 

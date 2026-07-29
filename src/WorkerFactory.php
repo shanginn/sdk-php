@@ -57,6 +57,7 @@ use Temporal\Worker\Environment\Environment;
 use Temporal\Worker\Environment\EnvironmentInterface;
 use Temporal\Worker\Logger\StderrLogger;
 use Temporal\Worker\LoopInterface;
+use Temporal\Worker\NexusWorkerInterface;
 use Temporal\Worker\ServiceCredentials;
 use Temporal\Worker\Transport\Command\Client\UpdateResponse;
 use Temporal\Worker\Transport\Command\RequestInterface;
@@ -225,6 +226,9 @@ class WorkerFactory implements WorkerFactoryInterface, LoopInterface
         );
     }
 
+    /**
+     * @return NexusWorkerInterface
+     */
     public function newWorker(
         string $taskQueue = self::DEFAULT_TASK_QUEUE,
         ?WorkerOptions $options = null,

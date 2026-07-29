@@ -12,7 +12,7 @@ declare(strict_types=1);
 namespace Temporal\Nexus\Exception;
 
 /**
- * @see https://github.com/nexus-rpc/api/blob/main/SPEC.md
+ * @see https://github.com/nexus-rpc/api/blob/494165f890be9418c67dfce9c138694fe5c27855/SPEC.md
  */
 enum ErrorType: string
 {

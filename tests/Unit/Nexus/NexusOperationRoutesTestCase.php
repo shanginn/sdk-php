@@ -31,6 +31,7 @@ use Temporal\Tests\Unit\AbstractUnit;
 use Temporal\Worker\Transport\Command\Client\CommandResponse;
 use Temporal\Worker\Transport\Command\Server\ServerRequest;
 use Temporal\Worker\Transport\Command\Server\TickInfo;
+use Temporal\Worker\Transport\RPCConnectionInterface;
 
 // ── Test service definitions ─────────────────────────────────────────
 
@@ -78,6 +79,12 @@ interface EchoServiceInterface
      */
     #[Operation]
     public function reportHeaders(string $input): string;
+
+    /**
+     * Reports the Server-provided Nexus Endpoint name.
+     */
+    #[Operation]
+    public function reportEndpoint(string $input): string;
 }
 
 final class EchoAsyncHandler implements OperationHandlerInterface
@@ -213,6 +220,11 @@ class EchoServiceImpl implements EchoServiceInterface
         }
         return \implode(';', $parts);
     }
+
+    public function reportEndpoint(string $input): string
+    {
+        return Nexus::getOperationContext()->endpoint;
+    }
 }
 
 // ── Integration tests ─────────────────────────────────────────────
@@ -232,6 +244,12 @@ final class NexusOperationRoutesTestCase extends AbstractUnit
     private EchoServiceImpl $serviceImpl;
     private \Temporal\Worker\Environment\Environment $env;
     private \Temporal\Internal\Nexus\NexusInvocationRegistry $invocationRegistry;
+
+    /** @var list<array{string, mixed}> */
+    private array $rpcCalls = [];
+
+    /** @var array{cancelled: bool, reason?: string} */
+    private array $rpcResponse = ['cancelled' => false];
 
     // ── Sync operation ───────────────────────────────────────────
 
@@ -351,8 +369,8 @@ final class NexusOperationRoutesTestCase extends AbstractUnit
             'A throwing cancel routine must surface as a typed HandlerException rejection, never crash the worker.',
         );
         self::assertSame(NexusErrorType::Internal, $error->errorType);
-        self::assertInstanceOf(\RuntimeException::class, $error->getPrevious());
-        self::assertStringContainsString('boom-token', $error->getPrevious()->getMessage());
+        self::assertNull($error->getPrevious());
+        self::assertStringNotContainsString('boom-token', $error->getMessage());
     }
 
     // ── Headers ──────────────────────────────────────────────────
@@ -371,6 +389,23 @@ final class NexusOperationRoutesTestCase extends AbstractUnit
 
         // Header keys are normalized to lowercase on the handler side.
         self::assertSame('authorization=Bearer token123', $this->decodePayload($reply));
+    }
+
+    public function testServerEndpointSurfacesOnOperationContext(): void
+    {
+        $request = $this->makeServerRequest('InvokeNexusOperation', [
+            'service' => 'EchoService',
+            'operation' => 'reportEndpoint',
+            'requestId' => 'req-endpoint',
+            'namespace' => 'handler-ns',
+            'taskQueue' => 'handler-tq',
+            'endpoint' => 'payments-endpoint',
+        ], EncodedValues::fromValues(['test'], $this->dataConverter));
+        $deferred = new Deferred();
+
+        $this->invokeRoute->handle($request, [], $deferred);
+
+        self::assertSame('payments-endpoint', $this->decodePayload($this->awaitReply($deferred)));
     }
 
     // ── Method-cancel registry lifecycle ─────────────────────────
@@ -411,6 +446,30 @@ final class NexusOperationRoutesTestCase extends AbstractUnit
 
         self::assertInstanceOf(OperationException::class, $error);
         self::assertNull($this->invocationRegistry->get(7), 'entry must be unregistered after failure');
+    }
+
+    public function testHandlerPollsRoadRunnerCancellationByInvocationId(): void
+    {
+        $this->rpcResponse = ['cancelled' => true, 'reason' => 'request context cancelled'];
+        $request = $this->makeServerRequest('InvokeNexusOperation', [
+            'service' => 'EchoService',
+            'operation' => 'pollCancellation',
+            'requestId' => 'reg-poll-1',
+            'invocationId' => 81,
+        ], EncodedValues::fromValues(['x'], $this->dataConverter));
+
+        $deferred = new Deferred();
+        $this->invokeRoute->handle($request, [], $deferred);
+
+        self::assertSame(
+            'cancelled=1;reason=request context cancelled',
+            $this->decodePayload($this->awaitReply($deferred)),
+        );
+        self::assertSame(
+            [['temporal.GetNexusMethodCancellation', ['invocationId' => 81]]],
+            $this->rpcCalls,
+        );
+        self::assertNull($this->invocationRegistry->get(81));
     }
 
     // ── Caller-side Nexus-Link propagation ───────────────────────
@@ -575,21 +634,32 @@ final class NexusOperationRoutesTestCase extends AbstractUnit
         self::assertMatchesRegularExpression('/delta_seconds=[1-5]/', $result);
     }
 
-    public function testMalformedTimeoutHeaderIsSilentlyIgnored(): void
+    public function testMalformedTimeoutHeaderRejectsAsBadRequestAndCleansInvocation(): void
     {
         $request = $this->makeServerRequest('InvokeNexusOperation', [
             'service' => 'EchoService',
             'operation' => 'reportDeadline',
             'requestId' => 'dl-4',
+            'invocationId' => 7,
             'headers' => ['Request-Timeout' => 'garbage'],
         ], EncodedValues::fromValues(['x'], $this->dataConverter));
 
         $deferred = new Deferred();
         $this->invokeRoute->handle($request, [], $deferred);
-        $reply = $this->awaitReply($deferred);
-        $result = $this->decodePayload($reply);
 
-        self::assertStringContainsString('deadline:none', $result);
+        $error = null;
+        $deferred->promise()->then(null, static function (\Throwable $e) use (&$error): void {
+            $error = $e;
+        });
+
+        self::assertInstanceOf(NexusHandlerException::class, $error);
+        self::assertSame(NexusErrorType::BadRequest, $error->errorType);
+        self::assertFalse($error->isRetryable());
+        self::assertInstanceOf(
+            \Temporal\Nexus\Exception\InvalidArgumentException::class,
+            $error->getPrevious(),
+        );
+        self::assertNull($this->invocationRegistry->get(7));
     }
 
     public function testCaseInsensitiveTimeoutHeaderLookup(): void
@@ -684,8 +754,22 @@ final class NexusOperationRoutesTestCase extends AbstractUnit
         $marshaller = new \Temporal\Internal\Marshaller\Marshaller(
             new \Temporal\Internal\Marshaller\Mapper\AttributeMapperFactory(new \Spiral\Attributes\AttributeReader()),
         );
+        $rpc = $this->createMock(RPCConnectionInterface::class);
+        $rpc
+            ->method('call')
+            ->willReturnCallback(function (string $method, mixed $payload): array {
+                $this->rpcCalls[] = [$method, $payload];
+                return $this->rpcResponse;
+            });
         $this->invocationRegistry = new \Temporal\Internal\Nexus\NexusInvocationRegistry();
-        $this->invokeRoute = new InvokeNexusOperation($taskHandler, $this->invocationRegistry, $this->dataConverter, $marshaller, $this->env);
+        $this->invokeRoute = new InvokeNexusOperation(
+            $taskHandler,
+            $this->invocationRegistry,
+            $this->dataConverter,
+            $marshaller,
+            $this->env,
+            $rpc,
+        );
         $this->cancelRoute = new CancelNexusOperation($taskHandler, $marshaller);
     }
 

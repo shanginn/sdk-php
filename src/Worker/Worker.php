@@ -27,7 +27,7 @@ use Temporal\Worker\Transport\RPCConnectionInterface;
  * Worker manages the execution of workflows and activities within the single TaskQueue. Activity and Workflow processing
  * will be launched using separate processes.
  */
-class Worker implements WorkerInterface, EventListenerInterface, DispatcherInterface
+class Worker implements NexusWorkerInterface, EventListenerInterface, DispatcherInterface
 {
     use EventEmitterTrait;
 
@@ -116,7 +116,7 @@ class Worker implements WorkerInterface, EventListenerInterface, DispatcherInter
         return $this->services->activities;
     }
 
-    public function registerNexusServiceImplementation(object ...$services): WorkerInterface
+    public function registerNexusServiceImplementation(object ...$services): NexusWorkerInterface
     {
         $hasClient = $this->services->workflowClient !== null;
 
@@ -171,10 +171,13 @@ class Worker implements WorkerInterface, EventListenerInterface, DispatcherInter
             $this->services->dataConverter,
             $this->services->marshaller,
             $this->services->env,
+            $this->rpc,
         ));
         $router->add(new Router\CancelNexusOperation(
             $this->services->nexusTaskHandler,
             $this->services->marshaller,
+            $this->services->env,
+            $this->rpc,
         ));
         $router->add(new Router\CancelNexusOperationMethod($this->services->nexusInvocations));
 

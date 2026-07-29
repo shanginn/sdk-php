@@ -20,6 +20,7 @@ use Temporal\Nexus\Attribute\Operation;
 use Temporal\Nexus\Attribute\Service;
 use Temporal\Nexus\Exception\InvalidArgumentException;
 use Temporal\Nexus\Handler\OperationHandlerInterface;
+use Temporal\Nexus\Validation\TemporalNameValidator;
 use Temporal\Nexus\WorkflowHandle;
 
 /**
@@ -237,25 +238,36 @@ class NexusServiceReader extends Reader
             $inputType = Type::create($method->getParameters()[0]->getType());
         }
 
-        $async = $attribute instanceof AsyncOperation ? $attribute : null;
+        $operationName = $attribute->name !== '' ? $attribute->name : $method->getName();
+        $handlerFactory = self::returnsOperationHandler($method);
+        $workflowRun = self::returnsWorkflowHandle($method);
 
-        if ($async !== null) {
-            $this->assertAsyncReturnType($method);
-            $operationName = $async->name !== '' ? $async->name : $method->getName();
-            $outputType = Type::create($async->output !== '' ? $async->output : Type::TYPE_VOID);
-
-            if (self::returnsOperationHandler($method)) {
-                if ($method->getNumberOfParameters() !== 0) {
-                    throw new InvalidArgumentException(
-                        'Operation handler factory must declare no parameters; '
-                        . 'the input arrives in OperationHandlerInterface::start()',
-                    );
-                }
-                $inputType = Type::create($async->input !== '' ? $async->input : Type::TYPE_ANY);
+        if ($handlerFactory) {
+            if ($method->getNumberOfParameters() !== 0) {
+                throw new InvalidArgumentException(
+                    'Operation handler factory must declare no parameters; '
+                    . 'the input arrives in OperationHandlerInterface::start()',
+                );
             }
+
+            $inputType = Type::create($attribute->input !== '' ? $attribute->input : Type::TYPE_ANY);
+            $outputType = Type::create($attribute->output !== '' ? $attribute->output : Type::TYPE_VOID);
+        } elseif ($attribute instanceof AsyncOperation) {
+            $this->assertWorkflowHandleReturnType($method, AsyncOperation::class);
+            $workflowRun = true;
+            $outputType = Type::create($attribute->output !== '' ? $attribute->output : Type::TYPE_VOID);
+        } elseif ($this->declaresWorkflowHandle($method)) {
+            $this->assertWorkflowHandleReturnType($method, Operation::class);
+            $workflowRun = true;
+            $outputType = Type::create($attribute->output !== '' ? $attribute->output : Type::TYPE_VOID);
         } else {
-            $operationName = $attribute->name !== '' ? $attribute->name : $method->getName();
-            $outputType = Type::create($method->getReturnType());
+            $outputType = Type::create(
+                $attribute->output !== '' ? $attribute->output : $method->getReturnType(),
+            );
+        }
+
+        if ($workflowRun) {
+            TemporalNameValidator::assertNotReserved($operationName, 'Workflow-run Operation Name');
         }
 
         return new NexusOperationPrototype(
@@ -263,33 +275,50 @@ class NexusServiceReader extends Reader
             methodName: $method->getName(),
             inputType: $inputType,
             outputType: $outputType,
-            async: $async !== null,
+            async: $workflowRun,
             handler: $method,
         );
     }
 
     /**
-     * An `#[AsyncOperation]` method must return a non-nullable `WorkflowHandle`
-     * (SDK-managed workflow run) or an `OperationHandlerInterface` implementation
-     * (manual operation owning both start and cancel).
+     * Whether the method declares a Workflow-run result, including nullable
+     * declarations which are rejected with a targeted error below.
      */
-    private function assertAsyncReturnType(\ReflectionMethod $method): void
+    private function declaresWorkflowHandle(\ReflectionMethod $method): bool
     {
         $returnType = $method->getReturnType();
-        if (
-            $returnType instanceof \ReflectionNamedType
-            && !$returnType->allowsNull()
+
+        return $returnType instanceof \ReflectionNamedType
+            && !$returnType->isBuiltin()
+            && $returnType->getName() === WorkflowHandle::class;
+    }
+
+    private function returnsWorkflowHandle(\ReflectionMethod $method): bool
+    {
+        $returnType = $method->getReturnType();
+
+        return $returnType instanceof \ReflectionNamedType
+            && !$returnType->isBuiltin()
             && $returnType->getName() === WorkflowHandle::class
-        ) {
-            return;
-        }
-        if (self::returnsOperationHandler($method)) {
+            && !$returnType->allowsNull();
+    }
+
+    /**
+     * Workflow-run operation methods must return a non-nullable
+     * {@see WorkflowHandle}.
+     *
+     * @param class-string $attribute
+     */
+    private function assertWorkflowHandleReturnType(\ReflectionMethod $method, string $attribute): void
+    {
+        if ($this->returnsWorkflowHandle($method)) {
             return;
         }
 
         throw new InvalidArgumentException(\sprintf(
-            '#[%s] method %s::%s() must declare a `%s` return type or return an `%s` implementation',
-            AsyncOperation::class,
+            '#[%s] method %s::%s() must declare a non-nullable `%s` return type '
+            . 'or return an `%s` implementation',
+            $attribute,
             $method->getDeclaringClass()->getName(),
             $method->getName(),
             WorkflowHandle::class,

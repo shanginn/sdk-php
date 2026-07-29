@@ -9,14 +9,14 @@ use React\Promise\PromiseInterface;
 use Temporal\DataConverter\Type;
 use Temporal\Interceptor\Trait\WorkflowOutboundCallsInterceptorTrait;
 use Temporal\Interceptor\WorkflowOutboundCalls\ExecuteNexusOperationInput;
-use Temporal\Interceptor\WorkflowOutboundCallsInterceptor;
+use Temporal\Interceptor\NexusWorkflowOutboundCallsInterceptor;
 use Temporal\Internal\Declaration\Prototype\NexusOperationPrototype;
 use Temporal\Internal\Declaration\Prototype\NexusServicePrototype;
 use Temporal\Internal\Interceptor\Pipeline;
 use Temporal\Internal\Workflow\NexusServiceProxy;
 use Temporal\Workflow\NexusOperationOptions;
 use Temporal\Workflow\NexusOperationStubInterface;
-use Temporal\Workflow\WorkflowContextInterface;
+use Temporal\Workflow\NexusWorkflowContextInterface;
 
 use function React\Promise\resolve;
 
@@ -31,7 +31,7 @@ final class NexusServiceProxyTestCase extends TestCase
         $captured = null;
         $proxy = $this->makeProxy(
             $this->makeContext($captured),
-            new class implements WorkflowOutboundCallsInterceptor {
+            new class implements NexusWorkflowOutboundCallsInterceptor {
                 use WorkflowOutboundCallsInterceptorTrait;
 
                 public function executeNexusOperation(
@@ -55,7 +55,7 @@ final class NexusServiceProxyTestCase extends TestCase
         $captured = null;
         $proxy = $this->makeProxy(
             $this->makeContext($captured),
-            new class implements WorkflowOutboundCallsInterceptor {
+            new class implements NexusWorkflowOutboundCallsInterceptor {
                 use WorkflowOutboundCallsInterceptorTrait;
 
                 public function executeNexusOperation(
@@ -98,8 +98,8 @@ final class NexusServiceProxyTestCase extends TestCase
     }
 
     private function makeProxy(
-        WorkflowContextInterface $ctx,
-        WorkflowOutboundCallsInterceptor ...$interceptors,
+        NexusWorkflowContextInterface $ctx,
+        NexusWorkflowOutboundCallsInterceptor ...$interceptors,
     ): NexusServiceProxy {
         $reflection = new \ReflectionClass(NexusProxyTestService::class);
         $operation = new NexusOperationPrototype(
@@ -120,9 +120,9 @@ final class NexusServiceProxyTestCase extends TestCase
         );
     }
 
-    private function makeContext(?NexusOperationOptions &$captured): WorkflowContextInterface
+    private function makeContext(?NexusOperationOptions &$captured): NexusWorkflowContextInterface
     {
-        $ctx = $this->createMock(WorkflowContextInterface::class);
+        $ctx = $this->createMock(NexusWorkflowContextInterface::class);
         $ctx->method('newUntypedNexusOperationStub')
             ->willReturnCallback(static function (NexusOperationOptions $options) use (&$captured) {
                 $captured = $options;

@@ -28,6 +28,7 @@ use Temporal\Nexus\NexusOperationContext;
 use Temporal\Worker\Environment\EnvironmentInterface;
 use Temporal\Worker\Transport\Command\Client\CommandResponse;
 use Temporal\Worker\Transport\Command\ServerRequestInterface;
+use Temporal\Worker\Transport\RPCConnectionInterface;
 
 final class InvokeNexusOperation extends Route
 {
@@ -39,24 +40,28 @@ final class InvokeNexusOperation extends Route
         private readonly DataConverterInterface $dataConverter,
         private readonly MarshallerInterface $marshaller,
         private readonly EnvironmentInterface $env,
+        private readonly RPCConnectionInterface $rpc,
     ) {}
 
     public function handle(ServerRequestInterface $request, array $headers, Deferred $resolver): void
     {
-        $options = $request->getOptions();
-        $invocationId = (int) ($options['invocationId'] ?? 0);
-        $operationContext = $this->marshaller->unmarshal($options, new NexusOperationContext());
-
-        $canceller = null;
-        if ($invocationId !== 0) {
-            $canceller = new MethodCanceller(
-                $this->env,
-                NexusTaskHandler::deadlineFromHeaders((array) ($options['headers'] ?? [])),
-            );
-            $this->invocations->register($invocationId, $canceller);
-        }
-
+        $invocationId = 0;
         try {
+            $options = $request->getOptions();
+            $invocationId = (int) ($options['invocationId'] ?? 0);
+            $operationContext = $this->marshaller->unmarshal($options, new NexusOperationContext());
+
+            $canceller = null;
+            if ($invocationId !== 0) {
+                $canceller = new MethodCanceller(
+                    $this->env,
+                    NexusTaskHandler::deadlineFromHeaders((array) ($options['headers'] ?? [])),
+                    $this->rpc,
+                    $invocationId,
+                );
+                $this->invocations->register($invocationId, $canceller);
+            }
+
             $protoRequest = self::buildProtoRequest($options, $request->getPayloads());
             $response = $this->taskHandler->handleStartOperation(
                 $protoRequest,
@@ -131,6 +136,7 @@ final class InvokeNexusOperation extends Route
 
         return (new Request())
             ->setHeader((array) ($options['headers'] ?? []))
+            ->setEndpoint((string) ($options['endpoint'] ?? ''))
             ->setStartOperation($startRequest);
     }
 

@@ -18,7 +18,7 @@ use Temporal\Nexus\Exception\InvalidArgumentException;
  * Well-known Nexus header names + small utilities. Values are wire-level keys.
  * Use {@see self::get()} for case-insensitive lookup against lowercased maps.
  *
- * @see https://github.com/nexus-rpc/api/blob/main/SPEC.md
+ * @see https://github.com/nexus-rpc/api/blob/494165f890be9418c67dfce9c138694fe5c27855/SPEC.md
  */
 final class Header
 {
@@ -86,30 +86,30 @@ final class Header
     }
 
     /**
-     * Parse `"30s"` / `"250ms"` / `"2m"`. Empty → null.
+     * Parse the pinned Nexus timeout syntax: a non-negative integer or decimal
+     * followed immediately by `ms`, `s`, or `m`.
+     *
+     * Whitespace, signs, exponents, empty values, and other units are invalid.
      *
      * @throws InvalidArgumentException
      */
     public static function parseTimeout(string $value): ?\DateInterval
     {
-        $trimmed = \trim($value);
-        if ($trimmed === '') {
-            return null;
-        }
-
-        if (!\preg_match('/^[+-]?\d/', $trimmed)) {
-            throw new InvalidArgumentException("Invalid Nexus timeout '{$value}'");
+        if (\preg_match('/^\d+(?:\.\d+)?(?:ms|s|m)\z/', $value) !== 1) {
+            throw new InvalidArgumentException(
+                'Invalid Nexus timeout; expected a non-negative integer or decimal followed by ms, s, or m.',
+            );
         }
 
         try {
-            return DateInterval::parse($trimmed, DateInterval::FORMAT_SECONDS);
+            return DateInterval::parse($value, DateInterval::FORMAT_SECONDS);
         } catch (\Throwable $e) {
-            throw new InvalidArgumentException("Invalid Nexus timeout '{$value}'", 0, $e);
+            throw new InvalidArgumentException('Invalid Nexus timeout value.', 0, $e);
         }
     }
 
     /**
-     * `$now + parseTimeout($value)`. Empty → null. `$now` defaults to UTC now.
+     * `$now + parseTimeout($value)`. `$now` defaults to UTC now.
      *
      * @throws InvalidArgumentException
      */
@@ -118,9 +118,7 @@ final class Header
         ?\DateTimeImmutable $now = null,
     ): ?\DateTimeImmutable {
         $interval = self::parseTimeout($value);
-        if ($interval === null) {
-            return null;
-        }
+        \assert($interval !== null);
         return ($now ?? new \DateTimeImmutable('now', new \DateTimeZone('UTC')))->add($interval);
     }
 }

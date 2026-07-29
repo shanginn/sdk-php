@@ -20,7 +20,7 @@ final class OperationStateTest extends TestCase
 {
     public function testAllStatesUseSpecLowercaseValues(): void
     {
-        // Values must match https://github.com/nexus-rpc/api/blob/main/SPEC.md
+        // Values must match https://github.com/nexus-rpc/api/blob/494165f890be9418c67dfce9c138694fe5c27855/SPEC.md
         // which requires lowercase strings on the wire.
         self::assertSame('running', OperationState::Running->value);
         self::assertSame('succeeded', OperationState::Succeeded->value);

@@ -13,12 +13,14 @@ use Temporal\Exception\Failure\TimeoutFailure;
 use Temporal\Nexus\Attribute\AsyncOperation;
 use Temporal\Nexus\Attribute\Operation;
 use Temporal\Nexus\Attribute\Service;
+use Temporal\Nexus\Handler\MethodCancellationListenerInterface;
 use Temporal\Nexus\Nexus;
 use Temporal\Nexus\WorkflowHandle;
 use Temporal\Tests\Acceptance\App\Attribute\Worker;
 use Temporal\Tests\Acceptance\App\Runtime\State;
 use Temporal\Tests\Acceptance\App\TestCase;
 use Temporal\Tests\Acceptance\Extra\Nexus\NexusEndpoints;
+use Temporal\Tests\Acceptance\Extra\Nexus\NexusHttpClient;
 use Temporal\Tests\Acceptance\Extra\Nexus\NexusWorkerOptions;
 use Temporal\Worker\WorkerOptions;
 use Temporal\Workflow;
@@ -85,6 +87,42 @@ class TimeoutTest extends TestCase
 
         self::assertSame('ok', $stub->getResult('string'));
     }
+
+    #[Test]
+    public function syncHandlerObservesRequestCancellationAcrossRoadRunnerProcesses(
+        State $state,
+        NexusEndpoints $endpoints,
+        NexusHttpClient $http,
+    ): void {
+        $endpoint = $endpoints->register($state->namespace, __NAMESPACE__, 'nexus-timeout-method-cancel');
+        $marker = \sys_get_temp_dir() . '/temporal-nexus-method-cancel-' . \bin2hex(\random_bytes(8)) . '.json';
+
+        try {
+            [$status] = $http->post(
+                $endpoint,
+                'TimeoutSyncService',
+                'waitForRequestCancellation',
+                $marker,
+                ['Request-Timeout' => '1s'],
+            );
+
+            self::assertSame(520, $status, 'the frontend must report the handler request deadline as upstream timeout');
+            $markerDeadline = \microtime(true) + 5.0;
+            while (!\is_file($marker) && \microtime(true) < $markerDeadline) {
+                \usleep(50_000);
+            }
+            self::assertFileExists($marker, 'the still-running PHP handler must observe Go context cancellation');
+
+            $observed = \json_decode((string) \file_get_contents($marker), true, flags: \JSON_THROW_ON_ERROR);
+            self::assertIsArray($observed);
+            self::assertSame(true, $observed['cancelled'] ?? null);
+            self::assertSame(true, $observed['listenerCalled'] ?? null);
+            self::assertIsString($observed['reason'] ?? null);
+            self::assertNotSame('', $observed['reason']);
+        } finally {
+            @\unlink($marker);
+        }
+    }
 }
 
 // ── Sync service: handler sleeps past the caller's timeout ─────────
@@ -99,6 +137,49 @@ class TimeoutSyncService
         // caller's 2s scheduleToCloseTimeout.
         \sleep(5);
         return "should-not-reach:{$input}";
+    }
+
+    #[Operation]
+    public function waitForRequestCancellation(string $marker): string
+    {
+        $context = Nexus::getCurrentOperationContext();
+        $listener = new class implements MethodCancellationListenerInterface {
+            public bool $called = false;
+
+            public function cancelled(): void
+            {
+                $this->called = true;
+            }
+        };
+        $context->addMethodCancellationListener($listener);
+
+        $expiresAt = \microtime(true) + 10.0;
+        do {
+            if ($context->isMethodCancelled()) {
+                \file_put_contents(
+                    $marker,
+                    \json_encode([
+                        'cancelled' => true,
+                        'listenerCalled' => $listener->called,
+                        'reason' => $context->getMethodCancellationReason(),
+                    ], \JSON_THROW_ON_ERROR),
+                    \LOCK_EX,
+                );
+                return 'cancel-observed';
+            }
+            \usleep(50_000);
+        } while (\microtime(true) < $expiresAt);
+
+        \file_put_contents(
+            $marker,
+            \json_encode([
+                'cancelled' => false,
+                'listenerCalled' => $listener->called,
+                'reason' => $context->getMethodCancellationReason(),
+            ], \JSON_THROW_ON_ERROR),
+            \LOCK_EX,
+        );
+        return 'cancel-not-observed';
     }
 }
 

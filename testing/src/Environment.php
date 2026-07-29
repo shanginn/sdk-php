@@ -10,6 +10,7 @@ use Symfony\Component\Console\Output\OutputInterface;
 use Symfony\Component\Console\Style\SymfonyStyle;
 use Symfony\Component\Filesystem\Filesystem;
 use Symfony\Component\HttpClient\HttpClient;
+use Symfony\Component\Process\Exception\ProcessTimedOutException;
 use Symfony\Component\Process\Process;
 use Temporal\Common\SearchAttributes\ValueType;
 use Temporal\Testing\Support\TestOutputStyle;
@@ -73,6 +74,10 @@ final class Environment
         }
         $temporalHost = \parse_url($temporalServerAddress, PHP_URL_HOST);
         $temporalPort = \parse_url($temporalServerAddress, PHP_URL_PORT);
+        if (!\is_string($temporalHost) || $temporalHost === '' || !\is_int($temporalPort)) {
+            $this->io->error('Temporal server address must contain a host and port.');
+            exit(1);
+        }
 
         foreach ($searchAttributes as $name => $type) {
             $type = \is_string($type) ? ValueType::tryFrom($type) : $type;
@@ -101,7 +106,7 @@ final class Environment
         $process = new Process([
             $this->systemInfo->temporalCliExecutable,
             "server", "start-dev",
-            "--port", $temporalPort,
+            "--port", (string) $temporalPort,
             '--log-level', 'error',
             '--ip', $temporalHost,
             ...$parameters,
@@ -118,7 +123,11 @@ final class Environment
                 '--address', $temporalServerAddress,
             ]);
             $check->setTimeout(1);
-            $check->run();
+            try {
+                $check->run();
+            } catch (ProcessTimedOutException) {
+                return false;
+            }
 
             return \str_contains($check->getOutput(), 'SERVING');
         }, onFailure: function (Process $process): void {
@@ -144,8 +153,16 @@ final class Environment
             exit(1);
         }
         $temporalPort = \parse_url((string) $this->command->address, PHP_URL_PORT);
+        if (!\is_int($temporalPort)) {
+            $this->io->error('Temporal test server address must contain a port.');
+            exit(1);
+        }
 
-        $process = new Process([$this->systemInfo->temporalServerExecutable, $temporalPort, '--enable-time-skipping']);
+        $process = new Process([
+            $this->systemInfo->temporalServerExecutable,
+            (string) $temporalPort,
+            '--enable-time-skipping',
+        ]);
         $process->setTimeout($commandTimeout);
         $this->temporalTestServerProcess = $process;
 
@@ -288,7 +305,6 @@ final class Environment
 
         $deadline = \microtime(true) + (float) $commandTimeout;
         $ready = false;
-
         while ($process->isRunning() && \microtime(true) < $deadline) {
             if ($readiness()) {
                 $ready = true;

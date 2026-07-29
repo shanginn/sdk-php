@@ -20,12 +20,12 @@ use Temporal\Nexus\OperationState;
  *
  * @extends OperationStartResult<never>
  */
-final readonly class AsyncOperationStartResult extends OperationStartResult
+final class AsyncOperationStartResult extends OperationStartResult
 {
     /**
      * @internal
      */
-    public function __construct(public OperationInfo $info)
+    public function __construct(public readonly OperationInfo $info)
     {
         if ($info->state !== OperationState::Running) {
             throw new InvalidArgumentException(\sprintf(

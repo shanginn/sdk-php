@@ -13,6 +13,8 @@ use Temporal\Nexus\OperationInfo;
 use Temporal\Nexus\OperationState;
 use PHPUnit\Framework\MockObject\MockObject;
 use Temporal\Client\WorkflowClientInterface;
+use Temporal\Client\GRPC\Context;
+use Temporal\Client\GRPC\ServiceClientInterface;
 use Temporal\Client\WorkflowOptions;
 use Temporal\Client\WorkflowStubInterface;
 use Temporal\Common\WorkflowIdConflictPolicy;
@@ -20,6 +22,7 @@ use Temporal\Internal\Nexus\NexusContext;
 use Temporal\Nexus\Exception\ErrorType;
 use Temporal\Nexus\Exception\HandlerException;
 use Temporal\Nexus\Internal\WorkflowRunOperationToken;
+use Temporal\Nexus\Internal\WorkflowClientNamespace;
 use Temporal\Nexus\Handler\OperationContext;
 use Temporal\Nexus\Nexus;
 use Temporal\Nexus\NexusOperationContext;
@@ -41,6 +44,7 @@ use Temporal\Worker\Environment\EnvironmentInterface;
  */
 #[CoversClass(WorkflowRunOperation::class)]
 #[CoversClass(WorkflowRunStarter::class)]
+#[CoversClass(WorkflowClientNamespace::class)]
 #[CoversClass(MethodOperationHandler::class)]
 final class WorkflowRunOperationTestCase extends AbstractUnit
 {
@@ -51,6 +55,24 @@ final class WorkflowRunOperationTestCase extends AbstractUnit
     private WorkflowClientInterface $client;
 
     private EnvironmentInterface $env;
+
+    /** @var array<array-key, mixed> */
+    private array $clientMetadata;
+
+    /**
+     * @return iterable<string, array{array<array-key, mixed>}>
+     */
+    public static function invalidClientNamespaceMetadataProvider(): iterable
+    {
+        yield 'missing' => [[]];
+        yield 'empty value' => [['Temporal-Namespace' => ['']]];
+        yield 'multiple values' => [['Temporal-Namespace' => [self::NS, self::NS]]];
+        yield 'ambiguous casing' => [[
+            'Temporal-Namespace' => [self::NS],
+            'temporal-namespace' => [self::NS],
+        ]];
+        yield 'non-string value' => [['Temporal-Namespace' => [123]]];
+    }
 
     public function testStartReturnsAsyncTokenAndStartsWorkflow(): void
     {
@@ -102,7 +124,7 @@ final class WorkflowRunOperationTestCase extends AbstractUnit
         self::assertSame($expectedToken, $callback->headers['Nexus-Operation-Id']);
     }
 
-    public function testStartPreservesCallerProvidedTokenHeaders(): void
+    public function testStartOverwritesCallerProvidedTokenHeaders(): void
     {
         $stub = $this->createMock(WorkflowStubInterface::class);
 
@@ -132,9 +154,10 @@ final class WorkflowRunOperationTestCase extends AbstractUnit
         );
 
         $callback = $captured->completionCallbacks[0];
-        self::assertSame('caller-token', $callback->headers['nexus-operation-token']);
-        self::assertSame('caller-id', $callback->headers['Nexus-Operation-Id']);
-        self::assertArrayNotHasKey('Nexus-Operation-Token', $callback->headers);
+        $expectedToken = WorkflowRunOperationToken::generate(self::NS, self::WID);
+        self::assertArrayNotHasKey('nexus-operation-token', $callback->headers);
+        self::assertSame($expectedToken, $callback->headers['Nexus-Operation-Token']);
+        self::assertSame($expectedToken, $callback->headers['Nexus-Operation-Id']);
         self::assertCount(2, $callback->headers);
     }
 
@@ -283,6 +306,74 @@ final class WorkflowRunOperationTestCase extends AbstractUnit
         self::assertSame(self::WID, $captured->workflowId);
     }
 
+    public function testStartResolvesClientNamespaceMetadataCaseInsensitively(): void
+    {
+        $this->clientMetadata = ['tEmPoRaL-NaMeSpAcE' => [self::NS]];
+
+        $captured = $this->captureStartOptions(
+            WorkflowOptions::new()->withWorkflowId(self::WID),
+        );
+
+        self::assertSame(self::WID, $captured->workflowId);
+    }
+
+    /**
+     * @param array<array-key, mixed> $metadata
+     */
+    #[\PHPUnit\Framework\Attributes\DataProvider('invalidClientNamespaceMetadataProvider')]
+    public function testStartFailsSafelyForInvalidClientNamespaceMetadata(array $metadata): void
+    {
+        $this->clientMetadata = $metadata;
+        $this->client->expects(self::never())->method('newWorkflowStub');
+        $this->client->expects(self::never())->method('start');
+
+        try {
+            WorkflowRunStarter::start(
+                WorkflowHandle::fromWorkflowMethod(
+                    FakeWorkflow::class,
+                    WorkflowOptions::new()->withWorkflowId(self::WID),
+                ),
+                new OperationStartDetails(requestId: 'req-invalid-ns', callbackUrl: null),
+            );
+            self::fail('Expected invalid WorkflowClient namespace metadata to be rejected.');
+        } catch (HandlerException $e) {
+            self::assertSame(ErrorType::Internal, $e->errorType);
+            self::assertFalse($e->isRetryable());
+            self::assertStringContainsString(
+                'WorkflowClient metadata must contain exactly one non-empty Temporal-Namespace value',
+                $e->getMessage(),
+            );
+            self::assertStringNotContainsString(self::NS, $e->getMessage());
+        }
+    }
+
+    public function testStartRejectsWorkflowClientNamespaceMismatchBeforeStarting(): void
+    {
+        $this->clientMetadata = ['Temporal-Namespace' => ['other-namespace']];
+        $this->client->expects(self::never())->method('newWorkflowStub');
+        $this->client->expects(self::never())->method('start');
+
+        try {
+            WorkflowRunStarter::start(
+                WorkflowHandle::fromWorkflowMethod(
+                    FakeWorkflow::class,
+                    WorkflowOptions::new()->withWorkflowId(self::WID),
+                ),
+                new OperationStartDetails(requestId: 'req-mismatched-ns', callbackUrl: null),
+            );
+            self::fail('Expected WorkflowClient namespace mismatch to be rejected.');
+        } catch (HandlerException $e) {
+            self::assertSame(ErrorType::Internal, $e->errorType);
+            self::assertFalse($e->isRetryable());
+            self::assertStringContainsString(
+                'WorkflowClient namespace must match the Nexus operation and operation-token namespaces',
+                $e->getMessage(),
+            );
+            self::assertStringNotContainsString('other-namespace', $e->getMessage());
+            self::assertStringNotContainsString(self::NS, $e->getMessage());
+        }
+    }
+
     public function testCancelDecodesTokenAndCancelsWorkflow(): void
     {
         $token = WorkflowRunOperationToken::generate(self::NS, self::WID);
@@ -309,19 +400,42 @@ final class WorkflowRunOperationTestCase extends AbstractUnit
         }
     }
 
-    public function testCancelIgnoresTokenNamespaceAndCancelsByWorkflowId(): void
+    public function testCancelRejectsTokenNamespaceMismatchBeforeCancellingWorkflow(): void
     {
         $token = WorkflowRunOperationToken::generate('other-ns', self::WID);
 
-        $stub = $this->createMock(WorkflowStubInterface::class);
-        $stub->expects(self::once())->method('cancel');
+        $this->client->expects(self::never())->method('newUntypedRunningWorkflowStub');
 
-        $this->client->expects(self::once())
-            ->method('newUntypedRunningWorkflowStub')
-            ->with(self::WID)
-            ->willReturn($stub);
+        try {
+            WorkflowRunOperation::cancel($token);
+            self::fail('Expected token namespace mismatch to be rejected.');
+        } catch (HandlerException $e) {
+            self::assertSame(ErrorType::Internal, $e->errorType);
+            self::assertFalse($e->isRetryable());
+            self::assertStringNotContainsString('other-ns', $e->getMessage());
+            self::assertStringNotContainsString(self::NS, $e->getMessage());
+        }
+    }
 
-        WorkflowRunOperation::cancel($token);
+    public function testCancelRejectsActiveOperationNamespaceMismatchBeforeCancellingWorkflow(): void
+    {
+        Nexus::setCurrentContext(new NexusContext(
+            operation: new NexusOperationContext('other-active-ns', 'tq'),
+            workflowClient: $this->client,
+            current: new OperationContext(service: 'svc', operation: 'op', env: $this->env),
+        ));
+        $token = WorkflowRunOperationToken::generate(self::NS, self::WID);
+        $this->client->expects(self::never())->method('newUntypedRunningWorkflowStub');
+
+        try {
+            WorkflowRunOperation::cancel($token);
+            self::fail('Expected active operation namespace mismatch to be rejected.');
+        } catch (HandlerException $e) {
+            self::assertSame(ErrorType::Internal, $e->errorType);
+            self::assertFalse($e->isRetryable());
+            self::assertStringNotContainsString('other-active-ns', $e->getMessage());
+            self::assertStringNotContainsString(self::NS, $e->getMessage());
+        }
     }
 
     public function testHandlerWithoutCancelRoutineAutoCancelsWorkflowRun(): void
@@ -346,7 +460,13 @@ final class WorkflowRunOperationTestCase extends AbstractUnit
     protected function setUp(): void
     {
         $this->env = new Environment();
+        $this->clientMetadata = ['Temporal-Namespace' => [self::NS]];
         $this->client = $this->createMock(WorkflowClientInterface::class);
+        $serviceClient = $this->createMock(ServiceClientInterface::class);
+        $serviceClient->method('getContext')->willReturnCallback(
+            fn(): Context => Context::default()->withMetadata($this->clientMetadata),
+        );
+        $this->client->method('getServiceClient')->willReturn($serviceClient);
         Nexus::setCurrentContext(new NexusContext(
             operation: new NexusOperationContext(self::NS, 'tq'),
             workflowClient: $this->client,

@@ -14,6 +14,8 @@ namespace Temporal\Worker\Transport\Codec\JsonCodec;
 use Temporal\DataConverter\DataConverterInterface;
 use Temporal\Exception\Failure\FailureConverter;
 use Temporal\Interceptor\Header;
+use Temporal\Worker\Transport\Command\Client\CommandResponse;
+use Temporal\Worker\Transport\Command\Client\UpdateResponse;
 use Temporal\Worker\Transport\Command\CommandInterface;
 use Temporal\Worker\Transport\Command\FailureResponseInterface;
 use Temporal\Worker\Transport\Command\RequestInterface;
@@ -72,6 +74,27 @@ class Encoder
 
                 $result = \is_int($cmd->getID()) ? ['id' => $cmd->getID()] : [];
                 $result['payloads'] = \base64_encode($cmd->getPayloads()->toPayloads()->serializeToString());
+                return $result;
+
+            case $cmd instanceof CommandResponse:
+            case $cmd instanceof UpdateResponse:
+                $options = $cmd->getOptions();
+
+                $result = [
+                    'command' => $cmd->getCommand(),
+                    'options' => $options === [] ? new \stdClass() : $options,
+                ];
+
+                if ($cmd->getFailure() !== null) {
+                    $failure = FailureConverter::mapExceptionToFailure($cmd->getFailure(), $this->converter);
+                    $result['failure'] = \base64_encode($failure->serializeToString());
+                }
+
+                if ($cmd->getPayloads() !== null) {
+                    $cmd->getPayloads()->setDataConverter($this->converter);
+                    $result['payloads'] = \base64_encode($cmd->getPayloads()->toPayloads()->serializeToString());
+                }
+
                 return $result;
 
             default:

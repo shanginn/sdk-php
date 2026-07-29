@@ -15,6 +15,7 @@ use Temporal\Interceptor\ActivityInboundInterceptor;
 use Temporal\Interceptor\WorkflowClientCallsInterceptor;
 use Temporal\Interceptor\WorkflowInboundCallsInterceptor;
 use Temporal\Interceptor\WorkflowOutboundCallsInterceptor;
+use Temporal\Interceptor\NexusWorkflowOutboundCallsInterceptor;
 use Temporal\Interceptor\WorkflowOutboundRequestInterceptor;
 use Temporal\Internal\Interceptor\Interceptor;
 use Temporal\Internal\Interceptor\Pipeline;
@@ -30,6 +31,7 @@ final class PipelineProvider implements \Temporal\Interceptor\PipelineProvider
         WorkflowInboundCallsInterceptor::class => [],
         WorkflowOutboundRequestInterceptor::class => [],
         WorkflowOutboundCallsInterceptor::class => [],
+        NexusWorkflowOutboundCallsInterceptor::class => [],
         ActivityInboundInterceptor::class => [],
         WorkflowClientCallsInterceptor::class => [],
     ];

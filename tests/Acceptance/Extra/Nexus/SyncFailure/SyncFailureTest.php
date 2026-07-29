@@ -180,8 +180,10 @@ class AppFailureCallerWorkflow
             if (!$cause instanceof ApplicationFailure) {
                 return 'wrong-cause-type:' . \get_debug_type($cause);
             }
-            if (!\str_starts_with($cause->getType(), 'nexus.OperationError.')) {
-                return "missing-type-marker:{$cause->getType()}";
+            // The PHP→RoadRunner marker is an internal bridge detail. Temporal
+            // exposes the standardized operation-error Application Failure.
+            if ($cause->getType() !== 'OperationError') {
+                return "wrong-operation-error-type:{$cause->getType()}";
             }
             if (!\str_contains($cause->getOriginalMessage(), 'business-error')) {
                 return "missing-message:{$cause->getOriginalMessage()}";

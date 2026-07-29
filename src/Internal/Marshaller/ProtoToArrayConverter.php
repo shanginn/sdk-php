@@ -115,7 +115,13 @@ final class ProtoToArrayConverter
                 continue;
             }
 
-            if ($value instanceof RepeatedField || $value instanceof MapField) {
+            if (
+                $value instanceof RepeatedField
+                || $value instanceof MapField
+                // ext-protobuf < 5 exposes repeated fields under the legacy
+                // internal namespace even when google/protobuf 5 is installed.
+                || \get_debug_type($value) === 'Google\\Protobuf\\Internal\\RepeatedField'
+            ) {
                 $result[$name] = [];
                 foreach ($value as $key => $item) {
                     $result[$name][$key] = $this->convert($item);

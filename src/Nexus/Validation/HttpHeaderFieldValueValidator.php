@@ -14,9 +14,9 @@ namespace Temporal\Nexus\Validation;
 use Temporal\Nexus\Exception\InvalidArgumentException;
 
 /**
- * @internal Shared check for printable non-whitespace ASCII (0x21–0x7E).
+ * @internal Validates a non-empty HTTP field value by bytes.
  */
-final class PrintableAsciiValidator
+final class HttpHeaderFieldValueValidator
 {
     /**
      * @codeCoverageIgnore
@@ -24,20 +24,22 @@ final class PrintableAsciiValidator
     private function __construct() {}
 
     /**
-     * @throws InvalidArgumentException when $value is empty or contains a byte
-     *         outside the printable ASCII range 0x21–0x7E.
+     * Valid bytes are HTAB, SP, VCHAR (0x21-0x7E), and obs-text
+     * (0x80-0xFF). Other controls and DEL are rejected.
+     *
+     * @throws InvalidArgumentException
      *
      * @psalm-mutation-free
      */
-    public static function assert(string $value, string $label): void
+    public static function assertNonEmpty(string $value, string $label): void
     {
         if ($value === '') {
             throw new InvalidArgumentException("{$label} must not be empty");
         }
 
-        if (\preg_match('/[^\x21-\x7E]/', $value, $matches, \PREG_OFFSET_CAPTURE) === 1) {
+        if (\preg_match('/[\x00-\x08\x0A-\x1F\x7F]/', $value, $matches, \PREG_OFFSET_CAPTURE) === 1) {
             throw new InvalidArgumentException(\sprintf(
-                '%s must contain only printable non-whitespace ASCII (0x21–0x7E); got %d bytes, first bad char at offset %d',
+                '%s must be a valid HTTP field value; got %d bytes, first invalid byte at offset %d',
                 $label,
                 \strlen($value),
                 $matches[0][1],

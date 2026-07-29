@@ -9,6 +9,7 @@ use Temporal\Internal\Events\EventEmitterTrait;
 use Temporal\Internal\Events\EventListenerInterface;
 use Temporal\Worker\ActivityInvocationCache\ActivityInvocationCacheInterface;
 use Temporal\Worker\DispatcherInterface;
+use Temporal\Worker\NexusWorkerInterface;
 use Temporal\Worker\Transport\Command\ServerRequestInterface;
 use Temporal\Worker\WorkerInterface;
 use Temporal\Worker\WorkerOptions;
@@ -16,7 +17,7 @@ use Temporal\Worker\WorkerOptions;
 /**
  * @template-implements EventListenerInterface<string>
  */
-final class WorkerMock implements WorkerInterface, EventListenerInterface, DispatcherInterface
+final class WorkerMock implements NexusWorkerInterface, EventListenerInterface, DispatcherInterface
 {
     /** @use EventEmitterTrait<string> */
     use EventEmitterTrait;
@@ -83,15 +84,24 @@ final class WorkerMock implements WorkerInterface, EventListenerInterface, Dispa
         return $this->wrapped->getActivities();
     }
 
-    public function registerNexusServiceImplementation(object ...$services): WorkerInterface
+    public function registerNexusServiceImplementation(object ...$services): NexusWorkerInterface
     {
-        $this->wrapped->registerNexusServiceImplementation(...$services);
+        $this->getNexusWorker()->registerNexusServiceImplementation(...$services);
 
         return $this;
     }
 
     public function getNexusServices(): iterable
     {
-        return $this->wrapped->getNexusServices();
+        return $this->getNexusWorker()->getNexusServices();
+    }
+
+    private function getNexusWorker(): NexusWorkerInterface
+    {
+        if (!$this->wrapped instanceof NexusWorkerInterface) {
+            throw new \LogicException('The wrapped worker does not support Nexus services.');
+        }
+
+        return $this->wrapped;
     }
 }

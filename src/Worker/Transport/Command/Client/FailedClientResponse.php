@@ -17,7 +17,7 @@ final class FailedClientResponse implements FailureResponseInterface
 {
     public function __construct(
         private readonly int|string $id,
-        private readonly \Throwable $failure,
+        private readonly ?\Throwable $failure = null,
     ) {}
 
     public function getID(): string|int
@@ -25,6 +25,10 @@ final class FailedClientResponse implements FailureResponseInterface
         return $this->id;
     }
 
+    /**
+     * @psalm-suppress InvalidNullableReturnType Legacy signature.
+     * @psalm-suppress NullableReturnStatement Legacy null behavior.
+     */
     public function getFailure(): \Throwable
     {
         return $this->failure;

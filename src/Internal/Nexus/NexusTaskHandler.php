@@ -11,6 +11,8 @@ declare(strict_types=1);
 
 namespace Temporal\Internal\Nexus;
 
+use Psr\Log\LoggerInterface;
+use Psr\Log\NullLogger;
 use Temporal\Nexus\Exception\HandlerException;
 use Temporal\Nexus\Exception\InvalidArgumentException;
 use Temporal\Nexus\Exception\OperationException;
@@ -55,11 +57,14 @@ final class NexusTaskHandler
         private readonly EnvironmentInterface $env,
         private readonly PipelineProvider $interceptorProvider = new SimplePipelineProvider(),
         private readonly ?WorkflowClientInterface $workflowClient = null,
+        private readonly LoggerInterface $logger = new NullLogger(),
     ) {}
 
     /**
-     * Absolute deadline from Request-Timeout (how long the handler has to act); absent or unparseable yields null.
-     * Operation-Timeout is the total operation budget and is left in the headers forwarded to the handler.
+     * Absolute deadline from Request-Timeout (how long the handler has to act).
+     * An absent header yields null; a malformed value is a non-retryable
+     * BAD_REQUEST. Operation-Timeout is the total operation budget and is left
+     * in the headers forwarded to the handler.
      *
      * @param array<string, string> $headers
      */
@@ -69,14 +74,18 @@ final class NexusTaskHandler
 
         $value = NexusHeader::get($lowerHeaders, NexusHeader::REQUEST_TIMEOUT);
 
-        if ($value === null || $value === '') {
+        if ($value === null) {
             return null;
         }
 
         try {
             return NexusHeader::deadlineFromTimeout($value);
-        } catch (InvalidArgumentException) {
-            return null;
+        } catch (InvalidArgumentException $e) {
+            throw HandlerException::fromCause(
+                ErrorType::BadRequest,
+                $e,
+                RetryBehavior::NonRetryable,
+            );
         }
     }
 
@@ -85,6 +94,7 @@ final class NexusTaskHandler
         NexusOperationContext $operationContext,
         ?MethodCanceller $methodCanceller = null,
     ): Response {
+        $operationContext = self::withRequestEndpoint($request, $operationContext);
         $startRequest = $request->getStartOperation();
         \assert($startRequest instanceof StartOperationRequest);
 
@@ -175,7 +185,9 @@ final class NexusTaskHandler
     public function handleCancelOperation(
         Request $request,
         NexusOperationContext $operationContext,
+        ?MethodCanceller $methodCanceller = null,
     ): Response {
+        $operationContext = self::withRequestEndpoint($request, $operationContext);
         $cancelRequest = $request->getCancelOperation();
         \assert($cancelRequest instanceof CancelOperationRequest);
 
@@ -189,6 +201,7 @@ final class NexusTaskHandler
             operation: $cancelRequest->getOperation(),
             headers: $headers,
             deadline: self::deadlineFromHeaders($headers),
+            methodCanceller: $methodCanceller,
             env: $this->env,
         );
 
@@ -216,6 +229,22 @@ final class NexusTaskHandler
         }
     }
 
+    private static function withRequestEndpoint(
+        Request $request,
+        NexusOperationContext $operationContext,
+    ): NexusOperationContext {
+        $endpoint = $request->getEndpoint();
+        if ($operationContext->endpoint !== '' || $endpoint === '') {
+            return $operationContext;
+        }
+
+        return new NexusOperationContext(
+            namespace: $operationContext->namespace,
+            taskQueue: $operationContext->taskQueue,
+            endpoint: $endpoint,
+        );
+    }
+
     private function getServiceHandler(): ServiceHandler
     {
         if ($this->serviceHandler === null) {
@@ -232,6 +261,7 @@ final class NexusTaskHandler
                 dataConverter: $this->dataConverter,
                 instances: $instances,
                 interceptorProvider: $this->interceptorProvider,
+                logger: $this->logger,
             );
         }
 
@@ -248,6 +278,19 @@ final class NexusTaskHandler
             return HandlerException::fromCause(ErrorType::BadRequest, $e, RetryBehavior::NonRetryable);
         }
 
-        return HandlerErrorMapper::mapToHandlerException($e) ?? HandlerException::fromCause(ErrorType::Internal, $e);
+        $mapped = HandlerErrorMapper::mapToHandlerException($e);
+        if ($mapped !== null) {
+            $this->logger->warning('Mapped an internal Nexus handler dependency exception.', [
+                'exception' => $e,
+                'nexus_error_type' => $mapped->errorType->value,
+            ]);
+            return $mapped;
+        }
+
+        $this->logger->error('Unhandled exception while executing a Nexus operation.', [
+            'exception' => $e,
+        ]);
+
+        return HandlerException::create(ErrorType::Internal, 'Internal Nexus handler error');
     }
 }

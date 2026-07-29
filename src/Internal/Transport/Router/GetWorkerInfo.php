@@ -23,6 +23,7 @@ use Temporal\Plugin\PluginInterface;
 use Temporal\Plugin\PluginRegistry;
 use Temporal\Worker\ServiceCredentials;
 use Temporal\Worker\Transport\Command\ServerRequestInterface;
+use Temporal\Worker\NexusWorkerInterface;
 use Temporal\Worker\WorkerInterface;
 
 final class GetWorkerInfo extends Route
@@ -67,6 +68,10 @@ final class GetWorkerInfo extends Route
             'Name' => $plugin->getName(),
             'Version' => null,
         ]);
+        $nexusServices = $worker instanceof NexusWorkerInterface
+            ? $worker->getNexusServices()
+            : [];
+
         return [
             'TaskQueue'  => $worker->getID(),
             'Options'    => $this->marshaller->marshal($worker->getOptions()),
@@ -77,7 +82,7 @@ final class GetWorkerInfo extends Route
             'PhpSdkVersion' => SdkVersion::getSdkVersion(),
             'Plugins' => $plugins,
             'Flags' => (object) $this->prepareFlags(),
-            'NexusServices' => $this->map($worker->getNexusServices(), $nexusServiceMap),
+            'NexusServices' => $this->map($nexusServices, $nexusServiceMap),
         ];
     }
 

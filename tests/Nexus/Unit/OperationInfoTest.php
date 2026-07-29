@@ -15,14 +15,14 @@ use Temporal\Nexus\Exception\InvalidArgumentException;
 use Temporal\Nexus\OperationInfo;
 use Temporal\Nexus\OperationState;
 use Temporal\Nexus\Validation\OperationTokenValidator;
-use Temporal\Nexus\Validation\PrintableAsciiValidator;
+use Temporal\Nexus\Validation\HttpHeaderFieldValueValidator;
 use PHPUnit\Framework\Attributes\CoversClass;
 use PHPUnit\Framework\Attributes\UsesClass;
 use PHPUnit\Framework\TestCase;
 
 #[CoversClass(OperationInfo::class)]
 #[UsesClass(OperationTokenValidator::class)]
-#[UsesClass(PrintableAsciiValidator::class)]
+#[UsesClass(HttpHeaderFieldValueValidator::class)]
 #[UsesClass(InvalidArgumentException::class)]
 final class OperationInfoTest extends TestCase
 {
@@ -52,7 +52,7 @@ final class OperationInfoTest extends TestCase
     public function testRejectsInvalidTokenBytes(): void
     {
         $this->expectException(InvalidArgumentException::class);
-        $this->expectExceptionMessageMatches('/printable non-whitespace ASCII/');
+        $this->expectExceptionMessageMatches('/valid HTTP field value/');
         new OperationInfo("bad\ntoken", OperationState::Failed);
     }
 }

@@ -247,6 +247,11 @@
       <code><![CDATA[getID]]></code>
     </PossiblyNullReference>
   </file>
+  <file src="src/Exception/Client/ServiceClientException.php">
+    <ImplementedReturnTypeMismatch>
+      <code><![CDATA[RepeatedField]]></code>
+    </ImplementedReturnTypeMismatch>
+  </file>
   <file src="src/Exception/Client/WorkflowException.php">
     <UnsafeInstantiation>
       <code><![CDATA[new static(null, $execution, $workflowType, $previous)]]></code>
@@ -1269,12 +1274,6 @@
     <UndefinedInterfaceMethod>
       <code><![CDATA[getUpdateContext]]></code>
     </UndefinedInterfaceMethod>
-  </file>
-  <file src="src/Workflow/NexusOperationOptions.php">
-    <ImpureMethodCall>
-      <code><![CDATA[assert]]></code>
-      <code><![CDATA[parse]]></code>
-    </ImpureMethodCall>
   </file>
   <file src="src/Workflow/QueryMethod.php">
     <DeprecatedClass>

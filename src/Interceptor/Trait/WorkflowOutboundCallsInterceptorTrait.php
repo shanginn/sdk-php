@@ -30,6 +30,7 @@ use Temporal\Interceptor\WorkflowOutboundCalls\UpsertMemoInput;
 use Temporal\Interceptor\WorkflowOutboundCalls\UpsertSearchAttributesInput;
 use Temporal\Interceptor\WorkflowOutboundCalls\UpsertTypedSearchAttributesInput;
 use Temporal\Interceptor\WorkflowOutboundCallsInterceptor;
+use Temporal\Interceptor\NexusWorkflowOutboundCallsInterceptor;
 
 /**
  * Trait that provides a default interceptor implementation.
@@ -205,7 +206,7 @@ trait WorkflowOutboundCallsInterceptorTrait
     /**
      * Default implementation of the `executeNexusOperation` method.
      *
-     * @see WorkflowOutboundCallsInterceptor::executeNexusOperation()
+     * @see NexusWorkflowOutboundCallsInterceptor::executeNexusOperation()
      */
     public function executeNexusOperation(ExecuteNexusOperationInput $input, callable $next): PromiseInterface
     {
