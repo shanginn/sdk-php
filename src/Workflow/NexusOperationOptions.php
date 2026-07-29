@@ -210,22 +210,44 @@ final class NexusOperationOptions extends Options
             throw new InvalidArgumentException("{$label} must be a valid duration.");
         }
 
+        if (
+            ((\is_int($timeout) || \is_float($timeout)) && $timeout < 0)
+            || ($timeout instanceof Duration
+                && ($timeout->getSeconds() < 0 || $timeout->getNanos() < 0))
+            || ($timeout instanceof \DateInterval && self::hasNegativeComponent($timeout))
+            || (\is_string($timeout)
+                && \preg_match('/(^|[\s,])-\s*(?:\d|\.\d)/', $timeout) === 1)
+        ) {
+            throw new InvalidArgumentException("{$label} must not be negative.");
+        }
+
         try {
             $parsed = DateInterval::parse($timeout, DateInterval::FORMAT_SECONDS);
-            $zero = new \DateTimeImmutable('@0');
-            $deadline = $zero->add($parsed);
         } catch (\Throwable $e) {
             throw new InvalidArgumentException("{$label} must be a valid duration.", 0, $e);
         }
 
-        // Carbon 2 does not reliably report negative intervals through its
-        // computed total* properties. Applying the interval to a fixed UTC
-        // instant uses DateInterval's signed semantics consistently in both
-        // Carbon 2 and Carbon 3, including inverted native DateIntervals.
-        if ($deadline < $zero) {
+        // Carbon 2 and Carbon 3 expose signed intervals differently. Carbon 2
+        // may keep invert=0 and store the sign on individual components, while
+        // Carbon 3 reliably exposes signed computed totals. Check both native
+        // DateInterval inversion and every component instead of depending on a
+        // version-specific total* property.
+        if (self::hasNegativeComponent($parsed)) {
             throw new InvalidArgumentException("{$label} must not be negative.");
         }
 
         return $parsed;
+    }
+
+    private static function hasNegativeComponent(\DateInterval $interval): bool
+    {
+        return $interval->invert === 1
+            || $interval->y < 0
+            || $interval->m < 0
+            || $interval->d < 0
+            || $interval->h < 0
+            || $interval->i < 0
+            || $interval->s < 0
+            || $interval->f < 0;
     }
 }

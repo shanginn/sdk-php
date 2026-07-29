@@ -222,7 +222,9 @@ final class NexusOperationOptionsTestCase extends AbstractDTOMarshalling
             'negative float' => -0.5,
             'negative string' => '-1 second',
             'inverted DateInterval' => $inverted,
-            'negative protobuf Duration' => (new Duration())->setSeconds(-1),
+            'negative CarbonInterval component' => \Carbon\CarbonInterval::seconds(-1),
+            'negative protobuf Duration seconds' => (new Duration())->setSeconds(-1),
+            'negative protobuf Duration nanos' => (new Duration())->setNanos(-1),
         ];
         $setters = [
             'Schedule-to-Close' => static fn(NexusOperationOptions $options, mixed $timeout): NexusOperationOptions =>
