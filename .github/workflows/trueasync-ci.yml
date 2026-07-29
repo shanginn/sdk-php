@@ -43,7 +43,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ env.PHP_PREFIX }}
-          key: trueasync-php-v3-${{ runner.os }}-${{ steps.phpsrc.outputs.sha }}-${{ steps.phpsrc.outputs.asha }}
+          key: trueasync-php-v4-${{ runner.os }}-${{ steps.phpsrc.outputs.sha }}-${{ steps.phpsrc.outputs.asha }}
 
       - name: Build TrueAsync PHP
         if: steps.php-cache.outputs.cache-hit != 'true'
@@ -62,11 +62,12 @@ jobs:
           ./configure --prefix="$PHP_PREFIX" \
             --disable-all --disable-cgi --disable-phpdbg \
             --enable-zts --enable-async \
+            --enable-bcmath \
             --enable-sockets --enable-pcntl --enable-posix \
             --enable-mbstring --enable-ctype --enable-filter \
             --enable-tokenizer --enable-phar --enable-session \
             --with-libxml --enable-dom --enable-simplexml \
-            --enable-xmlreader --enable-xmlwriter \
+            --enable-xml --enable-xmlreader --enable-xmlwriter \
             --enable-fileinfo \
             --with-openssl --with-zlib
           make -j"$(nproc)"
