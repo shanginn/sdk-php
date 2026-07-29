@@ -142,7 +142,7 @@ jobs:
           Copy-Item -LiteralPath $testServer.FullName -Destination temporal-test-server.exe -Force
 
           $rrVersion = (& ./rr.exe --version | Out-String)
-          if ($LASTEXITCODE -ne 0 -or $rrVersion -notmatch 'rr version 2025\.1\.15') {
+          if ($LASTEXITCODE -ne 0 -or $rrVersion -notmatch 'rr(?:\.exe)? version 2025\.1\.15') {
               throw "Unexpected RoadRunner version: ${rrVersion}"
           }
 
