@@ -137,7 +137,7 @@ final class NexusOperationOptionsTestCase extends AbstractDTOMarshalling
     {
         $options = NexusOperationOptions::new()->withScheduleToCloseTimeout(null);
 
-        self::assertSame(0.0, $options->scheduleToCloseTimeout->totalSeconds);
+        self::assertSame(0.0, (float) $options->scheduleToCloseTimeout->totalSeconds);
     }
 
     public function testWithScheduleToCloseTimeoutAcceptsProtoDuration(): void
@@ -214,21 +214,33 @@ final class NexusOperationOptionsTestCase extends AbstractDTOMarshalling
 
     public function testTimeoutSettersRejectNegativeDurationsAtRuntime(): void
     {
+        $inverted = new \DateInterval('PT1S');
+        $inverted->invert = 1;
+
+        $negativeTimeouts = [
+            'negative integer' => -1,
+            'negative float' => -0.5,
+            'negative string' => '-1 second',
+            'inverted DateInterval' => $inverted,
+            'negative protobuf Duration' => (new Duration())->setSeconds(-1),
+        ];
         $setters = [
-            static fn(NexusOperationOptions $options): NexusOperationOptions =>
-                $options->withScheduleToCloseTimeout(-1),
-            static fn(NexusOperationOptions $options): NexusOperationOptions =>
-                $options->withScheduleToStartTimeout(-1),
-            static fn(NexusOperationOptions $options): NexusOperationOptions =>
-                $options->withStartToCloseTimeout(-1),
+            'Schedule-to-Close' => static fn(NexusOperationOptions $options, mixed $timeout): NexusOperationOptions =>
+                $options->withScheduleToCloseTimeout($timeout),
+            'Schedule-to-Start' => static fn(NexusOperationOptions $options, mixed $timeout): NexusOperationOptions =>
+                $options->withScheduleToStartTimeout($timeout),
+            'Start-to-Close' => static fn(NexusOperationOptions $options, mixed $timeout): NexusOperationOptions =>
+                $options->withStartToCloseTimeout($timeout),
         ];
 
-        foreach ($setters as $setter) {
-            try {
-                $setter(NexusOperationOptions::new());
-                self::fail('Expected negative timeout to be rejected.');
-            } catch (InvalidArgumentException $e) {
-                self::assertStringContainsString('must not be negative', $e->getMessage());
+        foreach ($setters as $setterName => $setter) {
+            foreach ($negativeTimeouts as $timeoutName => $timeout) {
+                try {
+                    $setter(NexusOperationOptions::new(), $timeout);
+                    self::fail("Expected {$setterName} {$timeoutName} timeout to be rejected.");
+                } catch (InvalidArgumentException $e) {
+                    self::assertStringContainsString('must not be negative', $e->getMessage());
+                }
             }
         }
     }

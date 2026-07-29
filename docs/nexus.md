@@ -35,7 +35,7 @@ That exact revision defines the timeout, operation-token, header, link, and
 failure grammar enforced by this release.
 
 This branch is validated against
-[`shanginn/roadrunner-temporal@a388917dabd31f30e46a4e4f25da514fd79a9ec8`](https://github.com/shanginn/roadrunner-temporal/commit/a388917dabd31f30e46a4e4f25da514fd79a9ec8),
+[`shanginn/roadrunner-temporal@1f84653c28d317ca69b7fe5426ce6e70331a2ca4`](https://github.com/shanginn/roadrunner-temporal/commit/1f84653c28d317ca69b7fe5426ce6e70331a2ca4),
 built into RoadRunner `v2025.1.15` at immutable host commit
 `321b817fab1056e404533ca1ddd200e77d1525fd` by that repository's
 `tests/acceptance/build-local.sh`. The full commit is an intentional
@@ -394,7 +394,7 @@ git clone --no-checkout \
   https://github.com/shanginn/roadrunner-temporal.git \
   "${sdk_dir}/../roadrunner-temporal-nexus"
 git -C "${sdk_dir}/../roadrunner-temporal-nexus" checkout --detach \
-  a388917dabd31f30e46a4e4f25da514fd79a9ec8
+  1f84653c28d317ca69b7fe5426ce6e70331a2ca4
 ROADRUNNER_BINARY="${sdk_dir}/rr-nexus" \
   "${sdk_dir}/../roadrunner-temporal-nexus/tests/acceptance/build-local.sh"
 

@@ -212,11 +212,17 @@ final class NexusOperationOptions extends Options
 
         try {
             $parsed = DateInterval::parse($timeout, DateInterval::FORMAT_SECONDS);
+            $zero = new \DateTimeImmutable('@0');
+            $deadline = $zero->add($parsed);
         } catch (\Throwable $e) {
             throw new InvalidArgumentException("{$label} must be a valid duration.", 0, $e);
         }
 
-        if ($parsed->totalMicroseconds < 0) {
+        // Carbon 2 does not reliably report negative intervals through its
+        // computed total* properties. Applying the interval to a fixed UTC
+        // instant uses DateInterval's signed semantics consistently in both
+        // Carbon 2 and Carbon 3, including inverted native DateIntervals.
+        if ($deadline < $zero) {
             throw new InvalidArgumentException("{$label} must not be negative.");
         }
 
