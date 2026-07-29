@@ -41,7 +41,7 @@ jobs:
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6
         with:
           repository: shanginn/roadrunner-temporal
-          ref: a388917dabd31f30e46a4e4f25da514fd79a9ec8
+          ref: 1f84653c28d317ca69b7fe5426ce6e70331a2ca4
           path: roadrunner-temporal
 
       - name: Set up Go
