@@ -11,9 +11,10 @@ declare(strict_types=1);
 
 namespace Temporal\Tests\Nexus\Unit\Internal;
 
-use Temporal\Nexus\Internal\Headers;
 use PHPUnit\Framework\Attributes\CoversClass;
 use PHPUnit\Framework\TestCase;
+use Temporal\Nexus\Exception\InvalidArgumentException;
+use Temporal\Nexus\Internal\Headers;
 
 #[CoversClass(Headers::class)]
 final class HeadersTest extends TestCase
@@ -46,5 +47,21 @@ final class HeadersTest extends TestCase
             ['x-custom' => 'second'],
             Headers::normalize(['X-Custom' => 'first', 'x-custom' => 'second']),
         );
+    }
+
+    public function testNormalizeRejectsIntegerHeaderName(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('Nexus header names must be strings, got int.');
+
+        Headers::normalize([123 => 'value']);
+    }
+
+    public function testNormalizeRejectsIntegerHeaderValue(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('Nexus header values must be strings, got int.');
+
+        Headers::normalize(['x-retry-count' => 3]);
     }
 }

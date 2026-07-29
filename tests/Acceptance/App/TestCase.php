@@ -33,6 +33,7 @@ use Temporal\Tests\Acceptance\App\Runtime\Feature;
 use Temporal\Tests\Acceptance\App\Runtime\RRStarter;
 use Temporal\Tests\Acceptance\App\Runtime\State;
 use Temporal\Tests\Acceptance\App\Runtime\TemporalStarter;
+use Temporal\Tests\Acceptance\Extra\Nexus\NexusEndpoints;
 
 abstract class TestCase extends \Temporal\Tests\TestCase
 {
@@ -126,6 +127,7 @@ abstract class TestCase extends \Temporal\Tests\TestCase
 
                     throw $e;
                 } finally {
+                    $cleanupException = null;
                     if ($transcript !== null) {
                         $dumper->dump($transcript, $workflowClient, $args);
                     }
@@ -140,6 +142,18 @@ abstract class TestCase extends \Temporal\Tests\TestCase
                                     'message' => $e->getMessage(),
                                 ]);
                             }
+                        }
+                    }
+                    try {
+                        $container->get(NexusEndpoints::class)->cleanup();
+                    } catch (\Throwable $e) {
+                        $transcript?->writeMeta('nexus_endpoint_cleanup_failed', [
+                            'class' => $e::class,
+                            'message' => $e->getMessage(),
+                        ]);
+                        if ($caughtException === null) {
+                            $caughtException = $e;
+                            $cleanupException = $e;
                         }
                     }
                     if ($transcript !== null) {
@@ -185,6 +199,9 @@ abstract class TestCase extends \Temporal\Tests\TestCase
                                 }
                             }
                         }
+                    }
+                    if ($cleanupException !== null) {
+                        throw $cleanupException;
                     }
                 }
             },

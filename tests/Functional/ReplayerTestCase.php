@@ -328,15 +328,6 @@ final class ReplayerTestCase extends TestCase
         (new WorkflowReplayer())->replayHistory($history);
     }
 
-    protected function setUp(): void
-    {
-        $this->workflowClient = new WorkflowClient(
-            ServiceClient::create('127.0.0.1:7233'),
-        );
-
-        parent::setUp();
-    }
-
     private function createAwaitsUpdateUntypedStub(WorkflowClient $client): WorkflowStubInterface
     {
         return $client->newWorkflowStub(

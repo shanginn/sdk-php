@@ -48,7 +48,7 @@ final class NexusContextAccessorTestCase extends AbstractUnit
     {
         /** @var WorkflowClientInterface&MockObject $client */
         $client = $this->createMock(WorkflowClientInterface::class);
-        $ctx = new NexusOperationContext('ns', 'tq');
+        $ctx = new NexusOperationContext('ns', 'tq', 'endpoint');
 
         Nexus::setCurrentContext(new NexusContext(
             current: new OperationContext(service: 'svc', operation: 'op', env: $this->env),
@@ -59,6 +59,7 @@ final class NexusContextAccessorTestCase extends AbstractUnit
         self::assertSame($ctx, Nexus::getOperationContext());
         self::assertSame('ns', Nexus::getOperationContext()->namespace);
         self::assertSame('tq', Nexus::getOperationContext()->taskQueue);
+        self::assertSame('endpoint', Nexus::getOperationContext()->endpoint);
     }
 
     public function testPublicContextDoesNotExposeWorkflowClient(): void

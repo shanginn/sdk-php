@@ -11,6 +11,8 @@ declare(strict_types=1);
 
 namespace Temporal\Nexus\Handler\Internal;
 
+use Psr\Log\LoggerInterface;
+use Psr\Log\NullLogger;
 use Temporal\Api\Common\V1\Payloads;
 use Temporal\Client\WorkflowClientInterface;
 use Temporal\DataConverter\DataConverterInterface;
@@ -24,6 +26,7 @@ use Temporal\Interceptor\NexusOperationOutboundCallsInterceptor;
 use Temporal\Interceptor\PipelineProvider;
 use Temporal\Interceptor\SimplePipelineProvider;
 use Temporal\Internal\Declaration\NexusServiceInstance;
+use Temporal\Internal\Declaration\Reader\NexusServiceReader;
 use Temporal\Internal\Nexus\NexusContext;
 use Temporal\Nexus\Exception\ErrorType;
 use Temporal\Nexus\Exception\HandlerException;
@@ -49,6 +52,7 @@ final class ServiceHandler implements HandlerInterface
         private readonly array $instances,
         private readonly DataConverterInterface $dataConverter,
         private readonly PipelineProvider $interceptorProvider = new SimplePipelineProvider(),
+        private readonly LoggerInterface $logger = new NullLogger(),
     ) {}
 
     /**
@@ -58,6 +62,7 @@ final class ServiceHandler implements HandlerInterface
         DataConverterInterface $dataConverter,
         array $instances,
         PipelineProvider $interceptorProvider = new SimplePipelineProvider(),
+        LoggerInterface $logger = new NullLogger(),
     ): self {
         if (\count($instances) === 0) {
             throw new InvalidArgumentException('No service instances defined');
@@ -74,7 +79,7 @@ final class ServiceHandler implements HandlerInterface
             $instancesByName[$name] = $instance;
         }
 
-        return new self($instancesByName, $dataConverter, $interceptorProvider);
+        return new self($instancesByName, $dataConverter, $interceptorProvider, $logger);
     }
 
     public function startOperation(
@@ -98,11 +103,11 @@ final class ServiceHandler implements HandlerInterface
                 outboundPipeline: $this->interceptorProvider
                     ->getPipeline(NexusOperationOutboundCallsInterceptor::class),
             ),
-            static fn(StartOperationInput $input): OperationStartResult => $handler->start(
+            fn(StartOperationInput $input): OperationStartResult => $handler->start(
                 $input->operationContext,
                 $input->startDetails,
                 $input->input instanceof ValuesInterface
-                    ? self::decodeInput($input->input, $input->operationContext, $definition->inputType)
+                    ? $this->decodeInput($input->input, $input->operationContext, $definition->inputType)
                     : $input->input,
             ),
             'startOperation',
@@ -133,7 +138,10 @@ final class ServiceHandler implements HandlerInterface
         [$instance, $handler] = $this->resolveHandler($context);
 
         $definition = $instance->prototype->getOperations()[$context->operation];
-        if (!$definition->async) {
+        if (
+            !$definition->async
+            && !NexusServiceReader::returnsOperationHandler($definition->handler)
+        ) {
             throw HandlerException::create(
                 ErrorType::NotImplemented,
                 \sprintf(
@@ -169,7 +177,7 @@ final class ServiceHandler implements HandlerInterface
         return $operationContext;
     }
 
-    private static function decodeInput(
+    private function decodeInput(
         ValuesInterface $input,
         OperationContext $context,
         Type $inputType,
@@ -179,16 +187,21 @@ final class ServiceHandler implements HandlerInterface
                 ? null
                 : $input->getValue(0, $inputType);
         } catch (\Throwable $e) {
+            $this->logger->error('Failed deserializing Nexus operation input.', [
+                'service' => $context->service,
+                'operation' => $context->operation,
+                'type' => $inputType->getName(),
+                'exception' => $e,
+            ]);
+
             throw HandlerException::create(
                 ErrorType::BadRequest,
                 \sprintf(
-                    'Failed deserializing input for %s/%s as %s: %s',
+                    'Failed deserializing input for %s/%s as %s.',
                     $context->service,
                     $context->operation,
                     $inputType->getName(),
-                    $e->getMessage(),
                 ),
-                $e,
             );
         }
     }
@@ -242,16 +255,21 @@ final class ServiceHandler implements HandlerInterface
             $payloads = new Payloads(['payloads' => [$payload]]);
             return EncodedValues::fromPayloads($payloads, $this->dataConverter);
         } catch (\Throwable $e) {
+            $this->logger->error('Failed serializing Nexus operation result.', [
+                'service' => $context->service,
+                'operation' => $context->operation,
+                'type' => $outputType->getName(),
+                'exception' => $e,
+            ]);
+
             throw HandlerException::create(
                 ErrorType::Internal,
                 \sprintf(
-                    'Failed serializing result for %s/%s as %s: %s',
+                    'Failed serializing result for %s/%s as %s.',
                     $context->service,
                     $context->operation,
                     $outputType->getName(),
-                    $e->getMessage(),
                 ),
-                $e,
             );
         }
     }

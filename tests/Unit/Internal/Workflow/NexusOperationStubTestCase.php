@@ -13,6 +13,7 @@ use Temporal\Exception\Failure\NexusOperationFailure;
 use Temporal\Interceptor\Header;
 use Temporal\Internal\Marshaller\MarshallerInterface;
 use Temporal\Internal\Workflow\NexusOperationStub;
+use Temporal\Nexus\Exception\InvalidArgumentException as NexusInvalidArgumentException;
 use Temporal\Workflow\NexusOperationOptions;
 
 /**
@@ -75,6 +76,48 @@ final class NexusOperationStubTestCase extends TestCase
         $this->expectExceptionMessage('Nexus operation name must be a non-empty string');
 
         $stub->start('');
+    }
+
+    public function testStartRejectsMoreThanOneInputArgument(): void
+    {
+        $stub = $this->makeStub(
+            NexusOperationOptions::new()
+                ->withEndpoint('ep')
+                ->withService('svc'),
+        );
+
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('Nexus operation input must contain at most one argument; got 2');
+
+        $stub->start('someOp', ['first', 'second']);
+    }
+
+    public function testStartRejectsNonStringNexusHeaderNameBeforeScheduling(): void
+    {
+        $stub = $this->makeStub(
+            NexusOperationOptions::new()
+                ->withEndpoint('ep')
+                ->withService('svc'),
+        );
+
+        $this->expectException(NexusInvalidArgumentException::class);
+        $this->expectExceptionMessage('Nexus header names must be strings, got int.');
+
+        $stub->start('someOp', nexusHeaders: [123 => 'value']);
+    }
+
+    public function testStartRejectsNonStringNexusHeaderValueBeforeScheduling(): void
+    {
+        $stub = $this->makeStub(
+            NexusOperationOptions::new()
+                ->withEndpoint('ep')
+                ->withService('svc'),
+        );
+
+        $this->expectException(NexusInvalidArgumentException::class);
+        $this->expectExceptionMessage('Nexus header values must be strings, got int.');
+
+        $stub->start('someOp', nexusHeaders: ['x-retry-count' => 3]);
     }
 
     public function testNormalizeFailureWrapsCanceledFailure(): void

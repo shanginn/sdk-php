@@ -16,7 +16,7 @@ use Temporal\Nexus\Exception\InvalidArgumentException;
 /**
  * URI + type that decodes it. Constructor rejects empty values.
  *
- * @see https://github.com/nexus-rpc/api/blob/main/SPEC.md (Nexus-Link header)
+ * @see https://github.com/nexus-rpc/api/blob/494165f890be9418c67dfce9c138694fe5c27855/SPEC.md (Nexus-Link header)
  */
 final class Link implements \Stringable
 {

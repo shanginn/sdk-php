@@ -19,7 +19,7 @@ use Temporal\Nexus\OperationInfo;
  *
  * @template R
  */
-abstract readonly class OperationStartResult
+abstract class OperationStartResult
 {
     /**
      * @internal

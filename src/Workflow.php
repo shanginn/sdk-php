@@ -36,6 +36,7 @@ use Temporal\Workflow\ChildWorkflowStubInterface;
 use Temporal\Workflow\ContinueAsNewOptions;
 use Temporal\Workflow\ExternalWorkflowStubInterface;
 use Temporal\Workflow\Mutex;
+use Temporal\Workflow\NexusWorkflowContextInterface;
 use Temporal\Workflow\ScopedContextInterface;
 use Temporal\Workflow\TimerOptions;
 use Temporal\Workflow\UpdateContext;
@@ -1029,7 +1030,7 @@ final class Workflow extends Facade
         string $class,
         Workflow\NexusOperationOptions $options,
     ): object {
-        return self::getCurrentContext()->newNexusServiceStub($class, $options);
+        return self::getCurrentNexusContext()->newNexusServiceStub($class, $options);
     }
 
     /**
@@ -1040,7 +1041,7 @@ final class Workflow extends Facade
     public static function newUntypedNexusOperationStub(
         Workflow\NexusOperationOptions $options,
     ): Workflow\NexusOperationStubInterface {
-        return self::getCurrentContext()->newUntypedNexusOperationStub($options);
+        return self::getCurrentNexusContext()->newUntypedNexusOperationStub($options);
     }
 
     /**
@@ -1057,7 +1058,8 @@ final class Workflow extends Facade
         Type|string|\ReflectionClass|\ReflectionType|null $returnType = null,
         array $nexusHeaders = [],
     ): PromiseInterface {
-        return self::getCurrentContext()->executeNexusOperation($operation, $args, $options, $returnType, $nexusHeaders);
+        return self::getCurrentNexusContext()
+            ->executeNexusOperation($operation, $args, $options, $returnType, $nexusHeaders);
     }
 
     /**
@@ -1250,5 +1252,17 @@ final class Workflow extends Facade
     public static function getInstance(): object
     {
         return self::getCurrentContext()->getInstance();
+    }
+
+    private static function getCurrentNexusContext(): NexusWorkflowContextInterface
+    {
+        $context = self::getCurrentContext();
+        if (!$context instanceof NexusWorkflowContextInterface) {
+            throw new \LogicException(
+                'The active Workflow context does not support Nexus operations.',
+            );
+        }
+
+        return $context;
     }
 }

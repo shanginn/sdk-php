@@ -20,5 +20,11 @@ final class NexusOperationContext
         public string $namespace = '',
         #[Marshal(name: 'taskQueue')]
         public string $taskQueue = '',
+        /**
+         * Endpoint this request addressed before the Server forwarded it to
+         * this worker. Empty on Server versions older than 1.30.
+         */
+        #[Marshal(name: 'endpoint')]
+        public string $endpoint = '',
     ) {}
 }

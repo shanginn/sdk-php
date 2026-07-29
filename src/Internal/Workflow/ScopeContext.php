@@ -14,6 +14,7 @@ namespace Temporal\Internal\Workflow;
 use React\Promise\Deferred;
 use React\Promise\PromiseInterface;
 use Temporal\Exception\Failure\CanceledFailure;
+use Temporal\Internal\Transport\Request\RejectedOnCancelInterface;
 use Temporal\Internal\Transport\CompletableResult;
 use Temporal\Internal\Workflow\Process\Scope;
 use Temporal\Worker\Transport\Command\RequestInterface;
@@ -78,9 +79,12 @@ class ScopeContext extends WorkflowContext implements ScopedContextInterface
         bool $cancellable = true,
         bool $waitResponse = true,
     ): PromiseInterface {
-        $cancellable && $this->scope->isCancelled() && throw new CanceledFailure(
-            'Attempt to send request to cancelled scope',
-        );
+        if (
+            $this->scope->isCancelled()
+            && ($cancellable || $request instanceof RejectedOnCancelInterface)
+        ) {
+            throw new CanceledFailure('Attempt to send request to cancelled scope');
+        }
 
         if (!$waitResponse) {
             return $this->parent->request($request, cancellable: $cancellable, waitResponse: false);

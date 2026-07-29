@@ -7,6 +7,7 @@ namespace Temporal\Tests\Unit\Internal\Transport\Request;
 use PHPUnit\Framework\Attributes\CoversClass;
 use PHPUnit\Framework\TestCase;
 use Temporal\Internal\Transport\Request\GetNexusOperationStarted;
+use Temporal\Internal\Transport\Request\RejectedOnCancelInterface;
 
 #[CoversClass(GetNexusOperationStarted::class)]
 final class GetNexusOperationStartedTestCase extends TestCase
@@ -25,5 +26,6 @@ final class GetNexusOperationStartedTestCase extends TestCase
 
         self::assertSame('GetNexusOperationStarted', $request->getName());
         self::assertSame(['id' => 123], $request->getOptions());
+        self::assertInstanceOf(RejectedOnCancelInterface::class, $request);
     }
 }

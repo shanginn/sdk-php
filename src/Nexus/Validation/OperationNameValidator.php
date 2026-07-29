@@ -14,7 +14,8 @@ namespace Temporal\Nexus\Validation;
 use Temporal\Nexus\Exception\InvalidArgumentException;
 
 /**
- * Operation name — printable non-whitespace ASCII (Nexus spec).
+ * Nexus operation names are arbitrary non-empty strings. Transports are
+ * responsible for encoding them when they are used in a URL.
  */
 final class OperationNameValidator
 {
@@ -28,6 +29,8 @@ final class OperationNameValidator
      */
     public static function assert(string $name): void
     {
-        PrintableAsciiValidator::assert($name, 'Operation Name');
+        if ($name === '') {
+            throw new InvalidArgumentException('Operation Name must not be empty');
+        }
     }
 }

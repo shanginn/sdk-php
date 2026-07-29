@@ -12,6 +12,7 @@ declare(strict_types=1);
 namespace Temporal\Tests\Nexus\Fixtures\ServiceHandler;
 
 use Temporal\Nexus\Attribute\AsyncOperation;
+use Temporal\Nexus\Attribute\Operation;
 use Temporal\Nexus\Attribute\Service;
 
 #[Service(name: 'ManualTokenService')]
@@ -24,7 +25,7 @@ final class ManualTokenService
         $this->externalJobHandler = new ExternalJobHandler();
     }
 
-    #[AsyncOperation(output: 'string', input: 'string')]
+    #[Operation(output: 'string', input: 'string')]
     public function startExternal(): ExternalJobHandler
     {
         return $this->externalJobHandler;

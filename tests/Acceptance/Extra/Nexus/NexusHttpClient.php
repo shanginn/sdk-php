@@ -49,4 +49,33 @@ final class NexusHttpClient
         }
         throw new \LogicException('Unreachable');
     }
+
+    /**
+     * Cancel a previously-started asynchronous Nexus operation.
+     *
+     * @param array<string, string> $headers
+     * @return array{int, string, array<string, list<string>>}
+     */
+    public function cancel(
+        NexusEndpoint $endpoint,
+        string $service,
+        string $operation,
+        string $operationToken,
+        array $headers = [],
+    ): array {
+        $response = $this->http->request(
+            'POST',
+            "/nexus/endpoints/{$endpoint->id}/services/{$service}/{$operation}/cancel",
+            [
+                'headers' => ['Nexus-Operation-Token' => $operationToken] + $headers,
+                'max_duration' => 30,
+            ],
+        );
+
+        return [
+            $response->getStatusCode(),
+            $response->getContent(false),
+            $response->getHeaders(false),
+        ];
+    }
 }

@@ -18,8 +18,8 @@ use Temporal\Internal\Client\OnConflictOptions;
 use Temporal\Internal\Nexus\NexusLinkConverter;
 use Temporal\Nexus\Handler\OperationStartDetails;
 use Temporal\Nexus\Header;
-use Temporal\Nexus\Internal\Headers;
 use Temporal\Nexus\Internal\WorkflowRunOperationToken;
+use Temporal\Nexus\Internal\WorkflowClientNamespace;
 use Temporal\Nexus\Link;
 use Temporal\Nexus\Nexus;
 use Temporal\Nexus\OperationInfo;
@@ -31,7 +31,7 @@ use Temporal\Workflow\WorkflowExecution;
 
 /**
  * Starts the backing workflow described by a {@see WorkflowHandle} returned from
- * an #[AsyncOperation] method, layering Nexus concerns on top of the user-supplied
+ * an #[Operation] method, layering Nexus concerns on top of the user-supplied
  * options: requestId pinning, completion callback, default task queue, async token
  * encoding.
  *
@@ -48,6 +48,7 @@ final class WorkflowRunStarter
     {
         $client = Nexus::getWorkflowClient();
         $info = Nexus::getOperationContext();
+        WorkflowClientNamespace::assertMatches($client, $info->namespace);
 
         $options = $handle->options;
         if ($options->workflowId === '') {
@@ -70,14 +71,17 @@ final class WorkflowRunStarter
 
         if ($details->callbackUrl !== null && $details->callbackUrl !== '') {
             $headers = $details->callbackHeaders;
-            $present = Headers::normalize($headers);
+            $operationTokenHeader = \strtolower(Header::OPERATION_TOKEN);
+            $operationIdHeader = \strtolower(Header::OPERATION_ID);
+            foreach ($headers as $name => $_) {
+                $normalizedName = \strtolower($name);
+                if ($normalizedName === $operationTokenHeader || $normalizedName === $operationIdHeader) {
+                    unset($headers[$name]);
+                }
+            }
             // Send both header names for pre/post-1.27 server compatibility.
-            if (!\array_key_exists(\strtolower(Header::OPERATION_TOKEN), $present)) {
-                $headers[Header::OPERATION_TOKEN] = $token;
-            }
-            if (!\array_key_exists(\strtolower(Header::OPERATION_ID), $present)) {
-                $headers[Header::OPERATION_ID] = $token;
-            }
+            $headers[Header::OPERATION_TOKEN] = $token;
+            $headers[Header::OPERATION_ID] = $token;
 
             $callback = CompletionCallback::fromNexusLinks($details->callbackUrl, $headers, $details->links);
             $options = $options->withCompletionCallbacks($callback);

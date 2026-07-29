@@ -34,15 +34,15 @@ final class HandlerErrorMapper
     public static function mapToHandlerException(\Throwable $e): ?HandlerException
     {
         if ($e instanceof ApplicationFailure && $e->isNonRetryable()) {
-            return HandlerException::fromCause(ErrorType::Internal, $e, RetryBehavior::NonRetryable);
+            return self::safe(ErrorType::Internal, RetryBehavior::NonRetryable);
         }
 
         if ($e instanceof WorkflowNotFoundException) {
-            return HandlerException::fromCause(ErrorType::NotFound, $e);
+            return self::safe(ErrorType::NotFound);
         }
 
         if ($e instanceof WorkflowExecutionAlreadyStartedException) {
-            return HandlerException::fromCause(ErrorType::Internal, $e, RetryBehavior::NonRetryable);
+            return self::safe(ErrorType::Internal, RetryBehavior::NonRetryable);
         }
 
         if ($e instanceof WorkflowException) {
@@ -62,24 +62,41 @@ final class HandlerErrorMapper
     private static function fromGrpcCode(ServiceClientException $e): HandlerException
     {
         return match ($e->getCode()) {
-            Code::INVALID_ARGUMENT => HandlerException::fromCause(ErrorType::BadRequest, $e),
+            Code::INVALID_ARGUMENT => self::safe(ErrorType::BadRequest),
             Code::ALREADY_EXISTS,
             Code::FAILED_PRECONDITION,
-            Code::OUT_OF_RANGE => HandlerException::fromCause(ErrorType::Internal, $e, RetryBehavior::NonRetryable),
+            Code::OUT_OF_RANGE => self::safe(ErrorType::Internal, RetryBehavior::NonRetryable),
             Code::ABORTED,
-            Code::UNAVAILABLE => HandlerException::fromCause(ErrorType::Unavailable, $e),
+            Code::UNAVAILABLE => self::safe(ErrorType::Unavailable),
             // Unauthenticated/PermissionDenied collapse to Internal: a handler-side auth failure against Temporal, not a Nexus-caller auth error.
             Code::CANCELLED,
             Code::DATA_LOSS,
             Code::INTERNAL,
             Code::UNKNOWN,
             Code::UNAUTHENTICATED,
-            Code::PERMISSION_DENIED => HandlerException::fromCause(ErrorType::Internal, $e),
-            Code::NOT_FOUND => HandlerException::fromCause(ErrorType::NotFound, $e),
-            Code::RESOURCE_EXHAUSTED => HandlerException::fromCause(ErrorType::ResourceExhausted, $e),
-            Code::UNIMPLEMENTED => HandlerException::fromCause(ErrorType::NotImplemented, $e),
-            Code::DEADLINE_EXCEEDED => HandlerException::fromCause(ErrorType::UpstreamTimeout, $e),
-            default => HandlerException::fromCause(ErrorType::Internal, $e),
+            Code::PERMISSION_DENIED => self::safe(ErrorType::Internal),
+            Code::NOT_FOUND => self::safe(ErrorType::NotFound),
+            Code::RESOURCE_EXHAUSTED => self::safe(ErrorType::ResourceExhausted),
+            Code::UNIMPLEMENTED => self::safe(ErrorType::NotImplemented),
+            Code::DEADLINE_EXCEEDED => self::safe(ErrorType::UpstreamTimeout),
+            default => self::safe(ErrorType::Internal),
         };
+    }
+
+    private static function safe(
+        ErrorType $errorType,
+        RetryBehavior $retryBehavior = RetryBehavior::Unspecified,
+    ): HandlerException {
+        $message = match ($errorType) {
+            ErrorType::BadRequest => 'Nexus handler dependency rejected the request',
+            ErrorType::NotFound => 'Nexus handler dependency was not found',
+            ErrorType::ResourceExhausted => 'Nexus handler dependency is resource exhausted',
+            ErrorType::NotImplemented => 'Nexus handler dependency does not support this operation',
+            ErrorType::Unavailable => 'Nexus handler dependency is unavailable',
+            ErrorType::UpstreamTimeout => 'Nexus handler dependency timed out',
+            default => 'Internal Nexus handler error',
+        };
+
+        return HandlerException::create($errorType, $message, retryBehavior: $retryBehavior);
     }
 }

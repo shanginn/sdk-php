@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Temporal\Tests\Acceptance\App\Runtime;
 
+use Symfony\Component\Filesystem\Path;
 use Temporal\Testing\Environment;
 use Temporal\Testing\SystemInfo;
 use Temporal\Testing\Transcript\TranscriptStore;
@@ -30,6 +31,10 @@ final class RRStarter
 
         $systemInfo = SystemInfo::detect();
         $run = $this->runtime->command;
+        $rrExecutable = $systemInfo->rrExecutable;
+        if (!Path::isAbsolute($rrExecutable)) {
+            $rrExecutable = $this->runtime->workDir . DIRECTORY_SEPARATOR . $rrExecutable;
+        }
 
         $workerArgs = [
             PHP_BINARY,
@@ -43,7 +48,7 @@ final class RRStarter
         }
 
         $rrCommand = [
-            $this->runtime->workDir . DIRECTORY_SEPARATOR . $systemInfo->rrExecutable,
+            $rrExecutable,
             'serve',
             '-w',
             $this->runtime->rrConfigDir,

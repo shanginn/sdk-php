@@ -17,7 +17,7 @@ use Temporal\Nexus\Validation\OperationTokenValidator;
  * Identifies an operation by its token together with its current state.
  *
  * Wire schema per Nexus SPEC.md §OperationInfo:
- * https://github.com/nexus-rpc/api/blob/main/SPEC.md
+ * https://github.com/nexus-rpc/api/blob/494165f890be9418c67dfce9c138694fe5c27855/SPEC.md
  */
 final class OperationInfo
 {

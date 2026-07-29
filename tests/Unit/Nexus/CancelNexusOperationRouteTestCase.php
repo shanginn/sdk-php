@@ -16,6 +16,7 @@ use Temporal\Internal\Nexus\NexusTaskHandler;
 use Temporal\Internal\Transport\Router\CancelNexusOperation;
 use Temporal\Nexus\Attribute\AsyncOperation;
 use Temporal\Nexus\Attribute\Service;
+use Temporal\Nexus\Handler\MethodCancellationListenerInterface;
 use Temporal\Nexus\Handler\OperationCancelDetails;
 use Temporal\Nexus\Handler\OperationContext;
 use Temporal\Nexus\Handler\OperationHandlerInterface;
@@ -29,6 +30,7 @@ use Temporal\Worker\Environment\Environment;
 use Temporal\Worker\Environment\EnvironmentInterface;
 use Temporal\Worker\Transport\Command\Server\ServerRequest;
 use Temporal\Worker\Transport\Command\Server\TickInfo;
+use Temporal\Worker\Transport\RPCConnectionInterface;
 
 #[Service(name: 'RouteHeaderService')]
 interface RouteHeaderService
@@ -52,6 +54,19 @@ final class RouteHeaderOpHandler implements OperationHandlerInterface
         OperationCancelDetails $details,
     ): void {
         RouteHeaderServiceImpl::$capturedCancelHeaders = Nexus::getCurrentOperationContext()->headers->all();
+
+        $listener = new class implements MethodCancellationListenerInterface {
+            public bool $called = false;
+
+            public function cancelled(): void
+            {
+                $this->called = true;
+            }
+        };
+        $context->addMethodCancellationListener($listener);
+        RouteHeaderServiceImpl::$capturedMethodCancelled = $context->isMethodCancelled();
+        RouteHeaderServiceImpl::$capturedCancellationReason = $context->getMethodCancellationReason();
+        RouteHeaderServiceImpl::$capturedListenerCalled = $listener->called;
     }
 }
 
@@ -59,6 +74,10 @@ class RouteHeaderServiceImpl implements RouteHeaderService
 {
     /** @var array<string, string> */
     public static array $capturedCancelHeaders = [];
+
+    public static bool $capturedMethodCancelled = false;
+    public static ?string $capturedCancellationReason = null;
+    public static bool $capturedListenerCalled = false;
 
     public function op(): RouteHeaderOpHandler
     {
@@ -80,13 +99,6 @@ final class CancelNexusOperationRouteTestCase extends AbstractUnit
     use AwaitsNexusPromise;
 
     private EnvironmentInterface $env;
-
-    protected function setUp(): void
-    {
-        parent::setUp();
-        $this->env = new Environment();
-        RouteHeaderServiceImpl::$capturedCancelHeaders = [];
-    }
 
     public function testRouteName(): void
     {
@@ -131,6 +143,79 @@ final class CancelNexusOperationRouteTestCase extends AbstractUnit
 
         $this->assertResolved($deferred);
         self::assertSame([], RouteHeaderServiceImpl::$capturedCancelHeaders);
+    }
+
+    public function testInvocationIDAttachesRemoteMethodCancellerToCancelContext(): void
+    {
+        $rpc = $this->createMock(RPCConnectionInterface::class);
+        $rpc
+            ->expects(self::once())
+            ->method('call')
+            ->with('temporal.GetNexusMethodCancellation', ['invocationId' => 42])
+            ->willReturn([
+                'cancelled' => true,
+                'reason' => 'context deadline exceeded',
+            ]);
+
+        $route = new CancelNexusOperation(
+            $this->buildHandler(),
+            $this->buildMarshaller(),
+            $this->env,
+            $rpc,
+        );
+        $request = $this->makeRequest([
+            'service' => 'RouteHeaderService',
+            'operation' => 'op',
+            'operationToken' => 'tok',
+            'invocationId' => 42,
+            // Keep the local deadline in the future so this test proves the
+            // RoadRunner RPC poll is the source of cancellation.
+            'headers' => ['Request-Timeout' => '3600s'],
+        ]);
+
+        $deferred = new Deferred();
+        $route->handle($request, [], $deferred);
+
+        $this->assertResolved($deferred);
+        self::assertTrue(RouteHeaderServiceImpl::$capturedMethodCancelled);
+        self::assertTrue(RouteHeaderServiceImpl::$capturedListenerCalled);
+        self::assertSame(
+            'context deadline exceeded',
+            RouteHeaderServiceImpl::$capturedCancellationReason,
+        );
+    }
+
+    public function testMalformedRequestTimeoutRejectsAsBadRequest(): void
+    {
+        $route = new CancelNexusOperation($this->buildHandler(), $this->buildMarshaller());
+        $request = $this->makeRequest([
+            'service' => 'RouteHeaderService',
+            'operation' => 'op',
+            'operationToken' => 'tok',
+            'headers' => ['Request-Timeout' => ' 5s'],
+        ]);
+
+        $deferred = new Deferred();
+        $route->handle($request, [], $deferred);
+
+        $error = null;
+        $deferred->promise()->then(null, static function (\Throwable $e) use (&$error): void {
+            $error = $e;
+        });
+
+        self::assertInstanceOf(\Temporal\Nexus\Exception\HandlerException::class, $error);
+        self::assertSame(\Temporal\Nexus\Exception\ErrorType::BadRequest, $error->errorType);
+        self::assertFalse($error->isRetryable());
+    }
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+        $this->env = new Environment();
+        RouteHeaderServiceImpl::$capturedCancelHeaders = [];
+        RouteHeaderServiceImpl::$capturedMethodCancelled = false;
+        RouteHeaderServiceImpl::$capturedCancellationReason = null;
+        RouteHeaderServiceImpl::$capturedListenerCalled = false;
     }
 
     private function buildHandler(): NexusTaskHandler

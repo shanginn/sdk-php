@@ -31,9 +31,16 @@ final class OperationCancelDetailsTest extends TestCase
         new OperationCancelDetails('');
     }
 
-    public function testRejectsTokenWithWhitespace(): void
+    public function testAcceptsTokenWithHttpFieldWhitespaceAndObsText(): void
+    {
+        $details = new OperationCancelDetails("opaque token\t\xFF");
+
+        self::assertSame("opaque token\t\xFF", $details->operationToken);
+    }
+
+    public function testRejectsTokenWithInvalidHttpFieldByte(): void
     {
         $this->expectException(InvalidArgumentException::class);
-        new OperationCancelDetails("bad tok");
+        new OperationCancelDetails("bad\ntoken");
     }
 }

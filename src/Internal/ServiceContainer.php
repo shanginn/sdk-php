@@ -79,6 +79,7 @@ final class ServiceContainer
             interceptorProvider: $this->interceptorProvider,
             workflowClient: $workflowClient,
             env: $this->env,
+            logger: $this->logger,
         );
         $this->nexusServicesReader = new NexusServiceReader($this->reader);
     }

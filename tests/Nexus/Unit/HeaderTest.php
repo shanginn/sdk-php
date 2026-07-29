@@ -20,6 +20,30 @@ use PHPUnit\Framework\TestCase;
 #[CoversClass(Header::class)]
 final class HeaderTest extends TestCase
 {
+    /**
+     * @return iterable<string, array{0: string}>
+     */
+    public static function malformedTimeoutProvider(): iterable
+    {
+        yield 'unknown unit us' => ['30us'];
+        yield 'unknown unit h'  => ['1h'];
+        yield 'no unit'         => ['30'];
+        yield 'bare number'     => ['5'];
+        yield 'only unit'       => ['ms'];
+        yield 'pure garbage'    => ['abc'];
+        yield 'trailing junk'   => ['12x'];
+        yield 'empty'           => [''];
+        yield 'whitespace'      => ['   '];
+        yield 'leading space'   => [' 1s'];
+        yield 'trailing space'  => ['1s '];
+        yield 'positive sign'   => ['+1s'];
+        yield 'negative sign'   => ['-1s'];
+        yield 'leading decimal' => ['.5s'];
+        yield 'trailing decimal' => ['1.s'];
+        yield 'exponent'        => ['1e3s'];
+        yield 'uppercase unit'  => ['1S'];
+    }
+
     public function testAllKnownNexusHeaderConstants(): void
     {
         // Guard against typos in constant values — these are wire-level and must be stable.
@@ -83,23 +107,19 @@ final class HeaderTest extends TestCase
         self::assertSame(2, $i->i);
     }
 
-    public function testParseTimeoutReturnsNullForEmpty(): void
+    public function testParseTimeoutAcceptsZeroAndDecimals(): void
     {
-        self::assertNull(Header::parseTimeout(''));
-        self::assertNull(Header::parseTimeout('   '));
-    }
+        $zero = Header::parseTimeout('0s');
+        $seconds = Header::parseTimeout('1.5s');
+        $minutes = Header::parseTimeout('1.5m');
 
-    /**
-     * @return iterable<string, array{0: string}>
-     */
-    public static function malformedTimeoutProvider(): iterable
-    {
-        yield 'unknown unit us' => ['30us'];
-        yield 'no unit'         => ['30'];
-        yield 'bare number'     => ['5'];
-        yield 'only unit'       => ['ms'];
-        yield 'pure garbage'    => ['abc'];
-        yield 'trailing junk'   => ['12x'];
+        self::assertNotNull($zero);
+        self::assertSame(0, $zero->s);
+        self::assertNotNull($seconds);
+        self::assertEqualsWithDelta(1.5, $seconds->s + $seconds->f, 0.001);
+        self::assertNotNull($minutes);
+        self::assertSame(1, $minutes->i);
+        self::assertSame(30, $minutes->s);
     }
 
     #[DataProvider('malformedTimeoutProvider')]
@@ -123,9 +143,10 @@ final class HeaderTest extends TestCase
         self::assertSame('2026-01-01T00:00:30+00:00', $deadline->format('c'));
     }
 
-    public function testDeadlineFromTimeoutReturnsNullForEmpty(): void
+    public function testDeadlineFromTimeoutRejectsEmpty(): void
     {
-        self::assertNull(Header::deadlineFromTimeout(''));
+        $this->expectException(InvalidArgumentException::class);
+        Header::deadlineFromTimeout('');
     }
 
     public function testDeadlineFromTimeoutThrowsOnMalformed(): void
@@ -133,5 +154,4 @@ final class HeaderTest extends TestCase
         $this->expectException(InvalidArgumentException::class);
         Header::deadlineFromTimeout('garbage');
     }
-
 }

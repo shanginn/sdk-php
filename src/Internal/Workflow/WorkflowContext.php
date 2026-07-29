@@ -44,6 +44,7 @@ use Temporal\Interceptor\WorkflowOutboundCalls\UpsertMemoInput;
 use Temporal\Interceptor\WorkflowOutboundCalls\UpsertSearchAttributesInput;
 use Temporal\Interceptor\WorkflowOutboundCalls\UpsertTypedSearchAttributesInput;
 use Temporal\Interceptor\WorkflowOutboundCallsInterceptor;
+use Temporal\Interceptor\NexusWorkflowOutboundCallsInterceptor;
 use Temporal\Interceptor\WorkflowOutboundRequestInterceptor;
 use Temporal\Internal\Declaration\EntityNameValidator;
 use Temporal\Internal\Declaration\WorkflowInstance\QueryDispatcher;
@@ -78,6 +79,7 @@ use Temporal\Workflow\ExternalWorkflowStubInterface;
 use Temporal\Workflow\Mutex;
 use Temporal\Workflow\NexusOperationOptions;
 use Temporal\Workflow\NexusOperationStubInterface;
+use Temporal\Workflow\NexusWorkflowContextInterface;
 use Temporal\Workflow\TimerOptions;
 use Temporal\Workflow\WorkflowContextInterface;
 use Temporal\Workflow\WorkflowExecution;
@@ -92,7 +94,7 @@ use function React\Promise\resolve;
  *
  * @internal
  */
-class WorkflowContext implements WorkflowContextInterface, HeaderCarrier, Destroyable
+class WorkflowContext implements NexusWorkflowContextInterface, HeaderCarrier, Destroyable
 {
     /**
      * Contains conditional groups that contains tuple of a condition callable and its promise
@@ -110,6 +112,9 @@ class WorkflowContext implements WorkflowContextInterface, HeaderCarrier, Destro
 
     /** @var Pipeline<WorkflowOutboundCallsInterceptor, PromiseInterface> */
     private Pipeline $callsInterceptor;
+
+    /** @var Pipeline<NexusWorkflowOutboundCallsInterceptor, PromiseInterface> */
+    private Pipeline $nexusCallsInterceptor;
 
     private readonly QueryDispatcher $queryDispatcher;
     private readonly SignalDispatcher $signalDispatcher;
@@ -134,6 +139,8 @@ class WorkflowContext implements WorkflowContextInterface, HeaderCarrier, Destro
             ->getPipeline(WorkflowOutboundRequestInterceptor::class);
         $this->callsInterceptor = $services->interceptorProvider
             ->getPipeline(WorkflowOutboundCallsInterceptor::class);
+        $this->nexusCallsInterceptor = $services->interceptorProvider
+            ->getPipeline(NexusWorkflowOutboundCallsInterceptor::class);
     }
 
     public function getWorkflowInstance(): WorkflowInstanceInterface
@@ -494,7 +501,7 @@ class WorkflowContext implements WorkflowContextInterface, HeaderCarrier, Destro
             $prototype,
             $options,
             $this,
-            $this->callsInterceptor,
+            $this->nexusCallsInterceptor,
         );
     }
 
@@ -517,11 +524,11 @@ class WorkflowContext implements WorkflowContextInterface, HeaderCarrier, Destro
     ): PromiseInterface {
         $options ??= NexusOperationOptions::new();
 
-        return $this->callsInterceptor->with(
+        return $this->nexusCallsInterceptor->with(
             fn(ExecuteNexusOperationInput $input): PromiseInterface => $this
                 ->newUntypedNexusOperationStub(self::effectiveNexusOptions($input))
                 ->execute($input->operation, $input->args, $input->returnType, $input->nexusHeaders),
-            /** @see WorkflowOutboundCallsInterceptor::executeNexusOperation() */
+            /** @see NexusWorkflowOutboundCallsInterceptor::executeNexusOperation() */
             'executeNexusOperation',
         )(new ExecuteNexusOperationInput(
             $options->endpoint,

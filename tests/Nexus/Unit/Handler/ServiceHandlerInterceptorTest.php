@@ -236,7 +236,7 @@ final class ServiceHandlerInterceptorTest extends TestCase
             new OperationContext(service: 'GreetingServiceInterface', operation: 'sayHello2', env: $this->env),
             new \Temporal\Nexus\Handler\OperationCancelDetails(operationToken: $token),
             $this->asyncClient(),
-            new NexusOperationContext('test-ns', 'test-tq'),
+            new NexusOperationContext(self::NS, self::TQ),
         );
 
         self::assertSame(["sayHello2:{$token}"], $seen);

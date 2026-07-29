@@ -64,11 +64,18 @@ final class WireFrameDecoder
     private static function decodeMessage(Message $message, DataConverterInterface $converter): array
     {
         try {
-            $json = $message->serializeToJsonString(true);
+            $serializer = new \ReflectionMethod($message, 'serializeToJsonString');
+            $preservesProtoFieldNames = $serializer->getNumberOfParameters() > 0;
+            $json = $preservesProtoFieldNames
+                ? $serializer->invoke($message, true)
+                : $message->serializeToJsonString();
         } catch (\Throwable) {
             return ['error' => 'proto_json_serialize_failed'];
         }
         $decoded = \json_decode($json, true) ?? [];
+        if (!$preservesProtoFieldNames) {
+            $decoded = self::normalizeMessageFieldNames($decoded);
+        }
 
         if ($message->getOptions() !== '') {
             $decoded['options'] = self::decodeJsonBytes($message->getOptions());
@@ -81,6 +88,78 @@ final class WireFrameDecoder
         }
 
         return $decoded;
+    }
+
+    /**
+     * ext-protobuf exposes only camelCase JSON names, while the pure-PHP
+     * runtime can preserve proto field names. Keep transcripts stable across
+     * both runtimes without rewriting user-controlled map keys.
+     *
+     * @param array<string, mixed> $decoded
+     * @return array<string, mixed>
+     */
+    private static function normalizeMessageFieldNames(array $decoded): array
+    {
+        $decoded = self::renameKeys($decoded, [
+            'historyLength' => 'history_length',
+            'historySize' => 'history_size',
+            'runId' => 'run_id',
+            'taskQueue' => 'task_queue',
+        ]);
+
+        $failure = $decoded['failure'] ?? null;
+        if (\is_array($failure)) {
+            $decoded['failure'] = self::normalizeFailureFieldNames($failure);
+        }
+
+        return $decoded;
+    }
+
+    /**
+     * @param array<string, mixed> $failure
+     * @return array<string, mixed>
+     */
+    private static function normalizeFailureFieldNames(array $failure): array
+    {
+        $failure = self::renameKeys($failure, [
+            'stackTrace' => 'stack_trace',
+            'encodedAttributes' => 'encoded_attributes',
+            'applicationFailureInfo' => 'application_failure_info',
+            'timeoutFailureInfo' => 'timeout_failure_info',
+            'canceledFailureInfo' => 'canceled_failure_info',
+            'terminatedFailureInfo' => 'terminated_failure_info',
+            'serverFailureInfo' => 'server_failure_info',
+            'resetWorkflowFailureInfo' => 'reset_workflow_failure_info',
+            'activityFailureInfo' => 'activity_failure_info',
+            'childWorkflowExecutionFailureInfo' => 'child_workflow_execution_failure_info',
+            'nexusOperationExecutionFailureInfo' => 'nexus_operation_execution_failure_info',
+            'nexusHandlerFailureInfo' => 'nexus_handler_failure_info',
+        ]);
+
+        $cause = $failure['cause'] ?? null;
+        if (\is_array($cause)) {
+            $failure['cause'] = self::normalizeFailureFieldNames($cause);
+        }
+
+        return $failure;
+    }
+
+    /**
+     * @param array<string, mixed> $values
+     * @param array<string, string> $renames
+     * @return array<string, mixed>
+     */
+    private static function renameKeys(array $values, array $renames): array
+    {
+        foreach ($renames as $jsonName => $protoName) {
+            if (!\array_key_exists($jsonName, $values)) {
+                continue;
+            }
+            $values[$protoName] = $values[$jsonName];
+            unset($values[$jsonName]);
+        }
+
+        return $values;
     }
 
     /**

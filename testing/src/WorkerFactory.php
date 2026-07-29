@@ -22,6 +22,7 @@ use Temporal\Plugin\WorkerPluginContext;
 use Temporal\Plugin\WorkerPluginInterface;
 use Temporal\Worker\ActivityInvocationCache\ActivityInvocationCacheInterface;
 use Temporal\Worker\ActivityInvocationCache\RoadRunnerActivityInvocationCache;
+use Temporal\Worker\NexusWorkerInterface;
 use Temporal\Worker\ServiceCredentials;
 use Temporal\Worker\Transport\Goridge;
 use Temporal\Worker\Transport\RPCConnectionInterface;
@@ -32,6 +33,7 @@ use Temporal\Worker\WorkerOptions;
 class WorkerFactory extends \Temporal\WorkerFactory
 {
     private ActivityInvocationCacheInterface $activityCache;
+    private ?WorkflowClient $nexusWorkflowClient = null;
 
     public function __construct(
         DataConverterInterface $dataConverter,
@@ -42,6 +44,7 @@ class WorkerFactory extends \Temporal\WorkerFactory
         ?ActivityInvocationCacheInterface $activityCache = null,
     ) {
         $this->activityCache = $activityCache ?? RoadRunnerActivityInvocationCache::create($dataConverter);
+        $this->nexusWorkflowClient = $client;
 
         parent::__construct($dataConverter, $rpc, $credentials ?? ServiceCredentials::create(), $pluginRegistry, $client);
     }
@@ -67,6 +70,9 @@ class WorkerFactory extends \Temporal\WorkerFactory
         );
     }
 
+    /**
+     * @return NexusWorkerInterface
+     */
     public function newWorker(
         string $taskQueue = self::DEFAULT_TASK_QUEUE,
         ?WorkerOptions $options = null,
@@ -107,7 +113,7 @@ class WorkerFactory extends \Temporal\WorkerFactory
                         $options->enableLoggingInReplay,
                         $taskQueue,
                     ),
-                    $this->workflowClient,
+                    $this->nexusWorkflowClient,
                 ),
                 $this->rpc,
             ),

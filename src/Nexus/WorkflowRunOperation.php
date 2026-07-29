@@ -12,6 +12,7 @@ declare(strict_types=1);
 namespace Temporal\Nexus;
 
 use Temporal\Nexus\Internal\WorkflowRunOperationToken;
+use Temporal\Nexus\Internal\WorkflowClientNamespace;
 use Temporal\Nexus\Exception\ErrorType;
 use Temporal\Nexus\Exception\HandlerException;
 
@@ -39,6 +40,12 @@ final class WorkflowRunOperation
         } catch (\InvalidArgumentException $e) {
             throw HandlerException::create(ErrorType::BadRequest, 'failed to parse operation token', $e);
         }
+
+        WorkflowClientNamespace::assertMatches(
+            $client,
+            Nexus::getOperationContext()->namespace,
+            $decoded->namespace,
+        );
 
         $client->newUntypedRunningWorkflowStub($decoded->workflowId)->cancel();
     }

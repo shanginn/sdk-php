@@ -5,11 +5,14 @@ declare(strict_types=1);
 namespace Temporal\Tests\Acceptance\Extra\Nexus\SyncFromWorkflow;
 
 use Carbon\CarbonInterval;
-use Temporal\Nexus\Attribute\Operation;
-use Temporal\Nexus\Attribute\Service;
 use PHPUnit\Framework\Attributes\Test;
+use Temporal\Api\Common\V1\Payload;
+use Temporal\Api\Enums\V1\EventType;
 use Temporal\Client\WorkflowClientInterface;
 use Temporal\Client\WorkflowOptions;
+use Temporal\DataConverter\DataConverterInterface;
+use Temporal\Nexus\Attribute\Operation;
+use Temporal\Nexus\Attribute\Service;
 use Temporal\Tests\Acceptance\App\Attribute\Worker;
 use Temporal\Tests\Acceptance\App\Runtime\State;
 use Temporal\Tests\Acceptance\App\TestCase;
@@ -40,6 +43,7 @@ class SyncFromWorkflowTest extends TestCase
     public function workflowCallsSyncNexusOperationAndGetsResult(
         State $state,
         WorkflowClientInterface $client,
+        DataConverterInterface $dataConverter,
         NexusEndpoints $endpoints,
     ): void {
         $endpoint = $endpoints->register($state->namespace, __NAMESPACE__, 'nexus-sync-from-wf');
@@ -54,6 +58,22 @@ class SyncFromWorkflowTest extends TestCase
         $client->start($stub, $endpoint->name, 'world');
 
         self::assertSame('Hello, world!', $stub->getResult('string'));
+
+        $scheduled = 0;
+        foreach ($client->getWorkflowHistory($stub->getExecution()) as $event) {
+            if ($event->getEventType() !== EventType::EVENT_TYPE_NEXUS_OPERATION_SCHEDULED) {
+                continue;
+            }
+
+            ++$scheduled;
+            $summary = $event->getUserMetadata()?->getSummary();
+            self::assertInstanceOf(Payload::class, $summary);
+            self::assertSame(
+                'Greet the customer',
+                $dataConverter->fromPayload($summary, 'string'),
+            );
+        }
+        self::assertSame(1, $scheduled, 'One Nexus operation must be scheduled.');
     }
 }
 
@@ -85,6 +105,7 @@ class SyncFromWorkflowCaller
             SyncFromWorkflowService::class,
             NexusOperationOptions::new()
                 ->withEndpoint($endpoint)
+                ->withSummary('Greet the customer')
                 ->withScheduleToCloseTimeout(CarbonInterval::seconds(20)),
         );
         return yield $stub->greet($name);

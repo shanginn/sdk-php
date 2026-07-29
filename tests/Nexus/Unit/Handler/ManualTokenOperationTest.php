@@ -13,6 +13,7 @@ namespace Temporal\Tests\Nexus\Unit\Handler;
 
 use PHPUnit\Framework\Attributes\CoversClass;
 use PHPUnit\Framework\TestCase;
+use Temporal\DataConverter\ValuesInterface;
 use Temporal\Nexus\Exception\ErrorType;
 use Temporal\Nexus\Exception\HandlerException;
 use Temporal\Nexus\Exception\InvalidArgumentException;
@@ -20,6 +21,7 @@ use Temporal\Nexus\Handler\Internal\ServiceHandler;
 use Temporal\Nexus\Handler\OperationCancelDetails;
 use Temporal\Nexus\Handler\OperationContext;
 use Temporal\Nexus\Handler\OperationStartDetails;
+use Temporal\Nexus\Handler\SyncOperationStartResult;
 use Temporal\Nexus\NexusOperationContext;
 use Temporal\Tests\Nexus\Fixtures\ServiceHandler\ManualTokenService;
 use Temporal\Tests\Nexus\Support\BindNexusService;
@@ -54,6 +56,21 @@ final class ManualTokenOperationTest extends TestCase
         );
 
         self::assertSame('ext-job-42', $result->info->token);
+    }
+
+    public function testGenericOperationHandlerMayCompleteSynchronously(): void
+    {
+        $result = $this->handler()->startOperation(
+            $this->context('startExternal'),
+            new OperationStartDetails(requestId: 'r-sync'),
+            self::encode('sync:already-done'),
+            null,
+            new NexusOperationContext(),
+        );
+
+        self::assertInstanceOf(SyncOperationStartResult::class, $result);
+        self::assertInstanceOf(ValuesInterface::class, $result->value);
+        self::assertSame('already-done', $result->value->getValue(0, 'string'));
     }
 
     public function testCancelRoutesToHandlerCancelMethod(): void

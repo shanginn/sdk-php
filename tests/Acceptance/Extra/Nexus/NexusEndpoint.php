@@ -4,10 +4,11 @@ declare(strict_types=1);
 
 namespace Temporal\Tests\Acceptance\Extra\Nexus;
 
-final readonly class NexusEndpoint
+final class NexusEndpoint
 {
     public function __construct(
-        public string $id,
-        public string $name,
+        public readonly string $id,
+        public readonly string $name,
+        public readonly int|string $version,
     ) {}
 }

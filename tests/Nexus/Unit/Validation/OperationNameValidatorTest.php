@@ -13,13 +13,10 @@ namespace Temporal\Tests\Nexus\Unit\Validation;
 
 use Temporal\Nexus\Exception\InvalidArgumentException;
 use Temporal\Nexus\Validation\OperationNameValidator;
-use Temporal\Nexus\Validation\PrintableAsciiValidator;
 use PHPUnit\Framework\Attributes\CoversClass;
-use PHPUnit\Framework\Attributes\UsesClass;
 use PHPUnit\Framework\TestCase;
 
 #[CoversClass(OperationNameValidator::class)]
-#[UsesClass(PrintableAsciiValidator::class)]
 final class OperationNameValidatorTest extends TestCase
 {
     public function testRejectsEmpty(): void
@@ -29,10 +26,17 @@ final class OperationNameValidatorTest extends TestCase
         OperationNameValidator::assert('');
     }
 
-    public function testDelegatesToPrintableAsciiValidator(): void
+    public function testAcceptsArbitraryNonEmptyNexusName(): void
     {
-        $this->expectException(InvalidArgumentException::class);
-        $this->expectExceptionMessageMatches('/Operation Name.+printable non-whitespace ASCII/');
-        OperationNameValidator::assert("bad\nname");
+        OperationNameValidator::assert("charge / card\n💳");
+
+        $this->addToAssertionCount(1);
+    }
+
+    public function testProtocolValidatorAllowsTemporalReservedPrefix(): void
+    {
+        OperationNameValidator::assert('__temporal_internal');
+
+        $this->addToAssertionCount(1);
     }
 }

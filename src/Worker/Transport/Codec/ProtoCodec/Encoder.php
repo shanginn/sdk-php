@@ -16,6 +16,7 @@ use Temporal\DataConverter\DataConverterInterface;
 use Temporal\Exception\Failure\FailureConverter;
 use Temporal\Interceptor\Header;
 use Temporal\Worker\Transport\Command\Client\CommandResponse;
+use Temporal\Worker\Transport\Command\Client\UpdateResponse;
 use Temporal\Worker\Transport\Command\CommandInterface;
 use Temporal\Worker\Transport\Command\FailureResponseInterface;
 use Temporal\Worker\Transport\Command\RequestInterface;
@@ -51,7 +52,8 @@ class Encoder
                 }
 
                 $msg->setCommand($cmd->getName());
-                $msg->setOptions(\json_encode($options, \JSON_THROW_ON_ERROR));
+                /** @psalm-suppress PossiblyFalseArgument Preserves the legacy transport encoding contract. */
+                $msg->setOptions(\json_encode($options));
                 $msg->setPayloads($cmd->getPayloads()->toPayloads());
                 $msg->setHeader($header->toHeader());
 
@@ -75,6 +77,25 @@ class Encoder
                 }
                 $cmd->getPayloads()->setDataConverter($this->converter);
                 $msg->setPayloads($cmd->getPayloads()->toPayloads());
+
+                return $msg;
+
+            case $cmd instanceof UpdateResponse:
+                $msg->setCommand($cmd->getCommand());
+                /** @psalm-suppress PossiblyFalseArgument Preserves the legacy transport encoding contract. */
+                $msg->setOptions(\json_encode(
+                    $cmd->getOptions(),
+                    \JSON_INVALID_UTF8_IGNORE | \JSON_UNESCAPED_UNICODE,
+                ));
+
+                if ($cmd->getFailure() !== null) {
+                    $msg->setFailure(FailureConverter::mapExceptionToFailure($cmd->getFailure(), $this->converter));
+                }
+
+                if ($cmd->getPayloads() !== null) {
+                    $cmd->getPayloads()->setDataConverter($this->converter);
+                    $msg->setPayloads($cmd->getPayloads()->toPayloads());
+                }
 
                 return $msg;
 

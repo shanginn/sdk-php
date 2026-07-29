@@ -19,6 +19,7 @@ use Temporal\Nexus\Exception\NexusException;
 use Temporal\Tests\Nexus\Fixtures\ServiceDefinition\AmbiguousServiceImpl;
 use Temporal\Tests\Nexus\Fixtures\ServiceDefinition\DiamondFinalInterface;
 use Temporal\Tests\Nexus\Fixtures\ServiceDefinition\FactoryWithParametersService;
+use Temporal\Tests\Nexus\Fixtures\ServiceDefinition\GenericWorkflowOperationService;
 use Temporal\Tests\Nexus\Fixtures\ServiceDefinition\EmptyService;
 use Temporal\Tests\Nexus\Fixtures\ServiceDefinition\InvalidAsyncReturnTypeService;
 use Temporal\Tests\Nexus\Fixtures\ServiceDefinition\NullableAsyncReturnTypeService;
@@ -28,6 +29,7 @@ use Temporal\Tests\Nexus\Fixtures\ServiceDefinition\NonPublicOperationService;
 use Temporal\Tests\Nexus\Fixtures\ServiceDefinition\InvalidServiceWithOperations;
 use Temporal\Tests\Nexus\Fixtures\ServiceDefinition\InvalidSubService;
 use Temporal\Tests\Nexus\Fixtures\ServiceDefinition\OperationOverrideMismatchService;
+use Temporal\Tests\Nexus\Fixtures\ServiceDefinition\ReservedWorkflowOperationService;
 use Temporal\Tests\Nexus\Fixtures\ServiceDefinition\ServiceWithPlainParentInterface;
 use Temporal\Tests\Nexus\Fixtures\ServiceDefinition\ValidServiceWithOperations;
 use Temporal\Tests\Nexus\Fixtures\ServiceImplInstance\ServiceAsClass;
@@ -96,24 +98,24 @@ final class NexusServiceReaderTest extends TestCase
     public function testAsyncOperationWithInvalidReturnTypeIsRejected(): void
     {
         $this->expectException(InvalidArgumentException::class);
-        $this->expectExceptionMessage('must declare a `Temporal\Nexus\WorkflowHandle` return type or return an');
+        $this->expectExceptionMessage('must declare a non-nullable `Temporal\Nexus\WorkflowHandle` return type');
         self::reader()->fromClass(InvalidAsyncReturnTypeService::class);
     }
 
     public function testAsyncOperationWithNullableReturnTypeIsRejected(): void
     {
         $this->expectException(InvalidArgumentException::class);
-        $this->expectExceptionMessage('must declare a `Temporal\Nexus\WorkflowHandle` return type or return an');
+        $this->expectExceptionMessage('must declare a non-nullable `Temporal\Nexus\WorkflowHandle` return type');
         self::reader()->fromClass(NullableAsyncReturnTypeService::class);
     }
 
-    public function testAsyncOperationWithHandlerFactoryReturnTypeIsAccepted(): void
+    public function testLegacyAsyncOperationWithHandlerFactoryReturnTypeIsAccepted(): void
     {
         $proto = self::reader()->fromClass(ManualTokenService::class);
 
         $operations = $proto->getOperations();
-        self::assertTrue($operations['startExternal']->async);
-        self::assertTrue($operations['startUncancellable']->async);
+        self::assertFalse($operations['startExternal']->async);
+        self::assertFalse($operations['startUncancellable']->async);
     }
 
     public function testFactoryInputTypeComesFromAttribute(): void
@@ -128,6 +130,24 @@ final class NexusServiceReaderTest extends TestCase
         $this->expectException(InvalidArgumentException::class);
         $this->expectExceptionMessage('must declare no parameters');
         self::reader()->fromClass(FactoryWithParametersService::class);
+    }
+
+    public function testGenericOperationCanDeclareWorkflowRunHandler(): void
+    {
+        $proto = self::reader()->fromClass(GenericWorkflowOperationService::class);
+        $operation = $proto->getOperations()['start'];
+
+        self::assertTrue($operation->async);
+        self::assertSame('string', $operation->inputType->getName());
+        self::assertSame('string', $operation->outputType->getName());
+    }
+
+    public function testWorkflowRunOperationRejectsTemporalReservedName(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('reserved prefix `__temporal_`');
+
+        self::reader()->fromClass(ReservedWorkflowOperationService::class);
     }
 
     public function testValidService(): void

@@ -12,6 +12,7 @@ Temporal PHP SDK is the framework for authoring [Workflows](https://docs.tempora
 - [Get starting](#get-starting)
   - [Installation](#installation)
   - [Usage](#usage)
+- [Nexus](#nexus)
 - [Testing](#testing)
 - [Dev environment](#dev-environment)
   - [Temporal CLI](#temporal-cli)
@@ -74,6 +75,14 @@ If you are using the SDK without integrations, the following sections of the doc
 > [feature flags](https://github.com/temporalio/sdk-php/blob/master/src/Worker/FeatureFlags.php) were introduced
 > that change the behavior of the entire PHP worker.  
 > It's recommended to disable deprecated behavior.
+
+## Nexus
+
+The SDK supports calling Nexus services from Workflows and implementing
+synchronous or Workflow-backed Nexus operations in PHP Workers. See the
+[production Nexus guide](docs/nexus.md) for compatibility requirements,
+Endpoint setup, handler and caller examples, timeout and cancellation behavior,
+security guidance, and the end-to-end test gate.
 
 ## Testing
 

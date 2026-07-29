@@ -11,11 +11,7 @@ declare(strict_types=1);
 
 namespace Temporal\Tests\Unit\Interceptor;
 
-use PHPUnit\Framework\Attributes\DataProvider;
-use Temporal\DataConverter\DataConverter;
-use Temporal\DataConverter\DataConverterInterface;
 use Temporal\Interceptor\ActivityInboundInterceptor;
-use Temporal\Interceptor\Header;
 use Temporal\Interceptor\Trait\ActivityInboundInterceptorTrait;
 use Temporal\Interceptor\Trait\WorkflowClientCallsInterceptorTrait;
 use Temporal\Interceptor\Trait\WorkflowInboundCallsInterceptorTrait;
@@ -24,6 +20,7 @@ use Temporal\Interceptor\Trait\WorkflowOutboundRequestInterceptorTrait;
 use Temporal\Interceptor\WorkflowClientCallsInterceptor;
 use Temporal\Interceptor\WorkflowInboundCallsInterceptor;
 use Temporal\Interceptor\WorkflowOutboundCallsInterceptor;
+use Temporal\Interceptor\NexusWorkflowOutboundCallsInterceptor;
 use Temporal\Interceptor\WorkflowOutboundRequestInterceptor;
 use Temporal\Tests\Unit\AbstractUnit;
 
@@ -65,6 +62,15 @@ class TraitsTestCase extends AbstractUnit
     public function testWorkflowOutboundCallsInterceptor(): void
     {
         new class implements WorkflowOutboundCallsInterceptor {
+            use WorkflowOutboundCallsInterceptorTrait;
+        };
+
+        self::assertTrue(true);
+    }
+
+    public function testNexusWorkflowOutboundCallsInterceptor(): void
+    {
+        new class implements NexusWorkflowOutboundCallsInterceptor {
             use WorkflowOutboundCallsInterceptorTrait;
         };
 

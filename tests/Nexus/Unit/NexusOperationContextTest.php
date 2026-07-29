@@ -20,10 +20,11 @@ final class NexusOperationContextTest extends TestCase
 {
     public function testConstructStoresFields(): void
     {
-        $ctx = new NexusOperationContext('ns', 'tq');
+        $ctx = new NexusOperationContext('ns', 'tq', 'payments-endpoint');
 
         self::assertSame('ns', $ctx->namespace);
         self::assertSame('tq', $ctx->taskQueue);
+        self::assertSame('payments-endpoint', $ctx->endpoint);
     }
 
     public function testDefaultsAreEmpty(): void
@@ -32,5 +33,6 @@ final class NexusOperationContextTest extends TestCase
 
         self::assertSame('', $ctx->namespace);
         self::assertSame('', $ctx->taskQueue);
+        self::assertSame('', $ctx->endpoint);
     }
 }

@@ -117,7 +117,7 @@ final class CancelOperationTest extends TestCase
             ),
             new OperationStartDetails(requestId: 'r1'),
             EncodedValues::fromValues(['SomeUser'], self::dataConverter()),
-            $this->asyncClient(),
+            $this->asyncClient('test-ns'),
             new NexusOperationContext('test-ns', 'test-tq'),
         );
 
@@ -133,7 +133,7 @@ final class CancelOperationTest extends TestCase
                 headers: [AuthInterceptor::AUTH_HEADER => $authToken],
             ),
             new OperationCancelDetails(operationToken: $token),
-            $this->asyncClient(),
+            $this->asyncClient('test-ns'),
             new NexusOperationContext('test-ns', 'test-tq'),
         );
 

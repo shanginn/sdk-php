@@ -66,7 +66,8 @@ final class HandlerErrorMapperTestCase extends AbstractUnit
         self::assertInstanceOf(HandlerException::class, $mapped);
         self::assertSame($expectedType, $mapped->errorType);
         self::assertSame($expectedRetry, $mapped->retryBehavior);
-        self::assertSame($exception, $mapped->getPrevious(), 'Original gRPC exception preserved as cause');
+        self::assertNull($mapped->getPrevious(), 'Internal gRPC details must not cross the Nexus boundary');
+        self::assertStringNotContainsString('wire detail', $mapped->getMessage());
     }
 
     public function testUnknownGrpcCodeFallsBackToInternal(): void
@@ -94,7 +95,8 @@ final class HandlerErrorMapperTestCase extends AbstractUnit
         self::assertInstanceOf(HandlerException::class, $mapped);
         self::assertSame(ErrorType::Internal, $mapped->errorType);
         self::assertSame(RetryBehavior::NonRetryable, $mapped->retryBehavior);
-        self::assertSame($cause, $mapped->getPrevious());
+        self::assertNull($mapped->getPrevious());
+        self::assertStringNotContainsString('business invariant violated', $mapped->getMessage());
     }
 
     public function testRetryableApplicationFailureIsNotMapped(): void
@@ -118,7 +120,8 @@ final class HandlerErrorMapperTestCase extends AbstractUnit
         self::assertInstanceOf(HandlerException::class, $mapped);
         self::assertSame(ErrorType::NotFound, $mapped->errorType);
         self::assertSame(RetryBehavior::Unspecified, $mapped->retryBehavior);
-        self::assertSame($cause, $mapped->getPrevious());
+        self::assertNull($mapped->getPrevious());
+        self::assertStringNotContainsString('wf-id', $mapped->getMessage());
     }
 
     public function testWorkflowExceptionWithoutGrpcCauseIsNotMapped(): void
@@ -146,7 +149,8 @@ final class HandlerErrorMapperTestCase extends AbstractUnit
         self::assertSame(ErrorType::Unavailable, $mapped->errorType);
         self::assertSame(RetryBehavior::Unspecified, $mapped->retryBehavior);
         self::assertTrue($mapped->isRetryable());
-        self::assertSame($grpc, $mapped->getPrevious());
+        self::assertNull($mapped->getPrevious());
+        self::assertStringNotContainsString('frontend unavailable', $mapped->getMessage());
     }
 
     public function testWorkflowExecutionAlreadyStartedExceptionBecomesInternalNonRetryable(): void
@@ -158,7 +162,8 @@ final class HandlerErrorMapperTestCase extends AbstractUnit
         self::assertInstanceOf(HandlerException::class, $mapped);
         self::assertSame(ErrorType::Internal, $mapped->errorType);
         self::assertSame(RetryBehavior::NonRetryable, $mapped->retryBehavior);
-        self::assertSame($cause, $mapped->getPrevious());
+        self::assertNull($mapped->getPrevious());
+        self::assertStringNotContainsString('wf-id', $mapped->getMessage());
     }
 
     public function testGenericRuntimeExceptionIsNotMapped(): void

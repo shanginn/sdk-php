@@ -66,6 +66,12 @@ final class NexusOperationStub implements NexusOperationStubInterface
         $endpoint = $this->options->endpoint;
         $service = $this->options->service;
         $this->assertOperationParams($endpoint, $service, $operation);
+        if (\count($args) > 1) {
+            throw new \InvalidArgumentException(\sprintf(
+                'Nexus operation input must contain at most one argument; got %d',
+                \count($args),
+            ));
+        }
 
         $startRequest = new ExecuteNexusOperation(
             endpoint: $endpoint,
@@ -90,7 +96,10 @@ final class NexusOperationStub implements NexusOperationStubInterface
             $operationToken,
         );
         $startedPromise = $this->normalizeFailure(
-            $this->request(new GetNexusOperationStarted($startId)),
+            $this->request(
+                new GetNexusOperationStarted($startId),
+                cancellable: $cancellable,
+            ),
             $endpoint,
             $service,
             $operation,

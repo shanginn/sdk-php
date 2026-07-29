@@ -53,6 +53,7 @@ use Temporal\Worker\Environment\Environment;
 use Temporal\Worker\Environment\EnvironmentInterface;
 use Temporal\Worker\Logger\StderrLogger;
 use Temporal\Worker\LoopInterface;
+use Temporal\Worker\NexusWorkerInterface;
 use Temporal\Worker\ServiceCredentials;
 use Temporal\Worker\Transport\Codec\CodecInterface;
 use Temporal\Worker\Transport\Codec\JsonCodec;
@@ -113,7 +114,7 @@ class WorkerFactory implements WorkerFactoryInterface, LoopInterface
 
     protected EnvironmentInterface $env;
     protected PluginRegistry $pluginRegistry;
-    protected ?WorkflowClient $workflowClient = null;
+    private ?WorkflowClient $workflowClient = null;
 
     public function __construct(
         DataConverterInterface $dataConverter,
@@ -164,6 +165,9 @@ class WorkerFactory implements WorkerFactoryInterface, LoopInterface
         );
     }
 
+    /**
+     * @return NexusWorkerInterface
+     */
     public function newWorker(
         string $taskQueue = self::DEFAULT_TASK_QUEUE,
         ?WorkerOptions $options = null,

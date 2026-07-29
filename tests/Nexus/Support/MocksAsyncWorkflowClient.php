@@ -11,6 +11,8 @@ declare(strict_types=1);
 
 namespace Temporal\Tests\Nexus\Support;
 
+use Temporal\Client\GRPC\Context;
+use Temporal\Client\GRPC\ServiceClientInterface;
 use Temporal\Client\WorkflowClientInterface;
 use Temporal\Client\WorkflowStubInterface;
 use Temporal\Tests\Nexus\Fixtures\Service\GreetingService;
@@ -19,9 +21,14 @@ use Temporal\Workflow\WorkflowRunInterface;
 
 trait MocksAsyncWorkflowClient
 {
-    protected function asyncClient(): WorkflowClientInterface
+    protected function asyncClient(string $namespace = 'sample-ns'): WorkflowClientInterface
     {
         $client = $this->createMock(WorkflowClientInterface::class);
+        $serviceClient = $this->createMock(ServiceClientInterface::class);
+        $serviceClient->method('getContext')->willReturn(
+            Context::default()->withMetadata(['Temporal-Namespace' => [$namespace]]),
+        );
+        $client->method('getServiceClient')->willReturn($serviceClient);
         $client->method('newWorkflowStub')->willReturn($this->createMock(WorkflowStubInterface::class));
         $client->method('newUntypedRunningWorkflowStub')->willReturn($this->createMock(WorkflowStubInterface::class));
 

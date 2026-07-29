@@ -13,12 +13,12 @@ namespace Temporal\Internal\Workflow;
 
 use React\Promise\PromiseInterface;
 use Temporal\Interceptor\WorkflowOutboundCalls\ExecuteNexusOperationInput;
-use Temporal\Interceptor\WorkflowOutboundCallsInterceptor;
+use Temporal\Interceptor\NexusWorkflowOutboundCallsInterceptor;
 use Temporal\Internal\Declaration\Prototype\NexusOperationPrototype;
 use Temporal\Internal\Declaration\Prototype\NexusServicePrototype;
 use Temporal\Internal\Interceptor\Pipeline;
 use Temporal\Workflow\NexusOperationOptions;
-use Temporal\Workflow\WorkflowContextInterface;
+use Temporal\Workflow\NexusWorkflowContextInterface;
 
 /**
  * @template-covariant T of object
@@ -32,13 +32,13 @@ final class NexusServiceProxy extends Proxy
 
     /**
      * @param class-string<T> $class
-     * @param Pipeline<WorkflowOutboundCallsInterceptor, PromiseInterface> $callsInterceptor
+     * @param Pipeline<NexusWorkflowOutboundCallsInterceptor, PromiseInterface> $callsInterceptor
      */
     public function __construct(
         private readonly string $class,
         NexusServicePrototype $prototype,
         private readonly NexusOperationOptions $options,
-        private readonly WorkflowContextInterface $ctx,
+        private readonly NexusWorkflowContextInterface $ctx,
         private readonly Pipeline $callsInterceptor,
     ) {
         $byMethod = [];
@@ -67,7 +67,7 @@ final class NexusServiceProxy extends Proxy
             fn(ExecuteNexusOperationInput $input): PromiseInterface => $this->ctx
                 ->newUntypedNexusOperationStub(self::effectiveOptions($input))
                 ->execute($input->operation, $input->args, $input->returnType, $input->nexusHeaders),
-            /** @see WorkflowOutboundCallsInterceptor::executeNexusOperation() */
+            /** @see NexusWorkflowOutboundCallsInterceptor::executeNexusOperation() */
             'executeNexusOperation',
         )(
             new ExecuteNexusOperationInput(

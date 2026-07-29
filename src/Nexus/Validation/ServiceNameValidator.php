@@ -14,7 +14,8 @@ namespace Temporal\Nexus\Validation;
 use Temporal\Nexus\Exception\InvalidArgumentException;
 
 /**
- * Service name — printable non-whitespace ASCII (Nexus spec).
+ * Nexus service names are arbitrary non-empty strings. Transports are
+ * responsible for encoding them when they are used in a URL.
  */
 final class ServiceNameValidator
 {
@@ -30,6 +31,8 @@ final class ServiceNameValidator
      */
     public static function assert(string $name): void
     {
-        PrintableAsciiValidator::assert($name, 'Service Name');
+        if ($name === '') {
+            throw new InvalidArgumentException('Service Name must not be empty');
+        }
     }
 }

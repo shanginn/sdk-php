@@ -17,6 +17,7 @@ use Temporal\Tests\TestCase;
 use Temporal\Worker\ServiceCredentials;
 use Temporal\Worker\Transport\Command\Server\ServerRequest;
 use Temporal\Worker\Transport\Command\Server\TickInfo;
+use Temporal\Worker\NexusWorkerInterface;
 use Temporal\Worker\WorkerInterface;
 use Temporal\Worker\WorkerOptions;
 
@@ -67,24 +68,33 @@ final class GetWorkerInfoTestCase extends TestCase
         self::assertSame('', $flags['ApiKey']);
     }
 
+    public function testLegacyWorkerWithoutNexusSupportReportsNoServices(): void
+    {
+        $payload = $this->dispatch([], false);
+
+        self::assertSame([], $payload['NexusServices']);
+    }
+
     /**
      * @param list<string> $operationNames Wire keys for the single registered Nexus service.
      * @return array<string, mixed> The first worker entry from the resolved payload.
      */
-    private function dispatch(array $operationNames): array
+    private function dispatch(array $operationNames, bool $supportsNexus = true): array
     {
-        $worker = $this->createMock(WorkerInterface::class);
+        $worker = $this->createMock($supportsNexus ? NexusWorkerInterface::class : WorkerInterface::class);
         $worker->method('getID')->willReturn('test-queue');
         $worker->method('getOptions')->willReturn(WorkerOptions::new());
         $worker->method('getWorkflows')->willReturn([]);
         $worker->method('getActivities')->willReturn([]);
-        $worker->method('getNexusServices')->willReturn([
-            new NexusServicePrototype(
-                'GreetingService',
-                \array_fill_keys($operationNames, $this->stubOperationPrototype()),
-                new \ReflectionClass(\stdClass::class),
-            ),
-        ]);
+        if ($worker instanceof NexusWorkerInterface) {
+            $worker->method('getNexusServices')->willReturn([
+                new NexusServicePrototype(
+                    'GreetingService',
+                    \array_fill_keys($operationNames, $this->stubOperationPrototype()),
+                    new \ReflectionClass(\stdClass::class),
+                ),
+            ]);
+        }
 
         $marshaller = $this->createMock(MarshallerInterface::class);
         $marshaller->method('marshal')->willReturn([]);

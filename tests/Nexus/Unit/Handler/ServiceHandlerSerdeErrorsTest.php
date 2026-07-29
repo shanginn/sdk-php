@@ -11,8 +11,8 @@ declare(strict_types=1);
 
 namespace Temporal\Tests\Nexus\Unit\Handler;
 
-use Temporal\Nexus\NexusOperationContext;
-
+use Psr\Log\LoggerInterface;
+use Psr\Log\NullLogger;
 use Temporal\Api\Common\V1\Payload;
 use Temporal\DataConverter\DataConverter;
 use Temporal\DataConverter\DataConverterInterface;
@@ -24,6 +24,7 @@ use Temporal\Nexus\Exception\RetryBehavior;
 use Temporal\Nexus\Handler\OperationContext;
 use Temporal\Nexus\Handler\OperationStartDetails;
 use Temporal\Nexus\Handler\Internal\ServiceHandler;
+use Temporal\Nexus\NexusOperationContext;
 use Temporal\Tests\Nexus\Fixtures\Service\ThrowingGreetingService;
 use Temporal\Tests\Nexus\Support\BindNexusService;
 use Temporal\Tests\Nexus\Support\ExceptionAssertions;
@@ -49,7 +50,18 @@ final class ServiceHandlerSerdeErrorsTest extends TestCase
     public function testDeserializeFailureWrapsAsBadRequestHandlerException(): void
     {
         $converter = self::failingDeserializeConverter();
-        $handler = self::newHandler($converter);
+        $logger = $this->createMock(LoggerInterface::class);
+        $logger->expects(self::once())
+            ->method('error')
+            ->with(
+                'Failed deserializing Nexus operation input.',
+                self::callback(static fn(array $context): bool =>
+                    ($context['service'] ?? null) === 'GreetingServiceInterface'
+                    && ($context['operation'] ?? null) === 'sayHello1'
+                    && ($context['type'] ?? null) === 'string'
+                    && ($context['exception'] ?? null) instanceof \JsonException),
+            );
+        $handler = self::newHandler($converter, logger: $logger);
 
         $e = self::assertThrown(HandlerException::class, static fn() => $handler->startOperation(
             self::newContext('sayHello1'),
@@ -60,17 +72,29 @@ final class ServiceHandlerSerdeErrorsTest extends TestCase
         ));
 
         self::assertStringContainsString(
-            'Failed deserializing input for GreetingServiceInterface/sayHello1 as string: Bad JSON',
+            'Failed deserializing input for GreetingServiceInterface/sayHello1 as string.',
             $e->getMessage(),
         );
+        self::assertStringNotContainsString('Bad JSON', $e->getMessage());
         self::assertSame(ErrorType::BadRequest, $e->errorType);
-        self::assertInstanceOf(\JsonException::class, $e->getPrevious());
+        self::assertNull($e->getPrevious());
     }
 
     public function testSerializeFailureWrapsAsInternalHandlerException(): void
     {
         $converter = self::failingSerializeConverter();
-        $handler = self::newHandler($converter);
+        $logger = $this->createMock(LoggerInterface::class);
+        $logger->expects(self::once())
+            ->method('error')
+            ->with(
+                'Failed serializing Nexus operation result.',
+                self::callback(static fn(array $context): bool =>
+                    ($context['service'] ?? null) === 'GreetingServiceInterface'
+                    && ($context['operation'] ?? null) === 'sayHello1'
+                    && ($context['type'] ?? null) === 'string'
+                    && ($context['exception'] ?? null) instanceof \RuntimeException),
+            );
+        $handler = self::newHandler($converter, logger: $logger);
 
         $e = self::assertThrown(HandlerException::class, static fn() => $handler->startOperation(
             self::newContext('sayHello1'),
@@ -81,11 +105,12 @@ final class ServiceHandlerSerdeErrorsTest extends TestCase
         ));
 
         self::assertStringContainsString(
-            'Failed serializing result for GreetingServiceInterface/sayHello1 as string: cannot serialize',
+            'Failed serializing result for GreetingServiceInterface/sayHello1 as string.',
             $e->getMessage(),
         );
+        self::assertStringNotContainsString('cannot serialize', $e->getMessage());
         self::assertSame(ErrorType::Internal, $e->errorType);
-        self::assertInstanceOf(\RuntimeException::class, $e->getPrevious());
+        self::assertNull($e->getPrevious());
     }
 
     public function testOperationExceptionFromHandlerIsNotWrapped(): void
@@ -169,10 +194,12 @@ final class ServiceHandlerSerdeErrorsTest extends TestCase
     private static function newHandler(
         DataConverterInterface $dataConverter,
         ?ThrowingGreetingService $instance = null,
+        LoggerInterface $logger = new NullLogger(),
     ): ServiceHandler {
         return ServiceHandler::create(
             dataConverter: $dataConverter,
             instances: [self::bindNexusService($instance ?? new ThrowingGreetingService())],
+            logger: $logger,
         );
     }
 

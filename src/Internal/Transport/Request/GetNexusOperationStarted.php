@@ -18,7 +18,7 @@ use Temporal\Worker\Transport\Command\Client\Request;
  *
  * @psalm-immutable
  */
-final class GetNexusOperationStarted extends Request
+final class GetNexusOperationStarted extends Request implements RejectedOnCancelInterface
 {
     public const NAME = 'GetNexusOperationStarted';
 

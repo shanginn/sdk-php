@@ -11,14 +11,16 @@ declare(strict_types=1);
 
 namespace Temporal\Workflow;
 
+use Google\Protobuf\Duration;
 use JetBrains\PhpStorm\Pure;
 use Temporal\Internal\Marshaller\Meta\Marshal;
 use Temporal\Internal\Marshaller\Type\DateIntervalType;
 use Temporal\Internal\Marshaller\Type\EnumValueType;
 use Temporal\Internal\Support\DateInterval;
 use Temporal\Internal\Support\Options;
-use Temporal\Nexus\Validation\PrintableAsciiValidator;
+use Temporal\Nexus\Exception\InvalidArgumentException;
 use Temporal\Nexus\Validation\ServiceNameValidator;
+use Temporal\Nexus\Validation\TemporalNameValidator;
 
 /**
  * Options for executing a Nexus operation from a workflow.
@@ -38,6 +40,15 @@ final class NexusOperationOptions extends Options
      */
     #[Marshal(name: 'service')]
     public string $service = '';
+
+    /**
+     * Single-line fixed summary for this Nexus operation that will appear in UI/CLI.
+     *
+     * This can be in single-line Temporal Markdown format. An empty string means
+     * that no summary is set.
+     */
+    #[Marshal(name: 'summary')]
+    public string $summary = '';
 
     /**
      * Overall timeout for the Nexus operation.
@@ -79,38 +90,57 @@ final class NexusOperationOptions extends Options
     }
 
     /**
-     * @param non-empty-string $endpoint
+     * @param string $endpoint Must not be empty or use Temporal's reserved prefix.
      */
     #[Pure]
     public function withEndpoint(string $endpoint): self
     {
-        PrintableAsciiValidator::assert($endpoint, 'Nexus Endpoint');
+        if ($endpoint === '') {
+            throw new InvalidArgumentException('Nexus Endpoint must not be empty');
+        }
+        TemporalNameValidator::assertNotReserved($endpoint, 'Nexus Endpoint');
+
         $self = clone $this;
         $self->endpoint = $endpoint;
         return $self;
     }
 
     /**
-     * @param non-empty-string $service
+     * @param string $service Must not be empty or use Temporal's reserved prefix.
      */
     #[Pure]
     public function withService(string $service): self
     {
         ServiceNameValidator::assert($service);
+        TemporalNameValidator::assertNotReserved($service, 'Service Name');
+
         $self = clone $this;
         $self->service = $service;
         return $self;
     }
 
     /**
+     * Sets the single-line fixed summary displayed for this Nexus operation.
+     *
+     * Pass an empty string to clear the summary.
+     */
+    #[Pure]
+    public function withSummary(string $summary): self
+    {
+        $self = clone $this;
+        $self->summary = $summary;
+        return $self;
+    }
+
+    /**
+     * @psalm-suppress ImpureMethodCall
+     *
      * @param DateIntervalValue $timeout
      */
     #[Pure]
     public function withScheduleToCloseTimeout($timeout): self
     {
-        \assert(DateInterval::assert($timeout));
-        $timeout = DateInterval::parse($timeout, DateInterval::FORMAT_SECONDS);
-        \assert($timeout->totalMicroseconds >= 0);
+        $timeout = self::parseTimeout($timeout, 'Schedule-to-Close timeout');
 
         $self = clone $this;
         $self->scheduleToCloseTimeout = $timeout;
@@ -118,14 +148,14 @@ final class NexusOperationOptions extends Options
     }
 
     /**
+     * @psalm-suppress ImpureMethodCall
+     *
      * @param DateIntervalValue $timeout
      */
     #[Pure]
     public function withScheduleToStartTimeout($timeout): self
     {
-        \assert(DateInterval::assert($timeout));
-        $timeout = DateInterval::parse($timeout, DateInterval::FORMAT_SECONDS);
-        \assert($timeout->totalMicroseconds >= 0);
+        $timeout = self::parseTimeout($timeout, 'Schedule-to-Start timeout');
 
         $self = clone $this;
         $self->scheduleToStartTimeout = $timeout;
@@ -133,14 +163,14 @@ final class NexusOperationOptions extends Options
     }
 
     /**
+     * @psalm-suppress ImpureMethodCall
+     *
      * @param DateIntervalValue $timeout
      */
     #[Pure]
     public function withStartToCloseTimeout($timeout): self
     {
-        \assert(DateInterval::assert($timeout));
-        $timeout = DateInterval::parse($timeout, DateInterval::FORMAT_SECONDS);
-        \assert($timeout->totalMicroseconds >= 0);
+        $timeout = self::parseTimeout($timeout, 'Start-to-Close timeout');
 
         $self = clone $this;
         $self->startToCloseTimeout = $timeout;
@@ -157,5 +187,39 @@ final class NexusOperationOptions extends Options
         $self = clone $this;
         $self->cancellationType = $type;
         return $self;
+    }
+
+    /**
+     * @psalm-suppress ImpureMethodCall
+     */
+    private static function parseTimeout(mixed $timeout, string $label): \Carbon\CarbonInterval
+    {
+        if (
+            $timeout !== null
+            && !$timeout instanceof Duration
+            && !DateInterval::assert($timeout)
+        ) {
+            throw new InvalidArgumentException(\sprintf(
+                '%s must be a valid duration, got %s.',
+                $label,
+                \get_debug_type($timeout),
+            ));
+        }
+
+        if (\is_string($timeout) && \preg_match('/\d/', $timeout) !== 1) {
+            throw new InvalidArgumentException("{$label} must be a valid duration.");
+        }
+
+        try {
+            $parsed = DateInterval::parse($timeout, DateInterval::FORMAT_SECONDS);
+        } catch (\Throwable $e) {
+            throw new InvalidArgumentException("{$label} must be a valid duration.", 0, $e);
+        }
+
+        if ($parsed->totalMicroseconds < 0) {
+            throw new InvalidArgumentException("{$label} must not be negative.");
+        }
+
+        return $parsed;
     }
 }
