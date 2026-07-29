@@ -141,10 +141,14 @@ jobs:
 
       - name: SDK unit tests
         timeout-minutes: 10
-        run: php tests/runner.php vendor/bin/phpunit --testsuite=Unit --colors=always --debug
+        # tests/runner.php exists for a Windows reporting workaround and wraps
+        # PHPUnit with passthru(). TrueAsync's Linux process-reaping path can
+        # keep that wrapper alive after PHPUnit has already printed OK.
+        run: php vendor/bin/phpunit --testsuite=Unit --colors=always --testdox
 
       - name: SDK functional tests with native worker
-        run: php tests/runner.php vendor/bin/phpunit --testsuite=Functional --color=always --testdox
+        timeout-minutes: 10
+        run: php vendor/bin/phpunit --testsuite=Functional --colors=always --testdox
 
       # ---- Live Temporal dev server and native integration scripts ----
 
