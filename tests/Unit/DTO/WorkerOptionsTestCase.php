@@ -16,6 +16,9 @@ use Temporal\Common\Versioning\WorkerDeploymentVersion;
 use Temporal\Worker\WorkerDeploymentOptions;
 use Temporal\Worker\WorkerOptions;
 use Temporal\Worker\WorkflowPanicPolicy;
+use Temporal\Worker\Tuning\PollerBehaviorAutoscaling;
+use Temporal\Worker\Tuning\ResourceBasedTuner;
+use Temporal\Worker\Tuning\ResourceBasedTunerConfig;
 
 class WorkerOptionsTestCase extends AbstractDTOMarshalling
 {
@@ -92,6 +95,21 @@ class WorkerOptionsTestCase extends AbstractDTOMarshalling
         self::assertTrue($options['UseVersioning']);
         self::assertSame(VersioningBehavior::AutoUpgrade->value, $options['DefaultVersioningBehavior']);
         self::assertSame(['DeploymentName' => 'foo', 'BuildId' => 'bar'], $options['Version']);
+    }
+
+    public function testNativeTuningOptionsAreImmutableAndExcludedFromLegacyMarshalling(): void
+    {
+        $original = WorkerOptions::new();
+        $tuner = new ResourceBasedTuner(new ResourceBasedTunerConfig(0.7, 0.8));
+        $configured = $original
+            ->withTuner($tuner)
+            ->withActivityTaskPollerBehavior(new PollerBehaviorAutoscaling());
+
+        self::assertNotSame($original, $configured);
+        self::assertNull($original->getTuner());
+        self::assertSame($tuner, $configured->getTuner());
+        self::assertArrayNotHasKey('tuner', $this->marshal($configured));
+        self::assertArrayNotHasKey('activityTaskPollerBehavior', $this->marshal($configured));
     }
 
     public function testMaxConcurrentActivityExecutionSize(): void

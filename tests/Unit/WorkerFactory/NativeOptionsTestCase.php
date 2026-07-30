@@ -14,6 +14,14 @@ namespace Temporal\Tests\Unit\WorkerFactory;
 use Temporal\Common\Versioning\VersioningBehavior;
 use Temporal\Common\Versioning\WorkerDeploymentVersion;
 use Temporal\Worker\TrueAsync\NullRpcConnection;
+use Temporal\Worker\Tuning\CompositeTuner;
+use Temporal\Worker\Tuning\FixedSizeSlotSupplier;
+use Temporal\Worker\Tuning\PollerBehaviorAutoscaling;
+use Temporal\Worker\Tuning\PollerBehaviorSimpleMaximum;
+use Temporal\Worker\Tuning\ResourceBasedSlotConfig;
+use Temporal\Worker\Tuning\ResourceBasedSlotSupplier;
+use Temporal\Worker\Tuning\ResourceBasedTuner;
+use Temporal\Worker\Tuning\ResourceBasedTunerConfig;
 use Temporal\Worker\WorkerDeploymentOptions;
 use Temporal\Worker\WorkerOptions;
 use Temporal\WorkerFactory;
@@ -147,5 +155,137 @@ final class NativeOptionsTestCase extends AbstractWorkerFactory
         self::assertTrue($result['enableNexus']);
         self::assertSame(100, $result['nexusSlots']);
         self::assertSame(1, $result['nexusPollers']);
+    }
+
+    public function testResourceBasedTunerMapsAllCoreSlotSuppliersAndFixedFallbacks(): void
+    {
+        $factory = WorkerFactory::create(rpc: new NullRpcConnection());
+        $method = new \ReflectionMethod($factory, 'coreWorkerOptions');
+        $options = WorkerOptions::new()->withTuner(new ResourceBasedTuner(
+            new ResourceBasedTunerConfig(0.75, 0.85),
+            workflowConfig: new ResourceBasedSlotConfig(
+                minimumSlots: 3,
+                maximumSlots: 40,
+                rampThrottleMs: 7,
+            ),
+        ));
+
+        $result = $method->invoke($factory, $options, true);
+
+        self::assertSame(40, $result['workflowSlots']);
+        self::assertSame(500, $result['localActivitySlots']);
+        self::assertSame(500, $result['nexusSlots']);
+        self::assertSame([
+            'type' => 'resourceBased',
+            'minimumSlots' => 3,
+            'maximumSlots' => 40,
+            'rampThrottleMs' => 7,
+            'targetMemoryUsage' => 0.75,
+            'targetCpuUsage' => 0.85,
+        ], $result['workflowSlotSupplier']);
+        self::assertSame(1, $result['activitySlotSupplier']['minimumSlots']);
+        self::assertSame(500, $result['activitySlotSupplier']['maximumSlots']);
+        self::assertSame(50, $result['activitySlotSupplier']['rampThrottleMs']);
+        self::assertSame(1, $result['nexusSlotSupplier']['minimumSlots']);
+    }
+
+    public function testCompositeTunerMapsFixedAndResourceBasedSuppliers(): void
+    {
+        $factory = WorkerFactory::create(rpc: new NullRpcConnection());
+        $method = new \ReflectionMethod($factory, 'coreWorkerOptions');
+        $resourceConfig = new ResourceBasedTunerConfig(0.7, 0.8);
+        $options = WorkerOptions::new()->withTuner(new CompositeTuner(
+            new FixedSizeSlotSupplier(11),
+            new ResourceBasedSlotSupplier(
+                new ResourceBasedSlotConfig(minimumSlots: 2, maximumSlots: 22),
+                $resourceConfig,
+            ),
+            new FixedSizeSlotSupplier(13),
+            new FixedSizeSlotSupplier(14),
+        ));
+
+        $result = $method->invoke($factory, $options, true);
+
+        self::assertSame(['type' => 'fixed', 'slots' => 11], $result['workflowSlotSupplier']);
+        self::assertSame(22, $result['activitySlotSupplier']['maximumSlots']);
+        self::assertSame(['type' => 'fixed', 'slots' => 13], $result['localActivitySlotSupplier']);
+        self::assertSame(['type' => 'fixed', 'slots' => 14], $result['nexusSlotSupplier']);
+    }
+
+    public function testPollerBehaviorsMapWithLegacyMaximumFallbacks(): void
+    {
+        $factory = WorkerFactory::create(rpc: new NullRpcConnection());
+        $method = new \ReflectionMethod($factory, 'coreWorkerOptions');
+        $options = WorkerOptions::new()
+            ->withWorkflowTaskPollerBehavior(new PollerBehaviorAutoscaling(2, 30, 4))
+            ->withActivityTaskPollerBehavior(new PollerBehaviorSimpleMaximum(7))
+            ->withNexusTaskPollerBehavior(new PollerBehaviorAutoscaling(1, 10, 2));
+
+        $result = $method->invoke($factory, $options, true);
+
+        self::assertSame(30, $result['workflowPollers']);
+        self::assertSame([
+            'type' => 'autoscaling',
+            'minimum' => 2,
+            'maximum' => 30,
+            'initial' => 4,
+        ], $result['workflowPollerBehavior']);
+        self::assertSame(7, $result['activityPollers']);
+        self::assertSame([
+            'type' => 'simpleMaximum',
+            'maximum' => 7,
+        ], $result['activityPollerBehavior']);
+        self::assertSame(10, $result['nexusPollers']);
+        self::assertSame('autoscaling', $result['nexusPollerBehavior']['type']);
+    }
+
+    public function testTunerRejectsLegacyExecutionLimits(): void
+    {
+        $factory = WorkerFactory::create(rpc: new NullRpcConnection());
+        $method = new \ReflectionMethod($factory, 'coreWorkerOptions');
+        $options = WorkerOptions::new()
+            ->withTuner(new CompositeTuner(
+                new FixedSizeSlotSupplier(10),
+                new FixedSizeSlotSupplier(10),
+                new FixedSizeSlotSupplier(10),
+                new FixedSizeSlotSupplier(10),
+            ))
+            ->withMaxConcurrentActivityExecutionSize(10);
+
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('maxConcurrentActivityExecutionSize');
+
+        $method->invoke($factory, $options, false);
+    }
+
+    public function testPollerBehaviorRejectsLegacyPollerLimit(): void
+    {
+        $factory = WorkerFactory::create(rpc: new NullRpcConnection());
+        $method = new \ReflectionMethod($factory, 'coreWorkerOptions');
+        $options = WorkerOptions::new()
+            ->withActivityTaskPollerBehavior(new PollerBehaviorAutoscaling())
+            ->withMaxConcurrentActivityTaskPollers(3);
+
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('maxConcurrentActivityTaskPollers');
+
+        $method->invoke($factory, $options, false);
+    }
+
+    public function testWorkflowSimplePollerRequiresTwoPollers(): void
+    {
+        $factory = WorkerFactory::create(rpc: new NullRpcConnection());
+        $method = new \ReflectionMethod($factory, 'coreWorkerOptions');
+
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('at least two');
+
+        $method->invoke(
+            $factory,
+            WorkerOptions::new()->withWorkflowTaskPollerBehavior(
+                new PollerBehaviorSimpleMaximum(1),
+            ),
+            false,
+        );
     }
 }

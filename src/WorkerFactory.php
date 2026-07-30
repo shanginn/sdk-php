@@ -75,6 +75,12 @@ use Temporal\Worker\TrueAsync\NativeWorkerRuntime;
 use Temporal\Worker\TrueAsync\NonDeterministicWorkflowException;
 use Temporal\Worker\TrueAsync\NullRpcConnection;
 use Temporal\Worker\TrueAsync\QueryServerRequest;
+use Temporal\Worker\Tuning\FixedSizeSlotSupplier;
+use Temporal\Worker\Tuning\PollerBehavior;
+use Temporal\Worker\Tuning\PollerBehaviorAutoscaling;
+use Temporal\Worker\Tuning\PollerBehaviorSimpleMaximum;
+use Temporal\Worker\Tuning\ResourceBasedSlotSupplier;
+use Temporal\Worker\Tuning\SlotSupplier;
 use Temporal\Worker\Worker;
 use Temporal\Worker\WorkerFactoryInterface;
 use Temporal\Worker\WorkerInterface;
@@ -616,6 +622,100 @@ class WorkerFactory implements WorkerFactoryInterface, LoopInterface
         return \is_string($value) && $value !== '' ? $value : null;
     }
 
+    /**
+     * @param 'activity'|'localActivity'|'nexus'|'workflow' $kind
+     *
+     * @return array<string, float|int|string>
+     */
+    private static function coreSlotSupplier(SlotSupplier $supplier, string $kind): array
+    {
+        if ($supplier instanceof FixedSizeSlotSupplier) {
+            return [
+                'type' => 'fixed',
+                'slots' => $supplier->slots,
+            ];
+        }
+
+        if ($supplier instanceof ResourceBasedSlotSupplier) {
+            $minimum = $supplier->slotConfig->minimumSlots ?? ($kind === 'workflow' ? 5 : 1);
+            $maximum = $supplier->slotConfig->maximumSlots ?? 500;
+            $rampThrottleMs = $supplier->slotConfig->rampThrottleMs ?? ($kind === 'workflow' ? 0 : 50);
+            $maximum >= $minimum or throw new \InvalidArgumentException(\sprintf(
+                'Resource-based %s maximumSlots must be greater than or equal to minimumSlots after defaults.',
+                $kind,
+            ));
+
+            return [
+                'type' => 'resourceBased',
+                'minimumSlots' => $minimum,
+                'maximumSlots' => $maximum,
+                'rampThrottleMs' => $rampThrottleMs,
+                'targetMemoryUsage' => $supplier->tunerConfig->targetMemoryUsage,
+                'targetCpuUsage' => $supplier->tunerConfig->targetCpuUsage,
+            ];
+        }
+
+        throw new \InvalidArgumentException(\sprintf(
+            'Unsupported %s slot supplier %s. TrueAsync currently supports fixed-size and resource-based suppliers.',
+            $kind,
+            $supplier::class,
+        ));
+    }
+
+    /**
+     * @param 'activity'|'localActivity'|'nexus'|'workflow' $kind
+     */
+    private static function coreSlotSupplierMaximum(SlotSupplier $supplier, string $kind): int
+    {
+        if ($supplier instanceof FixedSizeSlotSupplier) {
+            return $supplier->slots;
+        }
+        if ($supplier instanceof ResourceBasedSlotSupplier) {
+            return $supplier->slotConfig->maximumSlots ?? 500;
+        }
+
+        throw new \InvalidArgumentException(\sprintf(
+            'Unsupported %s slot supplier %s. TrueAsync currently supports fixed-size and resource-based suppliers.',
+            $kind,
+            $supplier::class,
+        ));
+    }
+
+    /**
+     * @return array<string, int|string>
+     */
+    private static function corePollerBehavior(PollerBehavior $behavior): array
+    {
+        return match (true) {
+            $behavior instanceof PollerBehaviorSimpleMaximum => [
+                'type' => 'simpleMaximum',
+                'maximum' => $behavior->maximum,
+            ],
+            $behavior instanceof PollerBehaviorAutoscaling => [
+                'type' => 'autoscaling',
+                'minimum' => $behavior->minimum,
+                'maximum' => $behavior->maximum,
+                'initial' => $behavior->initial,
+            ],
+            default => throw new \InvalidArgumentException(\sprintf(
+                'Unsupported poller behavior %s.',
+                $behavior::class,
+            )),
+        };
+    }
+
+    private static function corePollerMaximum(PollerBehavior $behavior): int
+    {
+        return match (true) {
+            $behavior instanceof PollerBehaviorSimpleMaximum => $behavior->maximum,
+            $behavior instanceof PollerBehaviorAutoscaling => $behavior->maximum,
+            default => throw new \InvalidArgumentException(\sprintf(
+                'Unsupported poller behavior %s.',
+                $behavior::class,
+            )),
+        };
+    }
+
     private function boot(ServiceCredentials $credentials): void
     {
         $this->reader = $this->createReader();
@@ -798,16 +898,41 @@ class WorkerFactory implements WorkerFactoryInterface, LoopInterface
     }
 
     /**
-     * @return array<string, bool|float|int|string>
+     * @return array<string, mixed>
      */
     private function coreWorkerOptions(WorkerOptions $options, bool $enableNexus): array
     {
-        $activitySlots = self::positiveOr($options->maxConcurrentActivityExecutionSize, 100);
+        $this->assertValidWorkerTuningOptions($options);
+
+        $tuner = $options->getTuner();
+        $activitySlots = $tuner === null
+            ? self::positiveOr($options->maxConcurrentActivityExecutionSize, 100)
+            : self::coreSlotSupplierMaximum($tuner->activitySlotSupplier(), 'activity');
+        $workflowSlots = $tuner === null
+            ? self::positiveOr($options->maxConcurrentWorkflowTaskExecutionSize, 100)
+            : self::coreSlotSupplierMaximum($tuner->workflowSlotSupplier(), 'workflow');
+        $localActivitySlots = $tuner === null
+            ? self::positiveOr($options->maxConcurrentLocalActivityExecutionSize, 100)
+            : self::coreSlotSupplierMaximum($tuner->localActivitySlotSupplier(), 'localActivity');
+        $nexusSlots = $tuner === null
+            ? self::positiveOr($options->maxConcurrentNexusTaskExecutionSize, 100)
+            : self::coreSlotSupplierMaximum($tuner->nexusSlotSupplier(), 'nexus');
+
+        $activityPollerBehavior = $options->getActivityTaskPollerBehavior();
+        $workflowPollerBehavior = $options->getWorkflowTaskPollerBehavior();
+        $nexusPollerBehavior = $options->getNexusTaskPollerBehavior();
         $result = [
-            'workflowSlots' => self::positiveOr($options->maxConcurrentWorkflowTaskExecutionSize, 100),
-            'localActivitySlots' => self::positiveOr($options->maxConcurrentLocalActivityExecutionSize, 100),
-            'activityPollers' => self::positiveOr($options->maxConcurrentActivityTaskPollers, 5),
-            'workflowPollers' => self::positiveOr($options->maxConcurrentWorkflowTaskPollers, 2),
+            // The flat limits remain populated as a compatibility fallback for
+            // older native bridges that do not understand the structured
+            // supplier/behavior fields.
+            'workflowSlots' => $workflowSlots,
+            'localActivitySlots' => $localActivitySlots,
+            'activityPollers' => $activityPollerBehavior === null
+                ? self::positiveOr($options->maxConcurrentActivityTaskPollers, 5)
+                : self::corePollerMaximum($activityPollerBehavior),
+            'workflowPollers' => $workflowPollerBehavior === null
+                ? self::positiveOr($options->maxConcurrentWorkflowTaskPollers, 2)
+                : self::corePollerMaximum($workflowPollerBehavior),
             'identity' => $options->identity,
             'maxActivitiesPerSecond' => $options->workerActivitiesPerSecond,
             'maxTaskQueueActivitiesPerSecond' => $options->taskQueueActivitiesPerSecond,
@@ -819,9 +944,32 @@ class WorkerFactory implements WorkerFactoryInterface, LoopInterface
                 : self::positiveOr($options->maxConcurrentEagerActivityExecutionSize, $activitySlots),
         ];
 
+        if ($tuner !== null) {
+            $result['activitySlotSupplier'] = self::coreSlotSupplier($tuner->activitySlotSupplier(), 'activity');
+            $result['workflowSlotSupplier'] = self::coreSlotSupplier($tuner->workflowSlotSupplier(), 'workflow');
+            $result['localActivitySlotSupplier'] = self::coreSlotSupplier(
+                $tuner->localActivitySlotSupplier(),
+                'localActivity',
+            );
+        }
+        if ($activityPollerBehavior !== null) {
+            $result['activityPollerBehavior'] = self::corePollerBehavior($activityPollerBehavior);
+        }
+        if ($workflowPollerBehavior !== null) {
+            $result['workflowPollerBehavior'] = self::corePollerBehavior($workflowPollerBehavior);
+        }
+
         if ($enableNexus) {
-            $result['nexusSlots'] = self::positiveOr($options->maxConcurrentNexusTaskExecutionSize, 100);
-            $result['nexusPollers'] = self::positiveOr($options->maxConcurrentNexusTaskPollers, 1);
+            $result['nexusSlots'] = $nexusSlots;
+            $result['nexusPollers'] = $nexusPollerBehavior === null
+                ? self::positiveOr($options->maxConcurrentNexusTaskPollers, 1)
+                : self::corePollerMaximum($nexusPollerBehavior);
+            if ($tuner !== null) {
+                $result['nexusSlotSupplier'] = self::coreSlotSupplier($tuner->nexusSlotSupplier(), 'nexus');
+            }
+            if ($nexusPollerBehavior !== null) {
+                $result['nexusPollerBehavior'] = self::corePollerBehavior($nexusPollerBehavior);
+            }
         }
 
         if ($options->stickyScheduleToStartTimeout !== null) {
@@ -877,6 +1025,8 @@ class WorkerFactory implements WorkerFactoryInterface, LoopInterface
 
     private function assertSupportedWorkerOptions(WorkerOptions $options): void
     {
+        $this->assertValidWorkerTuningOptions($options);
+
         $unsupported = [];
         $options->workflowPanicPolicy === WorkflowPanicPolicy::BlockWorkflow
             or $unsupported[] = 'workflowPanicPolicy';
@@ -893,6 +1043,60 @@ class WorkerFactory implements WorkerFactoryInterface, LoopInterface
                 'The native Temporal core bridge does not yet support these WorkerOptions: %s.',
                 \implode(', ', $unsupported),
             ));
+        }
+    }
+
+    private function assertValidWorkerTuningOptions(WorkerOptions $options): void
+    {
+        if ($options->getTuner() !== null) {
+            $legacyLimits = [];
+            $options->maxConcurrentWorkflowTaskExecutionSize === 0
+                or $legacyLimits[] = 'maxConcurrentWorkflowTaskExecutionSize';
+            $options->maxConcurrentActivityExecutionSize === 0
+                or $legacyLimits[] = 'maxConcurrentActivityExecutionSize';
+            $options->maxConcurrentLocalActivityExecutionSize === 0
+                or $legacyLimits[] = 'maxConcurrentLocalActivityExecutionSize';
+            $options->maxConcurrentNexusTaskExecutionSize === 0
+                or $legacyLimits[] = 'maxConcurrentNexusTaskExecutionSize';
+            if ($legacyLimits !== []) {
+                throw new \InvalidArgumentException(\sprintf(
+                    'Worker tuner is mutually exclusive with legacy execution limits: %s.',
+                    \implode(', ', $legacyLimits),
+                ));
+            }
+        }
+
+        $pollerConflicts = [];
+        if (
+            $options->getWorkflowTaskPollerBehavior() !== null
+            && $options->maxConcurrentWorkflowTaskPollers !== 0
+        ) {
+            $pollerConflicts[] = 'maxConcurrentWorkflowTaskPollers';
+        }
+        if (
+            $options->getActivityTaskPollerBehavior() !== null
+            && $options->maxConcurrentActivityTaskPollers !== 0
+        ) {
+            $pollerConflicts[] = 'maxConcurrentActivityTaskPollers';
+        }
+        if (
+            $options->getNexusTaskPollerBehavior() !== null
+            && $options->maxConcurrentNexusTaskPollers !== 0
+        ) {
+            $pollerConflicts[] = 'maxConcurrentNexusTaskPollers';
+        }
+        if ($pollerConflicts !== []) {
+            throw new \InvalidArgumentException(\sprintf(
+                'Poller behaviors are mutually exclusive with legacy poller limits: %s.',
+                \implode(', ', $pollerConflicts),
+            ));
+        }
+
+        $workflowBehavior = $options->getWorkflowTaskPollerBehavior();
+        if ($workflowBehavior instanceof PollerBehaviorSimpleMaximum && $workflowBehavior->maximum < 2) {
+            throw new \InvalidArgumentException(
+                'Workflow simple-maximum poller behavior requires at least two pollers.',
+            );
         }
     }
 
@@ -942,12 +1146,19 @@ class WorkerFactory implements WorkerFactoryInterface, LoopInterface
 
                 $enableNexus = \count($registration['services']->nexusServices) > 0;
                 $options = $registration['options'];
+                $tuner = $options->getTuner();
+                $coreOptions = $this->coreWorkerOptions($options, $enableNexus);
                 $core = new CoreWorker(
                     $this->connection,
                     $taskQueue,
                     $this->namespace,
-                    self::positiveOr($options->maxConcurrentActivityExecutionSize, 100),
-                    $this->coreWorkerOptions($options, $enableNexus),
+                    $tuner === null
+                        ? self::positiveOr($options->maxConcurrentActivityExecutionSize, 100)
+                        : self::coreSlotSupplierMaximum(
+                            $tuner->activitySlotSupplier(),
+                            'activity',
+                        ),
+                    $coreOptions,
                 );
 
                 $prepared[$taskQueue] = [

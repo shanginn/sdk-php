@@ -18,6 +18,8 @@ use Temporal\Internal\Marshaller\Type\DateIntervalType;
 use Temporal\Internal\Marshaller\Type\EnumValueType;
 use Temporal\Internal\Marshaller\Type\NullableType;
 use Temporal\Internal\Support\DateInterval;
+use Temporal\Worker\Tuning\PollerBehavior;
+use Temporal\Worker\Tuning\WorkerTuner;
 use Temporal\Workflow;
 
 /**
@@ -321,10 +323,100 @@ class WorkerOptions
     #[Marshal(name: 'DeploymentOptions')]
     public WorkerDeploymentOptions $deploymentOptions;
 
+    /**
+     * Native Core Worker tuner.
+     *
+     * This is intentionally not marshalled to the legacy host protocol.
+     */
+    private ?WorkerTuner $tuner = null;
+
+    /**
+     * Native Core poller behaviors.
+     *
+     * These are intentionally not marshalled to the legacy host protocol.
+     */
+    private ?PollerBehavior $workflowTaskPollerBehavior = null;
+
+    private ?PollerBehavior $activityTaskPollerBehavior = null;
+    private ?PollerBehavior $nexusTaskPollerBehavior = null;
+
     #[Pure]
     public static function new(): self
     {
         return new self();
+    }
+
+    /**
+     * Configure fixed-size, resource-based, or composite Core slot suppliers.
+     *
+     * Mutually exclusive with the legacy max-concurrent execution-size
+     * options.
+     */
+    #[Pure]
+    public function withTuner(WorkerTuner $tuner): self
+    {
+        $self = clone $this;
+        $self->tuner = $tuner;
+        return $self;
+    }
+
+    public function getTuner(): ?WorkerTuner
+    {
+        return $this->tuner;
+    }
+
+    /**
+     * Configure workflow-task polling.
+     *
+     * Mutually exclusive with {@see self::withMaxConcurrentWorkflowTaskPollers()}.
+     */
+    #[Pure]
+    public function withWorkflowTaskPollerBehavior(PollerBehavior $behavior): self
+    {
+        $self = clone $this;
+        $self->workflowTaskPollerBehavior = $behavior;
+        return $self;
+    }
+
+    public function getWorkflowTaskPollerBehavior(): ?PollerBehavior
+    {
+        return $this->workflowTaskPollerBehavior;
+    }
+
+    /**
+     * Configure activity-task polling.
+     *
+     * Mutually exclusive with {@see self::withMaxConcurrentActivityTaskPollers()}.
+     */
+    #[Pure]
+    public function withActivityTaskPollerBehavior(PollerBehavior $behavior): self
+    {
+        $self = clone $this;
+        $self->activityTaskPollerBehavior = $behavior;
+        return $self;
+    }
+
+    public function getActivityTaskPollerBehavior(): ?PollerBehavior
+    {
+        return $this->activityTaskPollerBehavior;
+    }
+
+    /**
+     * Configure Nexus-task polling.
+     *
+     * Mutually exclusive with {@see self::withMaxConcurrentNexusTaskPollers()}.
+     */
+    #[Pure]
+    public function withNexusTaskPollerBehavior(PollerBehavior $behavior): self
+    {
+        $self = clone $this;
+        $self->nexusTaskPollerBehavior = $behavior;
+        return $self;
+    }
+
+    public function getNexusTaskPollerBehavior(): ?PollerBehavior
+    {
+        return $this->nexusTaskPollerBehavior;
     }
 
     /**
