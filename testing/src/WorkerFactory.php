@@ -21,6 +21,7 @@ use TrueAsync\Temporal\Core\Connection;
 class WorkerFactory extends \Temporal\WorkerFactory
 {
     private ActivityInvocationCacheInterface $activityCache;
+
     public function __construct(
         DataConverterInterface $dataConverter,
         ?RPCConnectionInterface $rpc = null,
