@@ -1,5 +1,7 @@
 <?php
 
+declare(strict_types=1);
+
 /**
  * This file is part of Temporal package.
  *
@@ -7,7 +9,6 @@
  * file that was distributed with this source code.
  */
 
-use Grpc\BaseStub;
 use Laminas\Code\Generator;
 use Laminas\Code\Generator\MethodGenerator;
 use Temporal\Api\Workflowservice;
@@ -21,69 +22,145 @@ echo "Compiling client...\n";
 
 echo "reading client schema: ";
 
-$r = new ReflectionClass(Workflowservice\V1\WorkflowServiceClient::class);
-$rBase = new ReflectionClass(BaseStub::class);
+$root = \dirname(__DIR__, 2);
+$schemaPath = \getenv('TEMPORAL_WORKFLOW_SERVICE_PROTO')
+    ?: $root . '/../php-temporal/third_party/sdk-rust/crates/protos/protos/api_upstream'
+        . '/temporal/api/workflowservice/v1/service.proto';
+
+if (!\is_file($schemaPath)) {
+    \fwrite(STDERR, "Cannot find WorkflowService schema under: {$schemaPath}\n");
+    \fwrite(STDERR, "Set TEMPORAL_WORKFLOW_SERVICE_PROTO to workflowservice/v1/service.proto.\n");
+    exit(1);
+}
+
+$schema = \file_get_contents($schemaPath);
+if ($schema === false) {
+    \fwrite(STDERR, "Cannot read WorkflowService schema: {$schemaPath}\n");
+    exit(1);
+}
+
+\preg_match_all(
+    '/\brpc\s+([A-Za-z0-9_]+)\s*\(\s*([A-Za-z0-9_]+)\s*\)\s*'
+        . 'returns\s*\(\s*([A-Za-z0-9_]+)\s*\)/',
+    $schema,
+    $rpcMatches,
+    PREG_SET_ORDER,
+);
+
+$availableMethods = [];
+foreach ($rpcMatches as [, $name, $request, $response]) {
+    $availableMethods[$name] = [
+        'request' => Workflowservice\V1::class . '\\' . $request,
+        'response' => Workflowservice\V1::class . '\\' . $response,
+    ];
+}
+
+if ($availableMethods === []) {
+    \fwrite(STDERR, "No WorkflowService RPC methods found in: {$schemaPath}\n");
+    exit(1);
+}
+
+$existingInterface = new ReflectionClass(\Temporal\Client\GRPC\ServiceClientInterface::class);
+$generateAll = \in_array('--all', $argv, true);
+$checkOnly = \in_array('--check', $argv, true);
+$requiredMethods = [
+    'StartActivityExecution',
+    'DescribeActivityExecution',
+    'PollActivityExecution',
+    'ListActivityExecutions',
+    'CountActivityExecutions',
+    'RequestCancelActivityExecution',
+    'TerminateActivityExecution',
+    'DeleteActivityExecution',
+];
 
 $ctxParam = Generator\ParameterGenerator::fromArray(
     [
         'type' => \Temporal\Client\GRPC\ContextInterface::class,
         'name' => 'ctx',
         'defaultValue' => null,
-    ]
+    ],
 );
 
-$methodDocBlock = function (ReflectionClass $r, string $method, string $arg, string $return) {
-    $block = [];
-
-    // copy from existing doc block
-    $orig = $r->getMethod($method)->getDocComment();
-    foreach (explode("\n", $orig) as $line) {
-        $line = trim($line, "\n\r* ");
-        if ($line === '/') {
-            continue;
+$methodDocBlock = static function (string $method, string $arg, string $return) use ($existingInterface) {
+    $block = ["Temporal WorkflowService RPC {$method}."];
+    if ($existingInterface->hasMethod($method)) {
+        $doc = $existingInterface->getMethod($method)->getDocComment();
+        if ($doc !== false) {
+            $description = [];
+            foreach (\explode("\n", $doc) as $line) {
+                $line = \trim($line, "\n\r* /");
+                if ($line === '' || \str_starts_with($line, '@')) {
+                    continue;
+                }
+                $description[] = $line;
+            }
+            $description === [] or $block = $description;
         }
-
-        if (substr($line, 0, 1) === '@') {
-            break;
-        }
-
-        $block[] = $line;
     }
-
     $block[] = '';
-    $block[] = sprintf('@param \\%s $arg', $arg);
-    $block[] = sprintf('@param ContextInterface|null $ctx');
-    $block[] = sprintf('@return \\%s', $return);
-    $block[] = sprintf('@throws ServiceClientException');
+    $block[] = \sprintf('@param \\%s $arg', $arg);
+    $block[] = '@param ContextInterface|null $ctx';
+    $block[] = \sprintf('@return \\%s', $return);
+    $block[] = '@throws ServiceClientException';
 
-    return join("\n", $block);
+    return \join("\n", $block);
 };
 
 $methods = [];
 
-// fetching available methods
-
-foreach ($r->getMethods() as $m) {
-    if ($rBase->hasMethod($m->getName())) {
+// By default preserve the SDK's explicitly supported raw surface. `--all`
+// opts into adding every RPC from the pinned API schema.
+foreach ($availableMethods as $name => $method) {
+    if (!$generateAll && !$existingInterface->hasMethod($name)) {
         continue;
     }
-
-    $method = [
-        'request' => null,
-        'response' => null,
-    ];
-
-    // simple heuristics
-    $method['request'] = $m->getParameters()[0]->getType()->getName();
-    $method['response'] = substr($method['request'], 0, -7) . 'Response';
-
-    assert(class_exists($method['request']));
-    assert(class_exists($method['response']));
-
-    $methods[$m->getName()] = $method;
+    if (!\class_exists($method['request']) || !\class_exists($method['response'])) {
+        throw new RuntimeException("Missing generated messages for WorkflowService RPC {$name}.");
+    }
+    $methods[$name] = $method;
 }
 
 echo "[OK]\n";
+
+if ($checkOnly) {
+    $implementation = new ReflectionClass(\Temporal\Client\GRPC\ServiceClient::class);
+    foreach ($requiredMethods as $name) {
+        if (
+            !isset($availableMethods[$name])
+            || !$existingInterface->hasMethod($name)
+            || !$implementation->hasMethod($name)
+        ) {
+            throw new RuntimeException("Required WorkflowService RPC {$name} is missing.");
+        }
+    }
+
+    foreach ($methods as $name => $method) {
+        if (!$existingInterface->hasMethod($name) || !$implementation->hasMethod($name)) {
+            throw new RuntimeException("WorkflowService RPC {$name} is missing from the client surface.");
+        }
+
+        foreach ([$existingInterface, $implementation] as $class) {
+            $reflection = $class->getMethod($name);
+            $parameter = $reflection->getParameters()[0] ?? null;
+            $parameterType = $parameter?->getType();
+            $returnType = $reflection->getReturnType();
+            if (
+                !$parameterType instanceof ReflectionNamedType
+                || $parameterType->getName() !== $method['request']
+                || !$returnType instanceof ReflectionNamedType
+                || $returnType->getName() !== $method['response']
+            ) {
+                throw new RuntimeException(
+                    "WorkflowService RPC {$name} signature does not match the pinned schema.",
+                );
+            }
+        }
+    }
+
+    echo 'checked ' . \count($methods) . " supported RPC methods [OK]\n";
+    exit(0);
+}
 
 echo "generating interface: ";
 
@@ -134,12 +211,12 @@ $interface->addMethodFromGenerator($m);
 foreach ($methods as $method => $options) {
     $m = new MethodGenerator($method);
 
-    $m->setDocBlock(($methodDocBlock)($r, $method, $options['request'], $options['response']));
+    $m->setDocBlock(($methodDocBlock)($method, $options['request'], $options['response']));
     $m->setParameters(
         [
             Generator\ParameterGenerator::fromArray(['type' => $options['request'], 'name' => 'arg']),
-            $ctxParam
-        ]
+            $ctxParam,
+        ],
     );
     $m->setReturnType($options['response']);
 
@@ -151,7 +228,7 @@ $m = new MethodGenerator(
     [],
     MethodGenerator::FLAG_PUBLIC,
     null,
-    'Close the communication channel associated with this stub.'
+    'Close the communication channel associated with this stub.',
 );
 $m->setReturnType('void');
 $interface->addMethodFromGenerator($m);
@@ -166,17 +243,17 @@ $file->setUses(
     [
         'Temporal\Api\Workflowservice\V1',
         'Temporal\Exception\Client\ServiceClientException',
-    ]
+    ],
 );
 
 // write and shorten names
-file_put_contents(
+\file_put_contents(
     __DIR__ . '/../../src/Client/GRPC/ServiceClientInterface.php',
-    str_replace(
+    \str_replace(
         ['\\Temporal\\Api\\Workflowservice\\', '\\Temporal\\Client\\GRPC\\ContextInterface'],
         ['', 'ContextInterface'],
-        $file->generate()
-    )
+        $file->generate(),
+    ),
 );
 echo "[OK]\n";
 
@@ -189,16 +266,16 @@ $impl->setExtendedClass('BaseClient');
 foreach ($methods as $method => $options) {
     $m = new MethodGenerator($method);
 
-    $m->setDocBlock(($methodDocBlock)($r, $method, $options['request'], $options['response']));
+    $m->setDocBlock(($methodDocBlock)($method, $options['request'], $options['response']));
     $m->setParameters(
         [
             Generator\ParameterGenerator::fromArray(['type' => $options['request'], 'name' => 'arg']),
-            $ctxParam
-        ]
+            $ctxParam,
+        ],
     );
     $m->setReturnType($options['response']);
 
-    $m->setBody(sprintf('return $this->invoke("%s", $arg, $ctx);', $m->getName()));
+    $m->setBody(\sprintf('return $this->invoke("%s", $arg, $ctx);', $m->getName()));
 
     $impl->addMethodFromGenerator($m);
 }
@@ -214,16 +291,16 @@ $file->setUses(
     [
         'Temporal\Api\Workflowservice\V1',
         'Temporal\Exception\Client\ServiceClientException',
-    ]
+    ],
 );
 
 // write and shorten names
-file_put_contents(
+\file_put_contents(
     __DIR__ . '/../../src/Client/GRPC/ServiceClient.php',
-    str_replace(
+    \str_replace(
         ['\\Temporal\\Api\\Workflowservice\\', '\\Temporal\\Client\\GRPC\\ContextInterface'],
         ['', 'ContextInterface'],
-        $file->generate()
-    )
+        $file->generate(),
+    ),
 );
 echo "[OK]\n";

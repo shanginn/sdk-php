@@ -102,6 +102,7 @@
         "test:accept-fast": "tests/runner.php vendor/bin/phpunit --testsuite=\"Acceptance-Fast\" --color=always --testdox",
         "test:nexus": "@php vendor/bin/phpunit --testsuite=Unit --filter=Nexus --colors=always --testdox",
         "test:nexus:e2e": "@php tests/truasync/nexus_worker_factory.php",
+        "test:standalone-activity:e2e": "@php tests/truasync/standalone_activity.php",
         "transcripts:last": "php tests/Acceptance/transcript-merge.php",
         "transcripts:list": "php tests/Acceptance/transcript-merge.php --list",
         "transcripts:merge": "php tests/Acceptance/transcript-merge.php",

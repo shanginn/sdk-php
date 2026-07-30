@@ -61,4 +61,30 @@ final class ActivityTaskTranslatorTestCase extends TestCase
             'FairnessWeight' => 5.4,
         ], $info['Priority']);
     }
+
+    public function testStandaloneTaskUsesActivityRunIdAndNullWorkflowFields(): void
+    {
+        $task = (new ActivityTask())
+            ->setTaskToken('task-token')
+            ->setStart(
+                (new Start())
+                    ->setActivityId('standalone-id')
+                    ->setActivityType('ExampleActivity')
+                    ->setWorkflowNamespace('activity-namespace')
+                    ->setRunId('standalone-run-id'),
+            );
+
+        $request = (new ActivityTaskTranslator(
+            DataConverter::createDefault(),
+            'task-queue',
+        ))->toServerRequest($task);
+
+        self::assertNotNull($request);
+        $info = $request->getOptions()['info'];
+        self::assertSame('standalone-run-id', $info['ActivityRunID']);
+        self::assertSame('activity-namespace', $info['Namespace']);
+        self::assertSame('activity-namespace', $info['WorkflowNamespace']);
+        self::assertNull($info['WorkflowType']);
+        self::assertNull($info['WorkflowExecution']);
+    }
 }

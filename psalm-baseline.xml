@@ -242,11 +242,6 @@
       <code><![CDATA[new AnnotationReader()]]></code>
     </DeprecatedClass>
   </file>
-  <file src="src/Exception/Client/ActivityCompletionException.php">
-    <PossiblyNullReference>
-      <code><![CDATA[getID]]></code>
-    </PossiblyNullReference>
-  </file>
   <file src="src/Exception/Client/ServiceClientException.php">
     <ImplementedReturnTypeMismatch>
       <code><![CDATA[RepeatedField]]></code>

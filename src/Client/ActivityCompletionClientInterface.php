@@ -24,6 +24,9 @@ interface ActivityCompletionClientInterface
     public function withContext(ActivitySerializationContext $context): self;
 
     /**
+     * For a standalone Activity, pass an empty workflow ID and use the
+     * standalone Activity run ID as `$runId`.
+     *
      * @param mixed $result
      */
     public function complete(string $workflowId, ?string $runId, string $activityId, $result = null): void;
@@ -53,6 +56,9 @@ interface ActivityCompletionClientInterface
 
     /**
      * @param mixed $details
+     *
+     * For a standalone Activity, pass an empty workflow ID and use the
+     * standalone Activity run ID as `$runId`.
      *
      * @throw ActivityCanceledException
      */

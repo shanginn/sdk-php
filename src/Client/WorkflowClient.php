@@ -21,6 +21,8 @@ use Temporal\Api\Enums\V1\HistoryEventFilterType;
 use Temporal\Api\Workflowservice\V1\CountWorkflowExecutionsRequest;
 use Temporal\Api\Workflowservice\V1\GetWorkflowExecutionHistoryRequest;
 use Temporal\Api\Workflowservice\V1\ListWorkflowExecutionsRequest;
+use Temporal\Client\Activity\ActivityClient;
+use Temporal\Client\Activity\ActivityClientInterface;
 use Temporal\Client\Common\ClientContextTrait;
 use Temporal\Client\Common\Paginator;
 use Temporal\Client\GRPC\ServiceClientInterface;
@@ -364,6 +366,19 @@ class WorkflowClient implements WorkflowClientInterface
     public function newActivityCompletionClient(): ActivityCompletionClientInterface
     {
         return new ActivityCompletionClient($this->client, $this->clientOptions, $this->converter);
+    }
+
+    /**
+     * Creates a client for starting and managing standalone Activities.
+     *
+     * Kept on the concrete client instead of WorkflowClientInterface so existing
+     * third-party implementations of that interface remain source compatible.
+     *
+     * @experimental Requires Temporal Server 1.31+ with Standalone Activities enabled.
+     */
+    public function newActivityClient(): ActivityClientInterface
+    {
+        return new ActivityClient($this->client, $this->clientOptions, $this->converter);
     }
 
     public function listWorkflowExecutions(

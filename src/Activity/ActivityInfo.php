@@ -46,11 +46,28 @@ final class ActivityInfo
     #[Marshal(name: 'WorkflowType', type: NullableType::class, of: WorkflowType::class)]
     public ?WorkflowType $workflowType = null;
 
+    /**
+     * Namespace containing this Activity execution.
+     */
+    #[Marshal(name: 'Namespace')]
+    public string $namespace = 'default';
+
+    /**
+     * @deprecated Use {@see $namespace}. Retained as a compatibility alias.
+     */
     #[Marshal(name: 'WorkflowNamespace')]
     public string $workflowNamespace = 'default';
 
     #[Marshal(name: 'WorkflowExecution', type: NullableType::class, of: WorkflowExecution::class)]
     public ?WorkflowExecution $workflowExecution = null;
+
+    /**
+     * Run ID of a standalone Activity execution.
+     *
+     * Empty for Activities scheduled by a Workflow.
+     */
+    #[Marshal(name: 'ActivityRunID')]
+    public string $activityRunId = '';
 
     /**
      * An ID of the activity. This identifier can be used to complete the
@@ -127,5 +144,13 @@ final class ActivityInfo
         $this->deadline = CarbonImmutable::now();
 
         $this->priority = Priority::new();
+    }
+
+    /**
+     * Whether this Activity was scheduled by a Workflow.
+     */
+    public function isInWorkflow(): bool
+    {
+        return $this->workflowExecution !== null;
     }
 }

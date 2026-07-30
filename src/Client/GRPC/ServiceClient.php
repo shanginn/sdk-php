@@ -1403,4 +1403,84 @@ class ServiceClient extends BaseClient
     {
         return $this->invoke("UpdateWorkerConfig", $arg, $ctx);
     }
+
+    /**
+     * Starts a standalone Activity execution.
+     *
+     * @throws ServiceClientException
+     */
+    public function StartActivityExecution(V1\StartActivityExecutionRequest $arg, ?ContextInterface $ctx = null): V1\StartActivityExecutionResponse
+    {
+        return $this->invoke("StartActivityExecution", $arg, $ctx);
+    }
+
+    /**
+     * Returns detailed information about a standalone Activity execution.
+     *
+     * @throws ServiceClientException
+     */
+    public function DescribeActivityExecution(V1\DescribeActivityExecutionRequest $arg, ?ContextInterface $ctx = null): V1\DescribeActivityExecutionResponse
+    {
+        return $this->invoke("DescribeActivityExecution", $arg, $ctx);
+    }
+
+    /**
+     * Long-polls for the terminal outcome of a standalone Activity execution.
+     *
+     * @throws ServiceClientException
+     */
+    public function PollActivityExecution(V1\PollActivityExecutionRequest $arg, ?ContextInterface $ctx = null): V1\PollActivityExecutionResponse
+    {
+        return $this->invoke("PollActivityExecution", $arg, $ctx);
+    }
+
+    /**
+     * Lists standalone Activity executions using a Visibility query.
+     *
+     * @throws ServiceClientException
+     */
+    public function ListActivityExecutions(V1\ListActivityExecutionsRequest $arg, ?ContextInterface $ctx = null): V1\ListActivityExecutionsResponse
+    {
+        return $this->invoke("ListActivityExecutions", $arg, $ctx);
+    }
+
+    /**
+     * Counts standalone Activity executions using a Visibility query.
+     *
+     * @throws ServiceClientException
+     */
+    public function CountActivityExecutions(V1\CountActivityExecutionsRequest $arg, ?ContextInterface $ctx = null): V1\CountActivityExecutionsResponse
+    {
+        return $this->invoke("CountActivityExecutions", $arg, $ctx);
+    }
+
+    /**
+     * Requests cancellation of a standalone Activity execution.
+     *
+     * @throws ServiceClientException
+     */
+    public function RequestCancelActivityExecution(V1\RequestCancelActivityExecutionRequest $arg, ?ContextInterface $ctx = null): V1\RequestCancelActivityExecutionResponse
+    {
+        return $this->invoke("RequestCancelActivityExecution", $arg, $ctx);
+    }
+
+    /**
+     * Terminates a standalone Activity execution.
+     *
+     * @throws ServiceClientException
+     */
+    public function TerminateActivityExecution(V1\TerminateActivityExecutionRequest $arg, ?ContextInterface $ctx = null): V1\TerminateActivityExecutionResponse
+    {
+        return $this->invoke("TerminateActivityExecution", $arg, $ctx);
+    }
+
+    /**
+     * Deletes a standalone Activity execution.
+     *
+     * @throws ServiceClientException
+     */
+    public function DeleteActivityExecution(V1\DeleteActivityExecutionRequest $arg, ?ContextInterface $ctx = null): V1\DeleteActivityExecutionResponse
+    {
+        return $this->invoke("DeleteActivityExecution", $arg, $ctx);
+    }
 }

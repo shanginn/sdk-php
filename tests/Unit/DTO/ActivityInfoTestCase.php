@@ -25,8 +25,10 @@ class ActivityInfoTestCase extends AbstractDTOMarshalling
         $expected = [
             'TaskToken'         => \base64_encode('00000000-0000-0000-0000-000000000000'),
             'WorkflowType'      => null,
+            'Namespace'         => 'default',
             'WorkflowNamespace' => 'default',
             'WorkflowExecution' => null,
+            'ActivityRunID'     => '',
             'ActivityID'        => '0',
             'ActivityType'      => [
                 'Name' => '',

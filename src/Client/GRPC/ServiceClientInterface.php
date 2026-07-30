@@ -1139,6 +1139,62 @@ interface ServiceClientInterface
     public function UpdateWorkerConfig(V1\UpdateWorkerConfigRequest $arg, ?ContextInterface $ctx = null): V1\UpdateWorkerConfigResponse;
 
     /**
+     * Starts a standalone Activity execution.
+     *
+     * @throws ServiceClientException
+     */
+    public function StartActivityExecution(V1\StartActivityExecutionRequest $arg, ?ContextInterface $ctx = null): V1\StartActivityExecutionResponse;
+
+    /**
+     * Returns detailed information about a standalone Activity execution.
+     *
+     * @throws ServiceClientException
+     */
+    public function DescribeActivityExecution(V1\DescribeActivityExecutionRequest $arg, ?ContextInterface $ctx = null): V1\DescribeActivityExecutionResponse;
+
+    /**
+     * Long-polls for the terminal outcome of a standalone Activity execution.
+     *
+     * @throws ServiceClientException
+     */
+    public function PollActivityExecution(V1\PollActivityExecutionRequest $arg, ?ContextInterface $ctx = null): V1\PollActivityExecutionResponse;
+
+    /**
+     * Lists standalone Activity executions using a Visibility query.
+     *
+     * @throws ServiceClientException
+     */
+    public function ListActivityExecutions(V1\ListActivityExecutionsRequest $arg, ?ContextInterface $ctx = null): V1\ListActivityExecutionsResponse;
+
+    /**
+     * Counts standalone Activity executions using a Visibility query.
+     *
+     * @throws ServiceClientException
+     */
+    public function CountActivityExecutions(V1\CountActivityExecutionsRequest $arg, ?ContextInterface $ctx = null): V1\CountActivityExecutionsResponse;
+
+    /**
+     * Requests cancellation of a standalone Activity execution.
+     *
+     * @throws ServiceClientException
+     */
+    public function RequestCancelActivityExecution(V1\RequestCancelActivityExecutionRequest $arg, ?ContextInterface $ctx = null): V1\RequestCancelActivityExecutionResponse;
+
+    /**
+     * Terminates a standalone Activity execution.
+     *
+     * @throws ServiceClientException
+     */
+    public function TerminateActivityExecution(V1\TerminateActivityExecutionRequest $arg, ?ContextInterface $ctx = null): V1\TerminateActivityExecutionResponse;
+
+    /**
+     * Deletes a standalone Activity execution.
+     *
+     * @throws ServiceClientException
+     */
+    public function DeleteActivityExecution(V1\DeleteActivityExecutionRequest $arg, ?ContextInterface $ctx = null): V1\DeleteActivityExecutionResponse;
+
+    /**
      * Close the communication channel associated with this stub.
      */
     public function close(): void;

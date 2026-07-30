@@ -103,6 +103,25 @@ Workflow Task also exposes whether the target changed and why the Service
 suggests Continue-As-New. See the
 [Upgrade-on-Continue-As-New guide](docs/upgrade-on-continue-as-new.md).
 
+## Standalone Activities
+
+Public Preview support is available for starting Activities directly from a
+client, without a scheduling Workflow. See the
+[Standalone Activities guide](docs/standalone-activities.md) for start,
+reattach, result, lifecycle, visibility, and worker-context examples.
+
+## Worker tuning and poller autoscaling
+
+Native Workers support fixed, resource-based, and composite Task slot
+suppliers, plus simple-maximum and autoscaling poller behavior. See the
+[Worker tuning guide](docs/worker-tuning.md) for constraints and examples.
+
+## Serialization context
+
+Payload converters and codecs can receive Workflow or Activity ownership
+context for deterministic key, tenant, and storage-policy selection. See the
+[Serialization context guide](docs/serialization-context.md).
+
 ## Development and testing
 
 Start a local Temporal service:

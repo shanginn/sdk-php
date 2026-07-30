@@ -54,11 +54,12 @@ class ActivityCompletionException extends TemporalException
      */
     public static function fromActivityInfo(ActivityInfo $info, ?\Throwable $e = null): static
     {
+        $workflowExecution = $info->workflowExecution;
         $e = new static(
             self::buildMessage(
                 [
-                    'workflowId' => $info->workflowExecution->getID(),
-                    'runId' => $info->workflowExecution->getRunID(),
+                    'workflowId' => $workflowExecution?->getID(),
+                    'runId' => $workflowExecution?->getRunID() ?? $info->activityRunId,
                     'activityId' => $info->id,
                     'activityType' => $info->type->name,
                 ],
@@ -68,8 +69,8 @@ class ActivityCompletionException extends TemporalException
         );
 
         $e->activityId = $info->id;
-        $e->workflowId = $info->workflowExecution->getID();
-        $e->runId = $info->workflowExecution->getRunID();
+        $e->workflowId = $workflowExecution?->getID();
+        $e->runId = $workflowExecution?->getRunID() ?? $info->activityRunId;
         $e->activityType = $info->type->name;
 
         return $e;

@@ -177,17 +177,25 @@ final class ActivityTaskTranslator
     private function info(Start $start, string $taskToken): array
     {
         $execution = $start->getWorkflowExecution();
+        $standalone = $start->getRunId() !== '';
         $priority = $start->getPriority();
         $retryPolicy = $start->getRetryPolicy();
 
         return [
             'TaskToken' => \base64_encode($taskToken),
+            'Namespace' => $start->getWorkflowNamespace(),
+            // Core exposes the namespace through this field for both
+            // Workflow-scheduled and standalone Activities. Keep it populated
+            // so payload codecs can build an Activity serialization context.
             'WorkflowNamespace' => $start->getWorkflowNamespace(),
-            'WorkflowType' => ['Name' => $start->getWorkflowType()],
-            'WorkflowExecution' => [
-                'ID' => $execution?->getWorkflowId() ?? '',
-                'RunID' => $execution?->getRunId() ?? '',
-            ],
+            'WorkflowType' => $standalone ? null : ['Name' => $start->getWorkflowType()],
+            'WorkflowExecution' => $standalone
+                ? null
+                : [
+                    'ID' => $execution?->getWorkflowId() ?? '',
+                    'RunID' => $execution?->getRunId() ?? '',
+                ],
+            'ActivityRunID' => $start->getRunId(),
             'ActivityID' => $start->getActivityId(),
             'ActivityType' => ['Name' => $start->getActivityType()],
             'TaskQueue' => $this->taskQueue,
