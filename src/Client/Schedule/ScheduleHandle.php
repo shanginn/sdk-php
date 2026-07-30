@@ -144,7 +144,9 @@ final class ScheduleHandle
 
         $description = $this->marshaller->unmarshal($values, $dto);
 
-        $action = $description->schedule->action;
+        $action = isset($description->schedule->action)
+            ? $description->schedule->action
+            : null;
         if ($action instanceof StartWorkflowAction && $action->workflowId !== '') {
             $context = new WorkflowSerializationContext($this->namespace, $action->workflowId);
             $converter = SerializationContextBinder::bind($this->converter, $context);
