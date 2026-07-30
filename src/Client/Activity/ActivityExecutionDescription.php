@@ -6,8 +6,10 @@ namespace Temporal\Client\Activity;
 
 use Temporal\Api\Activity\V1\ActivityExecutionInfo as ProtoActivityExecutionInfo;
 use Temporal\Api\Workflowservice\V1\DescribeActivityExecutionResponse;
+use Temporal\DataConverter\ActivitySerializationContext;
 use Temporal\DataConverter\DataConverterInterface;
 use Temporal\DataConverter\EncodedValues;
+use Temporal\DataConverter\SerializationContextBinder;
 use Temporal\Exception\Failure\FailureConverter;
 use Temporal\Exception\Failure\TemporalFailure;
 
@@ -30,6 +32,7 @@ final class ActivityExecutionDescription
     public function __construct(
         public readonly DescribeActivityExecutionResponse $raw,
         private readonly DataConverterInterface $converter,
+        private readonly ActivitySerializationContext $serializationContext,
     ) {
         $info = $raw->getInfo() ?? new ProtoActivityExecutionInfo();
         $this->activityId = $info->getActivityId();
@@ -47,7 +50,7 @@ final class ActivityExecutionDescription
         $values = EncodedValues::fromPayloads(
             $this->raw->getInput() ?? new \Temporal\Api\Common\V1\Payloads(),
             $this->converter,
-        );
+        )->withSerializationContext($this->serializationContext);
 
         return $values->count() === 0 ? null : $values->getValue(0, $type);
     }
@@ -62,24 +65,33 @@ final class ActivityExecutionDescription
         return EncodedValues::fromPayloads(
             $this->raw->getInfo()?->getHeartbeatDetails() ?? new \Temporal\Api\Common\V1\Payloads(),
             $this->converter,
-        );
+        )->withSerializationContext($this->serializationContext);
     }
 
     public function getLastFailure(): ?TemporalFailure
     {
         $failure = $this->raw->getInfo()?->getLastFailure();
-        return $failure === null ? null : FailureConverter::mapFailureToException($failure, $this->converter);
+        return $failure === null
+            ? null
+            : FailureConverter::mapFailureToException($failure, $this->converter)
+                ->withSerializationContext($this->serializationContext);
     }
 
     public function getSummary(): ?string
     {
         $payload = $this->raw->getInfo()?->getUserMetadata()?->getSummary();
-        return $payload === null ? null : $this->converter->fromPayload($payload, 'string');
+        return $payload === null
+            ? null
+            : SerializationContextBinder::bind($this->converter, $this->serializationContext)
+                ->fromPayload($payload, 'string');
     }
 
     public function getDetails(): ?string
     {
         $payload = $this->raw->getInfo()?->getUserMetadata()?->getDetails();
-        return $payload === null ? null : $this->converter->fromPayload($payload, 'string');
+        return $payload === null
+            ? null
+            : SerializationContextBinder::bind($this->converter, $this->serializationContext)
+                ->fromPayload($payload, 'string');
     }
 }

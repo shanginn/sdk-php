@@ -19,7 +19,7 @@ final class ActivitySerializationContextFactory
     public static function fromActivityInfo(ActivityInfo $info, bool $isLocal): ActivitySerializationContext
     {
         return new ActivitySerializationContext(
-            namespace: $info->workflowNamespace,
+            namespace: $info->namespace,
             workflowId: $info->workflowExecution?->getID(),
             workflowType: $info->workflowType?->name,
             activityType: $info->type->name,

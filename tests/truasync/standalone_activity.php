@@ -22,6 +22,7 @@ use Temporal\Client\Activity\ActivityOptions as StandaloneActivityOptions;
 use Temporal\Client\GRPC\TrueAsyncServiceClient;
 use Temporal\Client\WorkflowClient;
 use Temporal\Common\RetryOptions;
+use Temporal\DataConverter\ActivitySerializationContext;
 use Temporal\Exception\Client\ActivityCanceledException;
 use Temporal\Exception\Client\ActivityExecutionFailedException;
 use Temporal\Exception\Failure\CanceledFailure;
@@ -224,12 +225,19 @@ try {
             standaloneAssert($state->deferred['activityId'] === $deferredId, 'Deferred Activity ID mismatch.');
             standaloneAssert($state->deferred['runId'] === $deferred->getRunId(), 'Deferred run ID mismatch.');
 
-            $workflowClient->newActivityCompletionClient()->complete(
-                '',
-                $deferred->getRunId(),
-                $deferredId,
-                'completed-externally',
-            );
+            $workflowClient
+                ->newActivityCompletionClient()
+                ->withContext(new ActivitySerializationContext(
+                    namespace: 'default',
+                    activityType: 'StandaloneActivityE2E.completeLater',
+                    taskQueue: $taskQueue,
+                ))
+                ->complete(
+                    '',
+                    $deferred->getRunId(),
+                    $deferredId,
+                    'completed-externally',
+                );
             standaloneAssert(
                 $deferred->getResult('string') === 'completed-externally',
                 'Standalone asynchronous completion returned the wrong result.',

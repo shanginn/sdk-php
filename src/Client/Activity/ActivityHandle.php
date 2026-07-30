@@ -14,6 +14,7 @@ use Temporal\Client\GRPC\ContextInterface;
 use Temporal\Client\GRPC\ServiceClientInterface;
 use Temporal\Client\GRPC\StatusCode;
 use Temporal\Common\Uuid;
+use Temporal\DataConverter\ActivitySerializationContext;
 use Temporal\DataConverter\DataConverterInterface;
 use Temporal\DataConverter\EncodedValues;
 use Temporal\Exception\Client\ActivityExecutionFailedException;
@@ -29,14 +30,31 @@ final class ActivityHandle implements ActivityHandleInterface
 {
     private const POLL_TIMEOUT_SECONDS = 60;
 
+    private ?string $resolvedRunId;
+    private ?ActivitySerializationContext $serializationContext = null;
+
     public function __construct(
         private readonly ServiceClientInterface $client,
         private readonly ClientOptions $clientOptions,
         private readonly DataConverterInterface $converter,
         private readonly string $namespace,
         private readonly string $activityId,
-        private readonly ?string $runId,
-    ) {}
+        ?string $runId,
+        ?string $activityType = null,
+        ?string $taskQueue = null,
+    ) {
+        $this->resolvedRunId = $runId;
+        if ($activityType !== null && $taskQueue !== null) {
+            $this->serializationContext = new ActivitySerializationContext(
+                namespace: $namespace,
+                activityType: $activityType,
+                taskQueue: $taskQueue,
+                workflowId: null,
+                workflowType: null,
+                isLocal: false,
+            );
+        }
+    }
 
     public function getId(): string
     {
@@ -45,7 +63,7 @@ final class ActivityHandle implements ActivityHandleInterface
 
     public function getRunId(): ?string
     {
-        return $this->runId;
+        return $this->resolvedRunId;
     }
 
     public function getResult(mixed $type = null): mixed
@@ -53,10 +71,10 @@ final class ActivityHandle implements ActivityHandleInterface
         $request = (new PollActivityExecutionRequest())
             ->setNamespace($this->namespace)
             ->setActivityId($this->activityId)
-            ->setRunId($this->runId ?? '');
+            ->setRunId($this->resolvedRunId ?? '');
         $baseContext = $this->client->getContext();
         $deadline = $baseContext->getDeadline();
-        $runId = $this->runId ?? '';
+        $runId = $this->resolvedRunId ?? '';
         $outcome = null;
 
         do {
@@ -83,24 +101,27 @@ final class ActivityHandle implements ActivityHandleInterface
             }
             if ($response->getRunId() !== '') {
                 $runId = $response->getRunId();
+                $this->resolvedRunId = $runId;
                 $request->setRunId($runId);
             }
             $outcome = $response->getOutcome();
         } while ($outcome === null);
 
         if ($runId === '') {
-            $runId = $this->runId ?? '';
+            $runId = $this->resolvedRunId ?? '';
         }
 
+        $serializationContext = $this->getSerializationContext();
         if ($outcome->hasFailure()) {
-            $failure = FailureConverter::mapFailureToException($outcome->getFailure(), $this->converter);
+            $failure = FailureConverter::mapFailureToException($outcome->getFailure(), $this->converter)
+                ->withSerializationContext($serializationContext);
             throw new ActivityExecutionFailedException($this->activityId, $runId, $failure);
         }
 
         $values = EncodedValues::fromPayloads(
             $outcome->getResult() ?? new \Temporal\Api\Common\V1\Payloads(),
             $this->converter,
-        );
+        )->withSerializationContext($serializationContext);
 
         return $values->count() === 0 ? null : $values->getValue(0, $type);
     }
@@ -109,20 +130,13 @@ final class ActivityHandle implements ActivityHandleInterface
         bool $includeInput = true,
         bool $includeOutcome = true,
     ): ActivityExecutionDescription {
-        try {
-            $response = $this->client->DescribeActivityExecution(
-                (new DescribeActivityExecutionRequest())
-                    ->setNamespace($this->namespace)
-                    ->setActivityId($this->activityId)
-                    ->setRunId($this->runId ?? '')
-                    ->setIncludeInput($includeInput)
-                    ->setIncludeOutcome($includeOutcome),
-            );
-        } catch (ServiceClientException $e) {
-            throw $this->mapServiceException($e);
-        }
+        $response = $this->describeRaw($includeInput, $includeOutcome);
 
-        return new ActivityExecutionDescription($response, $this->converter);
+        return new ActivityExecutionDescription(
+            $response,
+            $this->converter,
+            $this->getSerializationContext($response),
+        );
     }
 
     public function cancel(string $reason = ''): void
@@ -134,7 +148,7 @@ final class ActivityHandle implements ActivityHandleInterface
                     ->setIdentity($this->clientOptions->identity)
                     ->setRequestId(Uuid::v4())
                     ->setActivityId($this->activityId)
-                    ->setRunId($this->runId ?? '')
+                    ->setRunId($this->resolvedRunId ?? '')
                     ->setReason($reason),
             );
         } catch (ServiceClientException $e) {
@@ -151,7 +165,7 @@ final class ActivityHandle implements ActivityHandleInterface
                     ->setIdentity($this->clientOptions->identity)
                     ->setRequestId(Uuid::v4())
                     ->setActivityId($this->activityId)
-                    ->setRunId($this->runId ?? '')
+                    ->setRunId($this->resolvedRunId ?? '')
                     ->setReason($reason),
             );
         } catch (ServiceClientException $e) {
@@ -166,18 +180,70 @@ final class ActivityHandle implements ActivityHandleInterface
                 (new DeleteActivityExecutionRequest())
                     ->setNamespace($this->namespace)
                     ->setActivityId($this->activityId)
-                    ->setRunId($this->runId ?? ''),
+                    ->setRunId($this->resolvedRunId ?? ''),
             );
         } catch (ServiceClientException $e) {
             throw $this->mapServiceException($e);
         }
     }
 
+    private function describeRaw(
+        bool $includeInput,
+        bool $includeOutcome,
+    ): \Temporal\Api\Workflowservice\V1\DescribeActivityExecutionResponse {
+        try {
+            $response = $this->client->DescribeActivityExecution(
+                (new DescribeActivityExecutionRequest())
+                    ->setNamespace($this->namespace)
+                    ->setActivityId($this->activityId)
+                    ->setRunId($this->resolvedRunId ?? '')
+                    ->setIncludeInput($includeInput)
+                    ->setIncludeOutcome($includeOutcome),
+            );
+        } catch (ServiceClientException $e) {
+            throw $this->mapServiceException($e);
+        }
+
+        if ($response->getRunId() !== '') {
+            $this->resolvedRunId = $response->getRunId();
+        }
+        $this->getSerializationContext($response);
+
+        return $response;
+    }
+
     private function mapServiceException(ServiceClientException $e): \Throwable
     {
         return $e->getCode() === StatusCode::NOT_FOUND
-            ? new ActivityExecutionNotFoundException($this->activityId, $this->runId, $e)
+            ? new ActivityExecutionNotFoundException($this->activityId, $this->resolvedRunId, $e)
             : $e;
+    }
+
+    private function getSerializationContext(
+        ?\Temporal\Api\Workflowservice\V1\DescribeActivityExecutionResponse $response = null,
+    ): ActivitySerializationContext {
+        if ($this->serializationContext !== null) {
+            return $this->serializationContext;
+        }
+
+        $response ??= $this->describeRaw(false, false);
+        $info = $response->getInfo();
+        $activityType = $info?->getActivityType()?->getName() ?? '';
+        $taskQueue = $info?->getTaskQueue() ?? '';
+        if ($activityType === '' || $taskQueue === '') {
+            throw new \UnexpectedValueException(
+                'DescribeActivityExecution did not return the Activity type and task queue required for payload decoding.',
+            );
+        }
+
+        return $this->serializationContext = new ActivitySerializationContext(
+            namespace: $this->namespace,
+            activityType: $activityType,
+            taskQueue: $taskQueue,
+            workflowId: null,
+            workflowType: null,
+            isLocal: false,
+        );
     }
 
     private function pollContext(

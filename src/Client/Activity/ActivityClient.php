@@ -15,9 +15,11 @@ use Temporal\Client\Common\ClientContextTrait;
 use Temporal\Client\Common\Paginator;
 use Temporal\Client\GRPC\ServiceClientInterface;
 use Temporal\Common\Uuid;
+use Temporal\DataConverter\ActivitySerializationContext;
 use Temporal\DataConverter\DataConverter;
 use Temporal\DataConverter\DataConverterInterface;
 use Temporal\DataConverter\EncodedValues;
+use Temporal\DataConverter\SerializationContextBinder;
 use Temporal\Exception\Client\ActivityExecutionAlreadyStartedException;
 use Temporal\Exception\Client\ServiceClientException;
 use Temporal\Internal\Support\DateInterval;
@@ -73,6 +75,16 @@ final class ActivityClient implements ActivityClientInterface
         }
         $options->validate();
 
+        $serializationContext = new ActivitySerializationContext(
+            namespace: $this->clientOptions->namespace,
+            activityType: $activityType,
+            taskQueue: $options->taskQueue,
+            workflowId: null,
+            workflowType: null,
+            isLocal: false,
+        );
+        $converter = SerializationContextBinder::bind($this->converter, $serializationContext);
+
         $request = (new StartActivityExecutionRequest())
             ->setNamespace($this->clientOptions->namespace)
             ->setIdentity($this->clientOptions->identity)
@@ -93,21 +105,23 @@ final class ActivityClient implements ActivityClientInterface
         $options->retryOptions === null
             or $request->setRetryPolicy($options->retryOptions->toWorkflowRetryPolicy());
 
-        $input = EncodedValues::fromValues($arguments, $this->converter);
+        $input = EncodedValues::fromValues($arguments, $this->converter)
+            ->withSerializationContext($serializationContext);
         $input->isEmpty() or $request->setInput($input->toPayloads());
 
-        $searchAttributes = $options->toSearchAttributes($this->converter);
+        $searchAttributes = $options->toSearchAttributes($converter);
         $searchAttributes === null or $request->setSearchAttributes($searchAttributes);
 
         if (!$options->header->isEmpty()) {
-            $options->header->setDataConverter($this->converter);
-            $request->setHeader($options->header->toHeader());
+            $header = $options->header->withSerializationContext($serializationContext);
+            $header->setDataConverter($this->converter);
+            $request->setHeader($header->toHeader());
         }
 
         if ($options->summary !== '' || $options->details !== '') {
             $metadata = new UserMetadata();
-            $options->summary === '' or $metadata->setSummary($this->converter->toPayload($options->summary));
-            $options->details === '' or $metadata->setDetails($this->converter->toPayload($options->details));
+            $options->summary === '' or $metadata->setSummary($converter->toPayload($options->summary));
+            $options->details === '' or $metadata->setDetails($converter->toPayload($options->details));
             $request->setUserMetadata($metadata);
         }
 
@@ -132,6 +146,8 @@ final class ActivityClient implements ActivityClientInterface
             $this->clientOptions->namespace,
             $options->activityId,
             $response->getRunId(),
+            $response->getStarted() ? $activityType : null,
+            $response->getStarted() ? $options->taskQueue : null,
         );
     }
 
@@ -180,13 +196,13 @@ final class ActivityClient implements ActivityClientInterface
             ->setPageSize($pageSize)
             ->setQuery($query);
 
-        $loader = function () use ($request): \Generator {
+        $loader = function () use ($request, $namespace): \Generator {
             do {
                 $response = $this->client->ListActivityExecutions($request);
                 $nextPageToken = $response->getNextPageToken();
                 $page = [];
                 foreach ($response->getExecutions() as $execution) {
-                    $page[] = new ActivityExecutionInfo($execution, $this->converter);
+                    $page[] = new ActivityExecutionInfo($execution, $this->converter, $namespace);
                 }
                 yield $page;
                 $request->setNextPageToken($nextPageToken);
@@ -206,9 +222,10 @@ final class ActivityClient implements ActivityClientInterface
 
     public function count(string $query = '', ?string $namespace = null): CountActivityExecutions
     {
+        $namespace ??= $this->clientOptions->namespace;
         $response = $this->client->CountActivityExecutions(
             (new CountActivityExecutionsRequest())
-                ->setNamespace($namespace ?? $this->clientOptions->namespace)
+                ->setNamespace($namespace)
                 ->setQuery($query),
         );
 
@@ -216,6 +233,8 @@ final class ActivityClient implements ActivityClientInterface
         foreach ($response->getGroups() as $group) {
             $values = [];
             foreach ($group->getGroupValues() as $payload) {
+                // Aggregation groups can span Activity types and task queues,
+                // so no truthful ActivitySerializationContext exists here.
                 $values[] = $this->converter->fromPayload($payload, null);
             }
             $groups[] = new ActivityExecutionCountGroup($values, (int) $group->getCount());

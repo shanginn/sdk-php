@@ -112,10 +112,22 @@ $activityRunId = $info->activityRunId;
 
 Complete it through the existing Activity completion client. A standalone
 Activity is addressed by an empty Workflow ID, its Activity run ID, and its
-Activity ID:
+Activity ID. Bind the same Activity serialization context before completing so
+context-aware payload converters can encode the result consistently:
 
 ```php
-$completion = $workflowClient->newActivityCompletionClient();
+use Temporal\DataConverter\ActivitySerializationContext;
+
+$completion = $workflowClient
+    ->newActivityCompletionClient()
+    ->withContext(new ActivitySerializationContext(
+        namespace: 'default',
+        activityType: 'ImageActivities.resize',
+        taskQueue: 'media',
+        workflowId: null,
+        workflowType: null,
+        isLocal: false,
+    ));
 $completion->complete(
     workflowId: '',
     runId: $activityRunId,
@@ -125,7 +137,8 @@ $completion->complete(
 ```
 
 The same addressing applies to `completeExceptionally()`,
-`reportCancellation()`, and `recordHeartbeat()`.
+`reportCancellation()`, and `recordHeartbeat()`. Use `withContext()` for those
+operations as well whenever the converter depends on Activity ownership.
 
 ## Headers, search attributes, priority, and delayed start
 

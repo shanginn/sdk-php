@@ -118,7 +118,7 @@ suppliers, plus simple-maximum and autoscaling poller behavior. See the
 
 ## Serialization context
 
-Payload converters and codecs can receive Workflow or Activity ownership
+Payload converters can receive Workflow or Activity ownership
 context for deterministic key, tenant, and storage-policy selection. See the
 [Serialization context guide](docs/serialization-context.md).
 
