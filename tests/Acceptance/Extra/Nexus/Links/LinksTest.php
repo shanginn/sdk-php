@@ -88,11 +88,9 @@ class LinksTest extends TestCase
 
     /**
      * End-to-end verification of the handler-response-Link wire:
-     * handler calls $context->links->add(), sdk-php packs them into
-     * `_rr_nexus_links` payload metadata, RoadRunner extracts them and
-     * calls nexus.AddHandlerLinks which puts them into the handler ctx;
-     * Temporal Go SDK reads them via nexus.HandlerLinks(ctx) and emits
-     * `Nexus-Link` response headers back to the caller.
+     * the handler adds links to its OperationContext, sdk-php encodes them
+     * directly into the native Nexus task response, and Temporal emits the
+     * corresponding `Nexus-Link` response headers back to the caller.
      */
     #[Test]
     public function handlerLinksAppearInNexusLinkResponseHeader(
@@ -148,8 +146,8 @@ class LinksTest extends TestCase
         $endpoint = $endpoints->register($state->namespace, __NAMESPACE__, 'nexus-links-bad');
 
         // A Link header value without the mandatory `type` parameter.
-        // RoadRunner parses the raw `Nexus-Link` header, builds options.links,
-        // sdk-php's LinkParser then rejects with HandlerException(BadRequest).
+        // The native Nexus request carries it to sdk-php's LinkParser, which
+        // rejects it with HandlerException(BadRequest).
         [$code, $body, ] = $http->post(
             $endpoint,
             'LinkService',

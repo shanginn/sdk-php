@@ -40,7 +40,26 @@ final class CoreRpcConnection implements RPCConnectionInterface
     /** @var array<string, array{canceled: bool, paused: bool, reset: bool}> keyed by raw task token */
     private array $cancellations = [];
 
-    public function __construct(private readonly CoreWorker $core) {}
+    public function __construct(private ?CoreWorker $core = null) {}
+
+    /**
+     * Attach the native worker after registration is complete.
+     *
+     * WorkerFactory intentionally defers creating Rust core until run(): Nexus
+     * must only be enabled when the PHP worker actually registered a service.
+     * Activity routes are built earlier, so they retain this attachable
+     * connection and become live atomically when the runtime boots.
+     *
+     * @internal
+     */
+    public function attach(CoreWorker $core): void
+    {
+        if ($this->core !== null) {
+            throw new \LogicException('The native worker RPC connection is already attached.');
+        }
+
+        $this->core = $core;
+    }
 
     public function call(string $method, $payload): mixed
     {
@@ -62,7 +81,7 @@ final class CoreRpcConnection implements RPCConnectionInterface
             $heartbeat->setDetails(\iterator_to_array($payloads->getPayloads()));
         }
 
-        $this->core->recordActivityHeartbeat($heartbeat->serializeToString());
+        $this->requireCore()->recordActivityHeartbeat($heartbeat->serializeToString());
 
         return $this->cancellations[$taskToken] ?? [];
     }
@@ -99,5 +118,12 @@ final class CoreRpcConnection implements RPCConnectionInterface
     public function forget(string $taskToken): void
     {
         unset($this->cancellations[$taskToken]);
+    }
+
+    private function requireCore(): CoreWorker
+    {
+        return $this->core ?? throw new \LogicException(
+            'The native worker RPC connection is not attached yet. Start WorkerFactory::run() before executing tasks.',
+        );
     }
 }

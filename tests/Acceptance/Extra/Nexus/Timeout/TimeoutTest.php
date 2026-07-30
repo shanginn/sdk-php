@@ -89,7 +89,7 @@ class TimeoutTest extends TestCase
     }
 
     #[Test]
-    public function syncHandlerObservesRequestCancellationAcrossRoadRunnerProcesses(
+    public function syncHandlerObservesRequestCancellationAcrossNativeWorkerBoundary(
         State $state,
         NexusEndpoints $endpoints,
         NexusHttpClient $http,
@@ -133,9 +133,9 @@ class TimeoutSyncService
     #[Operation]
     public function slowSync(string $input): string
     {
-        // PHP-side handler blocks the worker thread; sleep just past the
-        // caller's 2s scheduleToCloseTimeout.
-        \sleep(5);
+        // Suspend this handler just past the caller's 2s timeout while the
+        // native pollers and unrelated operations remain runnable.
+        \Async\delay(5_000);
         return "should-not-reach:{$input}";
     }
 
@@ -143,42 +143,32 @@ class TimeoutSyncService
     public function waitForRequestCancellation(string $marker): string
     {
         $context = Nexus::getCurrentOperationContext();
-        $listener = new class implements MethodCancellationListenerInterface {
-            public bool $called = false;
+        $listener = new class($marker, $context) implements MethodCancellationListenerInterface {
+            public function __construct(
+                private readonly string $marker,
+                private readonly \Temporal\Nexus\Handler\OperationContext $context,
+            ) {}
 
             public function cancelled(): void
             {
-                $this->called = true;
+                $temporary = $this->marker . '.' . \getmypid() . '.tmp';
+                \file_put_contents(
+                    $temporary,
+                    \json_encode([
+                        'cancelled' => $this->context->isMethodCancelled(),
+                        'listenerCalled' => true,
+                        'reason' => $this->context->getMethodCancellationReason(),
+                    ], \JSON_THROW_ON_ERROR),
+                    \LOCK_EX,
+                );
+                \rename($temporary, $this->marker);
             }
         };
         $context->addMethodCancellationListener($listener);
 
-        $expiresAt = \microtime(true) + 10.0;
-        do {
-            if ($context->isMethodCancelled()) {
-                \file_put_contents(
-                    $marker,
-                    \json_encode([
-                        'cancelled' => true,
-                        'listenerCalled' => $listener->called,
-                        'reason' => $context->getMethodCancellationReason(),
-                    ], \JSON_THROW_ON_ERROR),
-                    \LOCK_EX,
-                );
-                return 'cancel-observed';
-            }
-            \usleep(50_000);
-        } while (\microtime(true) < $expiresAt);
-
-        \file_put_contents(
-            $marker,
-            \json_encode([
-                'cancelled' => false,
-                'listenerCalled' => $listener->called,
-                'reason' => $context->getMethodCancellationReason(),
-            ], \JSON_THROW_ON_ERROR),
-            \LOCK_EX,
-        );
+        // Remain in flight while yielding to the native poller. The listener is
+        // invoked before the runtime cancels this handler coroutine.
+        \Async\delay(10_000);
         return 'cancel-not-observed';
     }
 }

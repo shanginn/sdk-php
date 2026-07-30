@@ -71,6 +71,9 @@ interface TestGreetingService
     public function genericFailingOp(string $input): string;
 
     #[Operation]
+    public function internalHandlerFailingOp(string $input): string;
+
+    #[Operation]
     public function deadlineEchoOp(string $input): string;
 }
 
@@ -160,6 +163,15 @@ class TestGreetingServiceImpl implements TestGreetingService
     public function genericFailingOp(string $input): string
     {
         throw new \RuntimeException('something blew up');
+    }
+
+    public function internalHandlerFailingOp(string $input): string
+    {
+        throw HandlerException::create(
+            ErrorType::Internal,
+            'private infrastructure detail',
+            retryBehavior: RetryBehavior::NonRetryable,
+        );
     }
 
     public function deadlineEchoOp(string $input): string
@@ -498,6 +510,34 @@ final class NexusTaskHandlerTestCase extends AbstractUnit
         }
     }
 
+    public function testLoggerFailureDoesNotReplaceHandlerRetryBehavior(): void
+    {
+        $request = $this->buildStartRequest(
+            'TestGreetingService',
+            'internalHandlerFailingOp',
+            'input',
+        );
+        $logger = $this->createMock(LoggerInterface::class);
+        $logger->expects(self::once())
+            ->method('error')
+            ->willThrowException(new \RuntimeException('logger transport failed'));
+        $handler = new NexusTaskHandler(
+            self::buildRepository(new TestGreetingServiceImpl()),
+            $this->dataConverter,
+            $this->env,
+            logger: $logger,
+        );
+
+        try {
+            $handler->handleStartOperation($request, new NexusOperationContext());
+            self::fail('Expected HandlerException');
+        } catch (HandlerException $e) {
+            self::assertSame(ErrorType::Internal, $e->errorType);
+            self::assertSame(RetryBehavior::NonRetryable, $e->retryBehavior);
+            self::assertSame('private infrastructure detail', $e->getMessage());
+        }
+    }
+
     public function testServiceHandlerUsesTaskHandlerLoggerForSerdeFailures(): void
     {
         $request = $this->buildStartRequest('TestGreetingService', 'sayHello', 'World');
@@ -562,6 +602,24 @@ final class NexusTaskHandlerTestCase extends AbstractUnit
         self::assertNotSame('none', $this->decodeSyncStringResult($response->getStartOperation()));
     }
 
+    public function testStartOperationPrefersCoreAbsoluteRequestDeadline(): void
+    {
+        $request = $this->buildStartRequest('TestGreetingService', 'deadlineEchoOp', 'input');
+        $request->setHeader(['Request-Timeout' => '30s']);
+        $deadline = new \DateTimeImmutable('2030-01-02T03:04:05.123456+00:00');
+
+        $response = $this->handler->handleStartOperation(
+            $request,
+            new NexusOperationContext(),
+            requestDeadline: $deadline,
+        );
+
+        self::assertSame(
+            $deadline->format(\DATE_ATOM),
+            $this->decodeSyncStringResult($response->getStartOperation()),
+        );
+    }
+
     public function testStartOperationWithAbsentTimeoutHeaderHasNoDeadline(): void
     {
         $request = $this->buildStartRequest('TestGreetingService', 'deadlineEchoOp', 'input');
@@ -619,6 +677,22 @@ final class NexusTaskHandlerTestCase extends AbstractUnit
         $this->handler->handleCancelOperation($request, new NexusOperationContext());
 
         self::assertNotNull(TestGreetingServiceImpl::$capturedCancelDeadline);
+    }
+
+    public function testCancelOperationPrefersCoreAbsoluteRequestDeadline(): void
+    {
+        $request = $this->buildCancelRequest('TestGreetingService', 'cancelableOp', 'cancel-token-456', [
+            'Request-Timeout' => '30s',
+        ]);
+        $deadline = new \DateTimeImmutable('2030-01-02T03:04:05.123456+00:00');
+
+        $this->handler->handleCancelOperation(
+            $request,
+            new NexusOperationContext(),
+            requestDeadline: $deadline,
+        );
+
+        self::assertSame($deadline, TestGreetingServiceImpl::$capturedCancelDeadline);
     }
 
     public function testCancelOperationHasNoDeadlineWithoutRequestTimeout(): void

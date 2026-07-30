@@ -16,9 +16,9 @@ namespace Temporal\Nexus\Exception;
  *
  * For caller-visible error types, the message and complete cause chain,
  * including details and stack traces, can be serialized into the Nexus
- * failure. Pass only caller-safe messages and Throwables. Internal and
- * unavailable errors are redacted by the supported RoadRunner bridge, but
- * should not contain secrets either.
+ * failure. Pass only caller-safe messages and Throwables. Unexpected raw
+ * exceptions and explicit Internal or Unavailable handler failures are
+ * redacted at the native handler boundary.
  */
 final class HandlerException extends NexusException
 {
@@ -50,7 +50,8 @@ final class HandlerException extends NexusException
      * Message is derived from the cause's own message.
      *
      * The cause itself can also be serialized for caller-visible error types.
-     * Do not pass a Throwable containing secrets or internal-only details.
+     * Internal and Unavailable failures are redacted at the native boundary,
+     * but handler code should still avoid putting secrets in exceptions.
      */
     public static function fromCause(
         ErrorType $errorType,

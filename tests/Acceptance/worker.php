@@ -110,20 +110,6 @@ try {
         tlsClientPrivateKey: $loadCertificate($run->tlsKey),
     );
 
-    $container->bindSingleton(
-        WorkerFactoryInterface::class,
-        WorkerFactory::create(
-            converter: $converter,
-            pluginRegistry: new PluginRegistry($plugins),
-            connection: $coreConnection,
-            namespace: $runtime->namespace,
-        )
-    );
-
-    $workerFactory = $container->get(\Temporal\Tests\Acceptance\App\Feature\WorkerFactory::class);
-    $getWorker = static function (Feature $feature) use (&$workers, $workerFactory): WorkerInterface {
-        return $workers[$feature->taskQueue] ??= $workerFactory->createWorker($feature);
-    };
     $serviceClient = $runtime->command->tlsKey === null && $runtime->command->tlsCert === null
         ? ServiceClient::create($runtime->address)
         : ServiceClient::createSSL(
@@ -135,16 +121,16 @@ try {
     $workflowClient = WorkflowClient::create(serviceClient: $serviceClient, options: $options, converter: $converter);
     $scheduleClient = ScheduleClient::create(serviceClient: $serviceClient, options: $options, converter: $converter);
 
-    $container->bindSingleton(
-        WorkerFactoryInterface::class,
-        WorkerFactory::create(
-            converter: $converter,
-            pluginRegistry: new PluginRegistry([new TranscriptPlugin($workerTranscript)]),
-            client: $workflowClient,
-        ),
+    $nativeWorkerFactory = WorkerFactory::create(
+        converter: $converter,
+        pluginRegistry: new PluginRegistry($plugins),
+        client: $workflowClient,
+        connection: $coreConnection,
+        namespace: $runtime->namespace,
     );
+    $container->bindSingleton(WorkerFactoryInterface::class, $nativeWorkerFactory);
 
-    $workerFactory =  $container->get(\Temporal\Tests\Acceptance\App\Feature\WorkerFactory::class);
+    $workerFactory = $container->get(\Temporal\Tests\Acceptance\App\Feature\WorkerFactory::class);
     $getWorker = static function (Feature $feature) use (&$workers, $workerFactory): WorkerInterface {
         return $workers[$feature->taskQueue] ??= $workerFactory->createWorker($feature);
     };
@@ -170,7 +156,7 @@ try {
         $getWorker($feature)->registerNexusServiceImplementation($container->make($nexusService));
     }
 
-    $container->get(WorkerFactoryInterface::class)->run();
+    $nativeWorkerFactory->run();
 } catch (\Throwable $e) {
     $workerTranscript->writeFatal($e);
     $workerTranscript->flush();

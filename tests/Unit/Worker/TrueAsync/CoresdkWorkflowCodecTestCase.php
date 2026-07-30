@@ -5,14 +5,19 @@ declare(strict_types=1);
 namespace Temporal\Tests\Unit\Worker\TrueAsync;
 
 use Coresdk\Common\NamespacedWorkflowExecution;
+use Coresdk\Nexus\NexusOperationCancellationType as CoresdkNexusCancellationType;
+use Coresdk\Nexus\NexusOperationResult;
 use Coresdk\WorkflowActivation\InitializeWorkflow;
 use Coresdk\WorkflowActivation\NotifyHasPatch;
 use Coresdk\WorkflowActivation\RemoveFromCache;
 use Coresdk\WorkflowActivation\RemoveFromCache\EvictionReason;
 use Coresdk\WorkflowActivation\ResolveChildWorkflowExecutionStart;
 use Coresdk\WorkflowActivation\ResolveChildWorkflowExecutionStartSuccess;
+use Coresdk\WorkflowActivation\ResolveNexusOperation;
+use Coresdk\WorkflowActivation\ResolveNexusOperationStart;
 use Coresdk\WorkflowActivation\WorkflowActivation;
 use Coresdk\WorkflowActivation\WorkflowActivationJob;
+use Coresdk\WorkflowCompletion\WorkflowActivationCompletion;
 use Google\Protobuf\Duration;
 use PHPUnit\Framework\TestCase;
 use Temporal\Api\Common\V1\Payloads;
@@ -21,15 +26,23 @@ use Temporal\Api\Common\V1\RetryPolicy;
 use Temporal\Api\Common\V1\SearchAttributes;
 use Temporal\Api\Common\V1\WorkflowExecution;
 use Temporal\Api\Enums\V1\VersioningBehavior;
+use Temporal\Api\Failure\V1\ApplicationFailureInfo;
+use Temporal\Api\Failure\V1\Failure;
 use Temporal\DataConverter\DataConverter;
+use Temporal\DataConverter\DataConverterInterface;
 use Temporal\DataConverter\EncodedValues;
 use Temporal\Interceptor\Header;
 use Temporal\Internal\Transport\Request\ExecuteChildWorkflow;
+use Temporal\Internal\Transport\Request\ExecuteNexusOperation;
 use Temporal\Internal\Transport\Request\GetChildWorkflowExecution;
+use Temporal\Internal\Transport\Request\GetNexusOperationStarted;
+use Temporal\Internal\Workflow\NexusStartEnvelope;
 use Temporal\Worker\Transport\Command\Client\Request;
-use Temporal\Worker\TrueAsync\CoresdkWorkflowCodec;
+use Temporal\Worker\Transport\Command\Server\FailureResponse;
 use Temporal\Worker\Transport\Command\Server\ServerRequest;
 use Temporal\Worker\Transport\Command\Server\SuccessResponse;
+use Temporal\Worker\TrueAsync\CoresdkWorkflowCodec;
+use Temporal\Workflow\NexusOperationCancellationType;
 use Temporal\Workflow\WorkflowExecution as SdkWorkflowExecution;
 
 final class CoresdkWorkflowCodecTestCase extends TestCase
@@ -399,6 +412,288 @@ final class CoresdkWorkflowCodecTestCase extends TestCase
         );
     }
 
+    public function testNexusScheduleMapsFieldsTimeoutsHeadersSummaryAndCancellationTypes(): void
+    {
+        $converter = DataConverter::createDefault();
+        $codec = $this->initializedCodec($converter);
+        $cancellationTypes = [
+            [
+                NexusOperationCancellationType::Unspecified->value,
+                CoresdkNexusCancellationType::WAIT_CANCELLATION_COMPLETED,
+            ],
+            [
+                NexusOperationCancellationType::Abandon->value,
+                CoresdkNexusCancellationType::ABANDON,
+            ],
+            [
+                NexusOperationCancellationType::TryCancel->value,
+                CoresdkNexusCancellationType::TRY_CANCEL,
+            ],
+            [
+                NexusOperationCancellationType::WaitRequested->value,
+                CoresdkNexusCancellationType::WAIT_CANCELLATION_REQUESTED,
+            ],
+            [
+                NexusOperationCancellationType::WaitCompleted->value,
+                CoresdkNexusCancellationType::WAIT_CANCELLATION_COMPLETED,
+            ],
+        ];
+
+        foreach ($cancellationTypes as [$sdkType]) {
+            $codec->stage($this->nexusRequest($converter, [
+                'summary' => 'Capture the payment',
+                'scheduleToCloseTimeout' => 1_500_000_000,
+                'scheduleToStartTimeout' => 2_000_000_000,
+                'startToCloseTimeout' => 3_250_000_000,
+                'cancellationType' => $sdkType,
+            ]));
+        }
+
+        $completion = self::completion($codec);
+        $commands = $completion->getSuccessful()->getCommands();
+        self::assertCount(5, $commands);
+
+        foreach ($commands as $index => $command) {
+            $schedule = $command->getScheduleNexusOperation();
+            self::assertSame($index + 1, $schedule->getSeq());
+            self::assertSame('payments', $schedule->getEndpoint());
+            self::assertSame('PaymentsService', $schedule->getService());
+            self::assertSame('capture', $schedule->getOperation());
+            self::assertSame(
+                $cancellationTypes[$index][1],
+                $schedule->getCancellationType(),
+            );
+        }
+
+        $schedule = $commands[0]->getScheduleNexusOperation();
+        self::assertSame('payment-input', $converter->fromPayload($schedule->getInput(), null));
+        $nexusHeaders = \iterator_to_array($schedule->getNexusHeader());
+        \ksort($nexusHeaders);
+        self::assertSame([
+            'x-request-id' => 'request-123',
+            'x-tenant' => 'tenant-a',
+        ], $nexusHeaders);
+        self::assertSame(1, (int) $schedule->getScheduleToCloseTimeout()->getSeconds());
+        self::assertSame(500_000_000, $schedule->getScheduleToCloseTimeout()->getNanos());
+        self::assertSame(2, (int) $schedule->getScheduleToStartTimeout()->getSeconds());
+        self::assertSame(0, $schedule->getScheduleToStartTimeout()->getNanos());
+        self::assertSame(3, (int) $schedule->getStartToCloseTimeout()->getSeconds());
+        self::assertSame(250_000_000, $schedule->getStartToCloseTimeout()->getNanos());
+        self::assertSame(
+            'Capture the payment',
+            $converter->fromPayload($commands[0]->getUserMetadata()->getSummary(), null),
+        );
+    }
+
+    public function testNexusAsyncAndSyncStartsCorrelateWithTheirResultPromises(): void
+    {
+        $converter = DataConverter::createDefault();
+        $codec = $this->initializedCodec($converter);
+
+        $asyncExecute = $this->nexusRequest($converter);
+        $asyncStarted = new GetNexusOperationStarted($asyncExecute->getID());
+        $codec->stage($asyncExecute);
+        $codec->stage($asyncStarted);
+        self::completion($codec);
+
+        $startResponses = \iterator_to_array($codec->decode(
+            (new WorkflowActivation())
+                ->setRunId('nexus-run')
+                ->setJobs([
+                    (new WorkflowActivationJob())->setResolveNexusOperationStart(
+                        (new ResolveNexusOperationStart())
+                            ->setSeq(1)
+                            ->setOperationToken('operation-token'),
+                    ),
+                ])
+                ->serializeToString(),
+        ));
+
+        self::assertCount(1, $startResponses);
+        self::assertInstanceOf(SuccessResponse::class, $startResponses[0]);
+        self::assertSame($asyncStarted->getID(), $startResponses[0]->getID());
+        $envelope = $startResponses[0]->getPayloads()->getValue(0, NexusStartEnvelope::class);
+        self::assertInstanceOf(NexusStartEnvelope::class, $envelope);
+        self::assertTrue($envelope->async);
+        self::assertSame('operation-token', $envelope->token);
+
+        $resultResponses = \iterator_to_array($codec->decode(
+            (new WorkflowActivation())
+                ->setRunId('nexus-run')
+                ->setJobs([
+                    (new WorkflowActivationJob())->setResolveNexusOperation(
+                        (new ResolveNexusOperation())
+                            ->setSeq(1)
+                            ->setResult(
+                                (new NexusOperationResult())
+                                    ->setCompleted($converter->toPayload('async-result')),
+                            ),
+                    ),
+                ])
+                ->serializeToString(),
+        ));
+
+        self::assertCount(1, $resultResponses);
+        self::assertInstanceOf(SuccessResponse::class, $resultResponses[0]);
+        self::assertSame($asyncExecute->getID(), $resultResponses[0]->getID());
+        self::assertSame('async-result', $resultResponses[0]->getPayloads()->getValue(0, null));
+
+        $syncExecute = $this->nexusRequest($converter);
+        $syncStarted = new GetNexusOperationStarted($syncExecute->getID());
+        $codec->stage($syncExecute);
+        $codec->stage($syncStarted);
+        self::completion($codec);
+
+        $syncResponses = \iterator_to_array($codec->decode(
+            (new WorkflowActivation())
+                ->setRunId('nexus-run')
+                ->setJobs([
+                    (new WorkflowActivationJob())->setResolveNexusOperationStart(
+                        (new ResolveNexusOperationStart())
+                            ->setSeq(2)
+                            ->setStartedSync(true),
+                    ),
+                    (new WorkflowActivationJob())->setResolveNexusOperation(
+                        (new ResolveNexusOperation())
+                            ->setSeq(2)
+                            ->setResult(
+                                (new NexusOperationResult())
+                                    ->setCompleted($converter->toPayload('sync-result')),
+                            ),
+                    ),
+                ])
+                ->serializeToString(),
+        ), false);
+
+        self::assertCount(2, $syncResponses);
+        self::assertInstanceOf(SuccessResponse::class, $syncResponses[0]);
+        self::assertSame($syncStarted->getID(), $syncResponses[0]->getID());
+        $envelope = $syncResponses[0]->getPayloads()->getValue(0, NexusStartEnvelope::class);
+        self::assertFalse($envelope->async);
+        self::assertSame('', $envelope->token);
+        self::assertInstanceOf(SuccessResponse::class, $syncResponses[1]);
+        self::assertSame($syncExecute->getID(), $syncResponses[1]->getID());
+        self::assertSame('sync-result', $syncResponses[1]->getPayloads()->getValue(0, null));
+    }
+
+    public function testNexusFailedStartRejectsBothStartAndResultPromises(): void
+    {
+        $converter = DataConverter::createDefault();
+        $codec = $this->initializedCodec($converter);
+        $execute = $this->nexusRequest($converter);
+        $started = new GetNexusOperationStarted($execute->getID());
+        $codec->stage($execute);
+        $codec->stage($started);
+        self::completion($codec);
+
+        $responses = \iterator_to_array($codec->decode(
+            (new WorkflowActivation())
+                ->setRunId('nexus-run')
+                ->setJobs([
+                    (new WorkflowActivationJob())->setResolveNexusOperationStart(
+                        (new ResolveNexusOperationStart())
+                            ->setSeq(1)
+                            ->setFailed(self::failure('Nexus start failed')),
+                    ),
+                ])
+                ->serializeToString(),
+        ));
+
+        self::assertCount(2, $responses);
+        self::assertInstanceOf(FailureResponse::class, $responses[0]);
+        self::assertSame($started->getID(), $responses[0]->getID());
+        self::assertStringContainsString(
+            'Nexus start failed',
+            $responses[0]->getFailure()->getMessage(),
+        );
+        self::assertInstanceOf(FailureResponse::class, $responses[1]);
+        self::assertSame($execute->getID(), $responses[1]->getID());
+        self::assertStringContainsString(
+            'Nexus start failed',
+            $responses[1]->getFailure()->getMessage(),
+        );
+    }
+
+    public function testNexusFailedCancelledAndTimedOutResultsRejectExecutePromise(): void
+    {
+        $statuses = ['failed', 'cancelled', 'timed_out'];
+
+        foreach ($statuses as $status) {
+            $converter = DataConverter::createDefault();
+            $codec = $this->initializedCodec($converter, "nexus-{$status}");
+            $execute = $this->nexusRequest($converter);
+            $started = new GetNexusOperationStarted($execute->getID());
+            $codec->stage($execute);
+            $codec->stage($started);
+            self::completion($codec);
+
+            \iterator_to_array($codec->decode(
+                (new WorkflowActivation())
+                    ->setRunId("nexus-{$status}")
+                    ->setJobs([
+                        (new WorkflowActivationJob())->setResolveNexusOperationStart(
+                            (new ResolveNexusOperationStart())
+                                ->setSeq(1)
+                                ->setOperationToken("token-{$status}"),
+                        ),
+                    ])
+                    ->serializeToString(),
+            ));
+
+            $failure = self::failure("Nexus {$status}");
+            $result = match ($status) {
+                'failed' => (new NexusOperationResult())->setFailed($failure),
+                'cancelled' => (new NexusOperationResult())->setCancelled($failure),
+                'timed_out' => (new NexusOperationResult())->setTimedOut($failure),
+            };
+            $responses = \iterator_to_array($codec->decode(
+                (new WorkflowActivation())
+                    ->setRunId("nexus-{$status}")
+                    ->setJobs([
+                        (new WorkflowActivationJob())->setResolveNexusOperation(
+                            (new ResolveNexusOperation())
+                                ->setSeq(1)
+                                ->setResult($result),
+                        ),
+                    ])
+                    ->serializeToString(),
+            ));
+
+            self::assertCount(1, $responses);
+            self::assertInstanceOf(FailureResponse::class, $responses[0]);
+            self::assertSame($execute->getID(), $responses[0]->getID());
+            self::assertStringContainsString(
+                "Nexus {$status}",
+                $responses[0]->getFailure()->getMessage(),
+            );
+        }
+    }
+
+    public function testNexusCancellationUsesScheduleSeqAndSeqIsReplayStable(): void
+    {
+        $converter = DataConverter::createDefault();
+        $live = $this->initializedCodec($converter, 'live-run');
+        $liveExecute = $this->nexusRequest($converter);
+        $live->stage($liveExecute);
+        self::assertSame([], $live->stage(new Request('Cancel', [
+            'ids' => [$liveExecute->getID()],
+        ])));
+
+        $liveCommands = self::completion($live)->getSuccessful()->getCommands();
+        self::assertCount(2, $liveCommands);
+        self::assertSame(1, $liveCommands[0]->getScheduleNexusOperation()->getSeq());
+        self::assertSame(1, $liveCommands[1]->getRequestCancelNexusOperation()->getSeq());
+
+        $replay = $this->initializedCodec($converter, 'replay-run', true);
+        $replayExecute = $this->nexusRequest($converter);
+        self::assertNotSame($liveExecute->getID(), $replayExecute->getID());
+        $replay->stage($replayExecute);
+
+        $replayCommands = self::completion($replay)->getSuccessful()->getCommands();
+        self::assertCount(1, $replayCommands);
+        self::assertSame(1, $replayCommands[0]->getScheduleNexusOperation()->getSeq());
+    }
+
     public function testGetVersionPersistsTheSelectedIntegerInPatchId(): void
     {
         $converter = DataConverter::createDefault();
@@ -461,5 +756,69 @@ final class CoresdkWorkflowCodecTestCase extends TestCase
             $patchId,
             $completion->getSuccessful()->getCommands()[0]->getSetPatchMarker()->getPatchId(),
         );
+    }
+
+    private function initializedCodec(
+        DataConverterInterface $converter,
+        string $runId = 'nexus-run',
+        bool $isReplaying = false,
+    ): CoresdkWorkflowCodec {
+        $codec = new CoresdkWorkflowCodec($converter);
+        \iterator_to_array($codec->decode(
+            (new WorkflowActivation())
+                ->setRunId($runId)
+                ->setIsReplaying($isReplaying)
+                ->setJobs([
+                    (new WorkflowActivationJob())->setInitializeWorkflow(
+                        (new InitializeWorkflow())
+                            ->setWorkflowType('NexusWorkflow')
+                            ->setWorkflowId('workflow-id'),
+                    ),
+                ])
+                ->serializeToString(),
+            ['taskQueue' => 'queue', 'namespace' => 'default'],
+        ));
+
+        return $codec;
+    }
+
+    /**
+     * @param array<non-empty-string, mixed> $options
+     */
+    private function nexusRequest(
+        DataConverterInterface $converter,
+        array $options = [],
+    ): ExecuteNexusOperation {
+        return new ExecuteNexusOperation(
+            endpoint: 'payments',
+            service: 'PaymentsService',
+            operation: 'capture',
+            args: EncodedValues::fromValues(['payment-input'], $converter),
+            options: $options,
+            header: Header::empty()->withValue('interceptor-trace', 'internal-only'),
+            nexusHeaders: [
+                'x-request-id' => 'request-123',
+                'x-tenant' => 'tenant-a',
+            ],
+        );
+    }
+
+    private static function completion(CoresdkWorkflowCodec $codec): WorkflowActivationCompletion
+    {
+        $completion = new WorkflowActivationCompletion();
+        $completion->mergeFromString($codec->encodeStaged());
+
+        return $completion;
+    }
+
+    private static function failure(string $message): Failure
+    {
+        return (new Failure())
+            ->setMessage($message)
+            ->setApplicationFailureInfo(
+                (new ApplicationFailureInfo())
+                    ->setType('NexusTestFailure')
+                    ->setNonRetryable(true),
+            );
     }
 }

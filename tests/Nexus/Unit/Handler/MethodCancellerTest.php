@@ -228,6 +228,28 @@ final class MethodCancellerTest extends TestCase
         self::assertSame(['a', 'b'], $order);
     }
 
+    public function testThrowingListenerDoesNotBlockCancellationFanOut(): void
+    {
+        $canceller = new MethodCanceller($this->env);
+        $called = false;
+        $canceller->addListener(ClosureMethodCancellationListener::fromCallable(
+            static function (): never {
+                throw new \RuntimeException('listener failed');
+            },
+        ));
+        $canceller->addListener(ClosureMethodCancellationListener::fromCallable(
+            static function () use (&$called): void {
+                $called = true;
+            },
+        ));
+
+        $canceller->cancel('worker shutdown');
+
+        self::assertTrue($called);
+        self::assertTrue($canceller->isCancelled());
+        self::assertSame('worker shutdown', $canceller->getReason());
+    }
+
     public function testPollsRoadRunnerUntilCancellationIsObservedAndThenCachesIt(): void
     {
         $rpc = $this->createMock(RPCConnectionInterface::class);

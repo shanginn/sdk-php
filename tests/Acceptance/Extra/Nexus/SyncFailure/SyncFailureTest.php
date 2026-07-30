@@ -29,7 +29,9 @@ use Temporal\Workflow\NexusOperationOptions;
 use Temporal\Workflow\WorkflowInterface;
 use Temporal\Workflow\WorkflowMethod;
 
-/** Caller-workflow failure mapping for SYNC Nexus operations. */
+/**
+ * Caller-workflow failure mapping for SYNC Nexus operations.
+ */
 #[Worker(options: [self::class, 'workerOptions'])]
 class SyncFailureTest extends TestCase
 {
@@ -180,9 +182,9 @@ class AppFailureCallerWorkflow
             if (!$cause instanceof ApplicationFailure) {
                 return 'wrong-cause-type:' . \get_debug_type($cause);
             }
-            // The PHP→RoadRunner marker is an internal bridge detail. Temporal
-            // exposes the standardized operation-error Application Failure.
-            if ($cause->getType() !== 'OperationError') {
+            // The SDK tags terminal operation failures with their Nexus state
+            // so failed and canceled outcomes remain distinguishable.
+            if ($cause->getType() !== 'nexus.OperationError.failed') {
                 return "wrong-operation-error-type:{$cause->getType()}";
             }
             if (!\str_contains($cause->getOriginalMessage(), 'business-error')) {

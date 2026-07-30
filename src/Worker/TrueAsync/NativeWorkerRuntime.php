@@ -12,6 +12,7 @@ declare(strict_types=1);
 namespace Temporal\Worker\TrueAsync;
 
 use Temporal\DataConverter\DataConverterInterface;
+use Temporal\Internal\Nexus\NexusTaskHandler;
 use Temporal\Worker\DispatcherInterface;
 use Temporal\WorkerFactory;
 use TrueAsync\Temporal\Core\Worker as CoreWorker;
@@ -25,6 +26,7 @@ final class NativeWorkerRuntime
 {
     private readonly ?WorkflowWorker $workflowLoop;
     private readonly ?ActivityWorker $activityLoop;
+    private readonly ?NexusWorker $nexusLoop;
     private bool $running = false;
     private bool $finalized = false;
 
@@ -37,9 +39,13 @@ final class NativeWorkerRuntime
         ?CoreRpcConnection $rpc,
         bool $pollWorkflows = true,
         bool $pollActivities = true,
+        ?NexusTaskHandler $nexusTaskHandler = null,
+        string $namespace = 'default',
     ) {
-        if (!$pollWorkflows && !$pollActivities) {
-            throw new \InvalidArgumentException('A native worker must poll workflows, activities, or both.');
+        if (!$pollWorkflows && !$pollActivities && $nexusTaskHandler === null) {
+            throw new \InvalidArgumentException(
+                'A native worker must poll workflows, activities, Nexus tasks, or a combination.',
+            );
         }
 
         $this->workflowLoop = $pollWorkflows
@@ -48,6 +54,15 @@ final class NativeWorkerRuntime
         $this->activityLoop = $pollActivities
             ? new ActivityWorker($core, $worker, $dataConverter, $taskQueue, $rpc)
             : null;
+        $this->nexusLoop = $nexusTaskHandler === null
+            ? null
+            : new NexusWorker(
+                $core,
+                $nexusTaskHandler,
+                $dataConverter,
+                $namespace,
+                $taskQueue,
+            );
     }
 
     /**
@@ -81,6 +96,9 @@ final class NativeWorkerRuntime
         }
         if ($this->activityLoop !== null) {
             $loops[] = \Async\spawn(fn() => $guard($this->activityLoop->run(...)));
+        }
+        if ($this->nexusLoop !== null) {
+            $loops[] = \Async\spawn(fn() => $guard($this->nexusLoop->run(...)));
         }
 
         $finalizeFailure = null;

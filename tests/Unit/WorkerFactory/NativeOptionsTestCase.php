@@ -40,7 +40,7 @@ final class NativeOptionsTestCase extends AbstractWorkerFactory
 
         $method = new \ReflectionMethod($factory, 'coreWorkerOptions');
         /** @var array<string, bool|float|int|string> $result */
-        $result = $method->invoke($factory, $options);
+        $result = $method->invoke($factory, $options, false);
 
         self::assertSame(4.5, $result['maxActivitiesPerSecond']);
         self::assertSame(3.5, $result['maxTaskQueueActivitiesPerSecond']);
@@ -53,6 +53,9 @@ final class NativeOptionsTestCase extends AbstractWorkerFactory
         self::assertSame('2026-07-29', $result['buildId']);
         self::assertTrue($result['deploymentUseVersioning']);
         self::assertSame(VersioningBehavior::AutoUpgrade->value, $result['versioningBehavior']);
+        self::assertFalse($result['enableNexus']);
+        self::assertArrayNotHasKey('nexusSlots', $result);
+        self::assertArrayNotHasKey('nexusPollers', $result);
     }
 
     public function testEagerReservationLimitDefaultsToActivitySlots(): void
@@ -63,16 +66,19 @@ final class NativeOptionsTestCase extends AbstractWorkerFactory
         $default = $method->invoke(
             $factory,
             WorkerOptions::new()->withMaxConcurrentActivityExecutionSize(25),
+            false,
         );
         $limited = $method->invoke(
             $factory,
             WorkerOptions::new()
                 ->withMaxConcurrentActivityExecutionSize(25)
                 ->withMaxConcurrentEagerActivityExecutionSize(12),
+            false,
         );
         $disabled = $method->invoke(
             $factory,
             WorkerOptions::new()->withDisableEagerActivities(),
+            false,
         );
 
         self::assertSame(25, $default['maxEagerActivityReservationsPerWorkflowTask']);
@@ -89,6 +95,7 @@ final class NativeOptionsTestCase extends AbstractWorkerFactory
             WorkerOptions::new()
                 ->withBuildID('legacy-v2')
                 ->withUseBuildIDForVersioning(),
+            false,
         );
 
         self::assertSame(2, $result['versioningStrategy']);
@@ -104,8 +111,41 @@ final class NativeOptionsTestCase extends AbstractWorkerFactory
             WorkerOptions::new()->withDeploymentOptions(
                 WorkerDeploymentOptions::new()->withUseVersioning(false),
             ),
+            false,
         );
 
         self::assertArrayNotHasKey('versioningStrategy', $result);
+    }
+
+    public function testNexusOptionsAreOnlyPassedWhenNexusServiceIsEnabled(): void
+    {
+        $factory = WorkerFactory::create(rpc: new NullRpcConnection());
+        $method = new \ReflectionMethod($factory, 'coreWorkerOptions');
+        $options = WorkerOptions::new()
+            ->withMaxConcurrentNexusTaskExecutionSize(17)
+            ->withMaxConcurrentNexusTaskPollers(3);
+
+        $disabled = $method->invoke($factory, $options, false);
+        $enabled = $method->invoke($factory, $options, true);
+
+        self::assertFalse($disabled['enableNexus']);
+        self::assertArrayNotHasKey('nexusSlots', $disabled);
+        self::assertArrayNotHasKey('nexusPollers', $disabled);
+
+        self::assertTrue($enabled['enableNexus']);
+        self::assertSame(17, $enabled['nexusSlots']);
+        self::assertSame(3, $enabled['nexusPollers']);
+    }
+
+    public function testEnabledNexusUsesNativeDefaultsForUnsetLimits(): void
+    {
+        $factory = WorkerFactory::create(rpc: new NullRpcConnection());
+        $method = new \ReflectionMethod($factory, 'coreWorkerOptions');
+
+        $result = $method->invoke($factory, WorkerOptions::new(), true);
+
+        self::assertTrue($result['enableNexus']);
+        self::assertSame(100, $result['nexusSlots']);
+        self::assertSame(1, $result['nexusPollers']);
     }
 }

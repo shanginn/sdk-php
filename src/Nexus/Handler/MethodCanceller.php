@@ -17,11 +17,11 @@ use Temporal\Worker\Transport\RPCConnectionInterface;
 
 /**
  * Idempotent cancellation of an in-flight handler *method* (not the Nexus
- * operation). Until cancellation is observed, each state inspection polls
- * RoadRunner when an RPC connection and invocation ID are attached. Optional
- * `$deadline` auto-trips locally on the next inspection. Listeners are notified
- * at most once, by identity; registration polls once but does not start a
- * background watcher.
+ * operation). Native workers deliver cancellation directly through
+ * {@see cancel()}; compatibility transports may also be polled when an RPC
+ * connection and invocation ID are attached. Optional `$deadline` auto-trips
+ * locally on the next inspection. Listeners are notified at most once, by
+ * identity; registration polls once but does not start a background watcher.
  */
 final class MethodCanceller
 {
@@ -42,8 +42,8 @@ final class MethodCanceller
     }
 
     /**
-     * @throws TransportException When RoadRunner cannot be reached.
-     * @throws \UnexpectedValueException When RoadRunner returns a malformed response.
+     * @throws TransportException When a compatibility transport cannot be reached.
+     * @throws \UnexpectedValueException When a compatibility transport returns a malformed response.
      */
     public function isCancelled(): bool
     {
@@ -52,8 +52,8 @@ final class MethodCanceller
     }
 
     /**
-     * @throws TransportException When RoadRunner cannot be reached.
-     * @throws \UnexpectedValueException When RoadRunner returns a malformed response.
+     * @throws TransportException When a compatibility transport cannot be reached.
+     * @throws \UnexpectedValueException When a compatibility transport returns a malformed response.
      */
     public function getReason(): ?string
     {
@@ -71,7 +71,13 @@ final class MethodCanceller
         }
         $this->reason = $reason;
         foreach ($this->listeners as $listener) {
-            $listener->cancelled();
+            try {
+                $listener->cancelled();
+            } catch (\Throwable) {
+                // Cancellation notification is fan-out. One handler-owned
+                // listener must not hide cancellation from later listeners or
+                // prevent the native worker from acknowledging Core's task.
+            }
         }
     }
 
@@ -80,8 +86,8 @@ final class MethodCanceller
      * synchronously and not stored. Registration does not start background
      * polling; a handler that blocks must continue inspecting cancellation.
      *
-     * @throws TransportException When RoadRunner cannot be reached.
-     * @throws \UnexpectedValueException When RoadRunner returns a malformed response.
+     * @throws TransportException When a compatibility transport cannot be reached.
+     * @throws \UnexpectedValueException When a compatibility transport returns a malformed response.
      */
     public function addListener(MethodCancellationListenerInterface $listener): void
     {

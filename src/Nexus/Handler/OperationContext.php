@@ -45,12 +45,12 @@ final class OperationContext
 
     /**
      * True if the canceller fired or the deadline has passed. Not the same as
-     * Nexus operation cancellation. While still active, this performs a
-     * synchronous RoadRunner cancellation poll when transport support is
-     * available.
+     * Nexus operation cancellation. Compatibility transports may be polled
+     * while the handler is still active; native workers deliver cancellation
+     * directly.
      *
-     * @throws TransportException When RoadRunner cannot be reached.
-     * @throws \UnexpectedValueException When RoadRunner returns a malformed response.
+     * @throws TransportException When a compatibility transport cannot be reached.
+     * @throws \UnexpectedValueException When a compatibility transport returns a malformed response.
      */
     public function isMethodCancelled(): bool
     {
@@ -62,8 +62,8 @@ final class OperationContext
      * Like {@see self::isMethodCancelled()}, this polls while cancellation has
      * not yet been observed.
      *
-     * @throws TransportException When RoadRunner cannot be reached.
-     * @throws \UnexpectedValueException When RoadRunner returns a malformed response.
+     * @throws TransportException When a compatibility transport cannot be reached.
+     * @throws \UnexpectedValueException When a compatibility transport returns a malformed response.
      */
     public function getMethodCancellationReason(): ?string
     {
@@ -76,8 +76,8 @@ final class OperationContext
      * observed. It does not start a background watcher; blocking handlers must
      * continue polling one of the cancellation inspection methods.
      *
-     * @throws TransportException When RoadRunner cannot be reached.
-     * @throws \UnexpectedValueException When RoadRunner returns a malformed response.
+     * @throws TransportException When a compatibility transport cannot be reached.
+     * @throws \UnexpectedValueException When a compatibility transport returns a malformed response.
      */
     public function addMethodCancellationListener(MethodCancellationListenerInterface $listener): self
     {

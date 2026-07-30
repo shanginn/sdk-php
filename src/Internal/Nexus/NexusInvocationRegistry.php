@@ -14,7 +14,7 @@ namespace Temporal\Internal\Nexus;
 use Temporal\Nexus\Handler\MethodCanceller;
 
 /**
- * Maps RR `InvocationID` → MethodCanceller for in-flight handlers.
+ * Maps a compatibility transport invocation ID to an in-flight MethodCanceller.
  * Lookup miss = late cancel after the handler finished, treat as no-op.
  */
 final class NexusInvocationRegistry

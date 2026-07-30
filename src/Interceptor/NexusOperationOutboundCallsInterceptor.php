@@ -21,8 +21,9 @@ use Temporal\Nexus\NexusOperationContext;
  * counterpart to Java's {@code NexusOperationOutboundCallsInterceptor}.
  *
  * Java additionally intercepts {@code getMetricsScope()} and {@code getWorkflowClient()};
- * neither has a clean PHP handler analogue (the metrics scope is RoadRunner-owned and the
- * WorkflowClient is kept on the internal channel), so only {@see self::getInfo()} is exposed.
+ * neither has a clean PHP handler analogue (metrics are Core-owned and the
+ * WorkflowClient is kept on the internal channel), so only
+ * {@see self::getInfo()} is exposed.
  *
  * It's recommended to use `NexusOperationOutboundCallsInterceptorTrait` when implementing this
  * interface because the interface might be extended in the future. The trait will provide forward

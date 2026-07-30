@@ -55,6 +55,7 @@ use Temporal\Plugin\WorkerPluginContext;
 use Temporal\Plugin\WorkerPluginInterface;
 use Temporal\Worker\Environment\Environment;
 use Temporal\Worker\Environment\EnvironmentInterface;
+use Temporal\Worker\DispatcherInterface;
 use Temporal\Worker\Logger\StderrLogger;
 use Temporal\Worker\LoopInterface;
 use Temporal\Worker\NexusWorkerInterface;
@@ -129,10 +130,24 @@ class WorkerFactory implements WorkerFactoryInterface, LoopInterface
     protected EnvironmentInterface $env;
     protected PluginRegistry $pluginRegistry;
     protected RPCConnectionInterface $rpc;
-    protected ?WorkflowClient $workflowClient = null;
+    private ?WorkflowClient $workflowClient = null;
 
     /** @var array<non-empty-string, NativeWorkerRuntime> */
     private array $nativeRuntimes = [];
+
+    /**
+     * Native cores are created after all services have been registered, just
+     * before polling starts. That lets us enable Nexus only for workers which
+     * actually serve Nexus operations.
+     *
+     * @var array<non-empty-string, array{
+     *     worker: DispatcherInterface,
+     *     services: ServiceContainer,
+     *     rpc: CoreRpcConnection,
+     *     options: WorkerOptions
+     * }>
+     */
+    private array $nativeRegistrations = [];
 
     /** @var array<non-empty-string, WorkerOptions> */
     private array $workerOptions = [];
@@ -144,6 +159,7 @@ class WorkerFactory implements WorkerFactoryInterface, LoopInterface
     private array $workflowEvictions = [];
 
     private bool $running = false;
+    private bool $shutdownRequested = false;
 
     public function __construct(
         DataConverterInterface $dataConverter,
@@ -260,33 +276,26 @@ class WorkerFactory implements WorkerFactoryInterface, LoopInterface
             $interceptorProvider ?? new SimplePipelineProvider(),
         );
 
-        $core = null;
         $workerRpc = $this->rpc;
         if ($this->connection !== null) {
-            $core = new CoreWorker(
-                $this->connection,
-                $taskQueue,
-                $this->namespace,
-                self::positiveOr($options->maxConcurrentActivityExecutionSize, 100),
-                $this->coreWorkerOptions($options),
-            );
-            $workerRpc = new CoreRpcConnection($core);
+            $workerRpc = new CoreRpcConnection();
         }
 
+        $services = ServiceContainer::fromWorkerFactory(
+            $this,
+            $workerContext->getExceptionInterceptor() ?? ExceptionInterceptor::createDefault(),
+            $provider,
+            new Logger(
+                $logger ?? new StderrLogger(),
+                $options->enableLoggingInReplay,
+                $taskQueue,
+            ),
+            $this->workflowClient,
+        );
         $worker = new Worker(
             $taskQueue,
             $options,
-            ServiceContainer::fromWorkerFactory(
-                $this,
-                $workerContext->getExceptionInterceptor() ?? ExceptionInterceptor::createDefault(),
-                $provider,
-                new Logger(
-                    $logger ?? new StderrLogger(),
-                    $options->enableLoggingInReplay,
-                    $taskQueue,
-                ),
-                $this->workflowClient,
-            ),
+            $services,
             $workerRpc,
         );
         $worker = $this->decorateWorker($worker);
@@ -298,18 +307,20 @@ class WorkerFactory implements WorkerFactoryInterface, LoopInterface
         $this->queues->add($worker);
         $this->workerOptions[$taskQueue] = $options;
 
-        if ($core !== null) {
+        if ($this->connection !== null) {
             \assert($workerRpc instanceof CoreRpcConnection);
-            $this->nativeRuntimes[$taskQueue] = new NativeWorkerRuntime(
-                core: $core,
-                factory: $this,
-                worker: $worker,
-                dataConverter: $this->converter,
-                taskQueue: $taskQueue,
-                rpc: $workerRpc,
-                pollWorkflows: !$options->disableWorkflowWorker,
-                pollActivities: true,
-            );
+            if (!$worker instanceof DispatcherInterface) {
+                throw new \LogicException(
+                    'A decorated native worker must implement DispatcherInterface.',
+                );
+            }
+
+            $this->nativeRegistrations[$taskQueue] = [
+                'worker' => $worker,
+                'services' => $services,
+                'rpc' => $workerRpc,
+                'options' => $options,
+            ];
         }
 
         return $worker;
@@ -366,7 +377,7 @@ class WorkerFactory implements WorkerFactoryInterface, LoopInterface
             throw new \LogicException('WorkerFactory::run() is already active.');
         }
 
-        if ($this->nativeRuntimes === [] && \count($this->queues) > 0) {
+        if ($this->connection === null && \count($this->queues) > 0) {
             throw new \LogicException(
                 'This WorkerFactory has no native Temporal connection and cannot poll. '
                 . 'Use WorkerFactory::create(connection: ...) for an application worker.',
@@ -379,7 +390,11 @@ class WorkerFactory implements WorkerFactoryInterface, LoopInterface
 
         try {
             /** @see WorkerPluginInterface::run() */
-            return $pipeline->with(fn(): int => $this->runNativeRuntimes(), 'run')($this);
+            return $pipeline->with(function (): int {
+                $this->bootNativeRuntimes();
+
+                return $this->runNativeRuntimes();
+            }, 'run')($this);
         } finally {
             $this->running = false;
         }
@@ -390,6 +405,11 @@ class WorkerFactory implements WorkerFactoryInterface, LoopInterface
      */
     public function shutdown(): void
     {
+        // Latch shutdown even before run() has finished preparing Core workers.
+        // Core construction can suspend, so a signal or sibling failure may
+        // arrive while nativeRuntimes is still empty.
+        $this->shutdownRequested = true;
+
         foreach ($this->nativeRuntimes as $runtime) {
             $runtime->shutdown();
         }
@@ -780,7 +800,7 @@ class WorkerFactory implements WorkerFactoryInterface, LoopInterface
     /**
      * @return array<string, bool|float|int|string>
      */
-    private function coreWorkerOptions(WorkerOptions $options): array
+    private function coreWorkerOptions(WorkerOptions $options, bool $enableNexus): array
     {
         $activitySlots = self::positiveOr($options->maxConcurrentActivityExecutionSize, 100);
         $result = [
@@ -792,11 +812,17 @@ class WorkerFactory implements WorkerFactoryInterface, LoopInterface
             'maxActivitiesPerSecond' => $options->workerActivitiesPerSecond,
             'maxTaskQueueActivitiesPerSecond' => $options->taskQueueActivitiesPerSecond,
             'disableWorkflows' => $options->disableWorkflowWorker,
+            'enableNexus' => $enableNexus,
             'maxEagerActivityReservationsPerWorkflowTask' => $options->disableEagerActivities
                 || $options->taskQueueActivitiesPerSecond > 0.0
                 ? 0
                 : self::positiveOr($options->maxConcurrentEagerActivityExecutionSize, $activitySlots),
         ];
+
+        if ($enableNexus) {
+            $result['nexusSlots'] = self::positiveOr($options->maxConcurrentNexusTaskExecutionSize, 100);
+            $result['nexusPollers'] = self::positiveOr($options->maxConcurrentNexusTaskPollers, 1);
+        }
 
         if ($options->stickyScheduleToStartTimeout !== null) {
             $result['stickyScheduleToStartTimeoutMs'] = self::intervalMilliseconds(
@@ -862,16 +888,112 @@ class WorkerFactory implements WorkerFactoryInterface, LoopInterface
             or $unsupported[] = 'maxConcurrentSessionExecutionSize';
         !$options->localActivityWorkerOnly or $unsupported[] = 'localActivityWorkerOnly';
         !$options->disableRegistrationAliasing or $unsupported[] = 'disableRegistrationAliasing';
-        $options->maxConcurrentNexusTaskExecutionSize === 0
-            or $unsupported[] = 'maxConcurrentNexusTaskExecutionSize';
-        $options->maxConcurrentNexusTaskPollers === 0
-            or $unsupported[] = 'maxConcurrentNexusTaskPollers';
-
         if ($unsupported !== []) {
             throw new \InvalidArgumentException(\sprintf(
                 'The native Temporal core bridge does not yet support these WorkerOptions: %s.',
                 \implode(', ', $unsupported),
             ));
+        }
+    }
+
+    private function bootNativeRuntimes(): void
+    {
+        if ($this->connection === null || $this->nativeRegistrations === []) {
+            return;
+        }
+        if ($this->shutdownRequested) {
+            return;
+        }
+        if ($this->nativeRuntimes !== []) {
+            throw new \LogicException('Native Temporal runtimes have already been booted.');
+        }
+
+        /** @var array<non-empty-string, array{
+         *     core: CoreWorker,
+         *     rpc: CoreRpcConnection,
+         *     runtime: NativeWorkerRuntime
+         * }> $prepared
+         */
+        $prepared = [];
+        /**
+         * @param array<non-empty-string, array{
+         *     core: CoreWorker,
+         *     rpc: CoreRpcConnection,
+         *     runtime: NativeWorkerRuntime
+         * }> $workers
+         */
+        $shutdownPrepared = static function (array $workers): void {
+            foreach (\array_reverse($workers) as $item) {
+                try {
+                    $item['core']->initiateShutdown();
+                    $item['core']->finalizeShutdown();
+                } catch (\Throwable) {
+                    // Cleanup is best effort; the causative startup failure or
+                    // requested shutdown remains authoritative.
+                }
+            }
+        };
+
+        try {
+            foreach ($this->nativeRegistrations as $taskQueue => $registration) {
+                if ($this->shutdownRequested) {
+                    break;
+                }
+
+                $enableNexus = \count($registration['services']->nexusServices) > 0;
+                $options = $registration['options'];
+                $core = new CoreWorker(
+                    $this->connection,
+                    $taskQueue,
+                    $this->namespace,
+                    self::positiveOr($options->maxConcurrentActivityExecutionSize, 100),
+                    $this->coreWorkerOptions($options, $enableNexus),
+                );
+
+                $prepared[$taskQueue] = [
+                    'core' => $core,
+                    'rpc' => $registration['rpc'],
+                    'runtime' => new NativeWorkerRuntime(
+                        core: $core,
+                        factory: $this,
+                        worker: $registration['worker'],
+                        dataConverter: $this->converter,
+                        taskQueue: $taskQueue,
+                        rpc: $registration['rpc'],
+                        pollWorkflows: !$options->disableWorkflowWorker,
+                        pollActivities: true,
+                        nexusTaskHandler: $enableNexus
+                            ? $registration['services']->nexusTaskHandler
+                            : null,
+                        namespace: $this->namespace,
+                    ),
+                ];
+            }
+
+            // A shutdown may have arrived while a Core constructor was parked.
+            // Do not publish or start any of the partially prepared workers.
+            if ($this->shutdownRequested) {
+                $shutdownPrepared($prepared);
+
+                return;
+            }
+        } catch (\Throwable $error) {
+            $shutdownPrepared($prepared);
+
+            throw $error;
+        }
+
+        // Attach activity heartbeat/cancellation routes only after every Core
+        // worker was created successfully. A later task-queue startup failure
+        // therefore cannot leave earlier routes pointing at orphaned cores.
+        foreach ($prepared as $taskQueue => $item) {
+            $item['rpc']->attach($item['core']);
+            $this->nativeRuntimes[$taskQueue] = $item['runtime'];
+        }
+
+        // Defensive against a future attach implementation that can suspend.
+        if ($this->shutdownRequested) {
+            $this->shutdown();
         }
     }
 

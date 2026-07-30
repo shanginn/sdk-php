@@ -14,7 +14,9 @@ namespace Temporal\Internal\Workflow;
 use Temporal\Internal\Marshaller\Meta\Marshal;
 
 /**
- * Nexus start-handshake outcome pushed by RoadRunner for {@see \Temporal\Internal\Transport\Request\GetNexusOperationStarted}: `$token` is set only when `$async` is true.
+ * Nexus start-handshake outcome produced by Temporal Core for
+ * {@see \Temporal\Internal\Transport\Request\GetNexusOperationStarted}.
+ * `$token` is set only when `$async` is true.
  *
  * @internal
  */

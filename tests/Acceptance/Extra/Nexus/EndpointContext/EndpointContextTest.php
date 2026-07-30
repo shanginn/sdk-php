@@ -84,7 +84,7 @@ final class EndpointContextTest extends TestCase
     }
 
     #[Test]
-    public function cancelHandlerObservesRequestCancellationAcrossRoadRunnerProcesses(
+    public function cancelHandlerObservesRequestCancellationAcrossNativeWorkerBoundary(
         State $state,
         NexusEndpoints $endpoints,
         NexusHttpClient $http,
@@ -237,48 +237,35 @@ final class CancelMethodCancellationHandler implements OperationHandlerInterface
         OperationCancelDetails $details,
     ): void {
         $marker = self::decodeToken($details->operationToken);
-        $listener = new class implements MethodCancellationListenerInterface {
-            public bool $called = false;
+        $endpoint = Nexus::getOperationContext()->endpoint;
+        $listener = new class($marker, $context, $endpoint) implements MethodCancellationListenerInterface {
+            public function __construct(
+                private readonly string $marker,
+                private readonly OperationContext $context,
+                private readonly string $endpoint,
+            ) {}
 
             public function cancelled(): void
             {
-                $this->called = true;
+                $temporary = $this->marker . '.' . \getmypid() . '.tmp';
+                \file_put_contents(
+                    $temporary,
+                    \json_encode([
+                        'cancelled' => $this->context->isMethodCancelled(),
+                        'listenerCalled' => true,
+                        'reason' => $this->context->getMethodCancellationReason(),
+                        'endpoint' => $this->endpoint,
+                    ], \JSON_THROW_ON_ERROR),
+                    \LOCK_EX,
+                );
+                \rename($temporary, $this->marker);
             }
         };
         $context->addMethodCancellationListener($listener);
 
-        $expiresAt = \microtime(true) + 10.0;
-        do {
-            if ($context->isMethodCancelled()) {
-                self::writeMarker($marker, [
-                    'cancelled' => true,
-                    'listenerCalled' => $listener->called,
-                    'reason' => $context->getMethodCancellationReason(),
-                    'endpoint' => Nexus::getOperationContext()->endpoint,
-                ]);
-                return;
-            }
-            \usleep(50_000);
-        } while (\microtime(true) < $expiresAt);
-
-        self::writeMarker($marker, [
-            'cancelled' => false,
-            'listenerCalled' => $listener->called,
-            'reason' => $context->getMethodCancellationReason(),
-            'endpoint' => Nexus::getOperationContext()->endpoint,
-        ]);
-    }
-
-    /**
-     * @param array{cancelled: bool, listenerCalled: bool, reason: ?string, endpoint: string} $state
-     */
-    private static function writeMarker(string $marker, array $state): void
-    {
-        \file_put_contents(
-            $marker,
-            \json_encode($state, \JSON_THROW_ON_ERROR),
-            \LOCK_EX,
-        );
+        // Remain in flight while yielding to the native poller. The listener is
+        // invoked before the runtime cancels this handler coroutine.
+        \Async\delay(10_000);
     }
 
     private static function encodeToken(string $value): string

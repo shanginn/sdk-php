@@ -162,7 +162,7 @@ class ReplayTest extends TestCase
     }
 
     #[Test]
-    public function mutatedNexusScheduledEventIsRejectedByReplayer(
+    public function mutatedNexusCommandKindIsRejectedByReplayer(
         State $state,
         WorkflowClientInterface $client,
         NexusEndpoints $endpoints,
@@ -184,7 +184,9 @@ class ReplayTest extends TestCase
         // Clean replay first — otherwise the negative assertion below is vacuous.
         (new WorkflowReplayer())->replayHistory($history);
 
-        // Mutate the recorded operation name; replay must detect the command mismatch.
+        // Command payload fields are application data and are not all part of
+        // Temporal's determinism comparison. Mutate the command kind itself,
+        // which must never match the Nexus command emitted by this workflow.
         $mutated = false;
         foreach ($history->getEvents() as $event) {
             if ($event->getEventType() !== EventType::EVENT_TYPE_NEXUS_OPERATION_SCHEDULED) {
@@ -193,7 +195,7 @@ class ReplayTest extends TestCase
             $attrs = $event->getNexusOperationScheduledEventAttributes();
             self::assertNotNull($attrs);
             self::assertSame('greet', $attrs->getOperation());
-            $attrs->setOperation('mutatedOperationName');
+            $event->setEventType(EventType::EVENT_TYPE_TIMER_STARTED);
             $mutated = true;
             break;
         }

@@ -81,9 +81,9 @@ class HeadersTest extends TestCase
 
         self::assertSame(200, $code, "Expected 200, got {$code}. Response: {$resp}");
         self::assertMatchesRegularExpression(
-            '/request=\d+(?:\.\d+)?ms;operation=\d+(?:\.\d+)?ms/',
+            '/request=\d+(?:\.\d+)?(?:ms|s|m);operation=\d+(?:\.\d+)?(?:ms|s|m)/',
             $resp,
-            'RoadRunner must bridge both Nexus timeout fields as non-negative decimal milliseconds.',
+            'Core may normalize timeout units, but both fields must retain the pinned Nexus duration grammar.',
         );
     }
 }

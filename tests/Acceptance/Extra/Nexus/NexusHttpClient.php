@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Temporal\Tests\Acceptance\Extra\Nexus;
 
 use Symfony\Contracts\HttpClient\HttpClientInterface;
+use Temporal\Nexus\Header;
 
 final class NexusHttpClient
 {
@@ -19,7 +20,6 @@ final class NexusHttpClient
      * endpoint can return 404 for a few ms after CreateNexusEndpoint succeeds.
      * Mirrors Go SDK's nexus_test helper (10 attempts × 100ms).
      *
-     * @param mixed $body
      * @param array<string, string> $headers
      * @return array{int, string, array<string, list<string>>}
      */
@@ -30,6 +30,8 @@ final class NexusHttpClient
         mixed $body,
         array $headers = [],
     ): array {
+        $headers = self::withRequestId($headers);
+
         $attempts = 10;
         for ($attempt = 1; $attempt <= $attempts; $attempt++) {
             $response = $this->http->request(
@@ -77,5 +79,22 @@ final class NexusHttpClient
             $response->getContent(false),
             $response->getHeaders(false),
         ];
+    }
+
+    /**
+     * @param array<string, string> $headers
+     * @return array<string, string>
+     */
+    private static function withRequestId(array $headers): array
+    {
+        foreach ($headers as $name => $_) {
+            if (\strcasecmp($name, Header::REQUEST_ID) === 0) {
+                return $headers;
+            }
+        }
+
+        $headers[Header::REQUEST_ID] = 'acceptance-' . \bin2hex(\random_bytes(16));
+
+        return $headers;
     }
 }

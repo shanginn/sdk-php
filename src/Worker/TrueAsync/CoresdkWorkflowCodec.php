@@ -14,6 +14,7 @@ namespace Temporal\Worker\TrueAsync;
 use Coresdk\ActivityResult\Success as ActivitySuccess;
 use Coresdk\ChildWorkflow\ChildWorkflowCancellationType as CoresdkChildCancellationType;
 use Coresdk\Common\NamespacedWorkflowExecution;
+use Coresdk\Nexus\NexusOperationCancellationType as CoresdkNexusCancellationType;
 use Coresdk\WorkflowActivation\RemoveFromCache\EvictionReason;
 use Coresdk\WorkflowActivation\WorkflowActivation;
 use Coresdk\WorkflowActivation\WorkflowActivationJob;
@@ -30,8 +31,10 @@ use Coresdk\WorkflowCommands\QuerySuccess;
 use Coresdk\WorkflowCommands\RequestCancelActivity;
 use Coresdk\WorkflowCommands\RequestCancelExternalWorkflowExecution;
 use Coresdk\WorkflowCommands\RequestCancelLocalActivity;
+use Coresdk\WorkflowCommands\RequestCancelNexusOperation;
 use Coresdk\WorkflowCommands\ScheduleActivity;
 use Coresdk\WorkflowCommands\ScheduleLocalActivity;
+use Coresdk\WorkflowCommands\ScheduleNexusOperation;
 use Coresdk\WorkflowCommands\SetPatchMarker;
 use Coresdk\WorkflowCommands\SignalExternalWorkflowExecution;
 use Coresdk\WorkflowCommands\StartChildWorkflowExecution;
@@ -59,6 +62,7 @@ use Temporal\Exception\Failure\ApplicationFailure;
 use Temporal\Exception\Failure\CanceledFailure;
 use Temporal\Exception\Failure\FailureConverter;
 use Temporal\Interceptor\Header;
+use Temporal\Internal\Workflow\NexusStartEnvelope;
 use Temporal\Worker\Transport\Codec\CodecInterface;
 use Temporal\Worker\Transport\Command\Client\UpdateResponse;
 use Temporal\Worker\Transport\Command\CommandInterface;
@@ -68,11 +72,12 @@ use Temporal\Worker\Transport\Command\Server\ServerRequest;
 use Temporal\Worker\Transport\Command\Server\SuccessResponse;
 use Temporal\Worker\Transport\Command\Server\TickInfo;
 use Temporal\Worker\Transport\Command\ServerResponseInterface;
+use Temporal\Workflow\NexusOperationCancellationType;
 use Temporal\Workflow\WorkflowExecution;
 
 /**
- * The coresdk workflow codec: the analog of the RoadRunner Json/Proto codec, but
- * for the Temporal Rust core's strongly-typed protobuf.
+ * The coresdk workflow codec maps the SDK engine to Temporal Rust Core's
+ * strongly typed protobuf.
  *
  * decode: a coresdk WorkflowActivation (a batch of jobs) becomes the SDK command
  * stream the engine already understands — a server request per job that drives
@@ -81,9 +86,8 @@ use Temporal\Workflow\WorkflowExecution;
  * resolved, ...).
  *
  * encode: the SDK's outgoing command queue (CompleteWorkflow, NewTimer,
- * ExecuteActivity, ...) becomes a coresdk WorkflowActivationCompletion. Unlike
- * RoadRunner's generic {command, json-options} envelope, each command maps to a
- * specific typed coresdk WorkflowCommand.
+ * ExecuteActivity, ...) becomes a coresdk WorkflowActivationCompletion. Each
+ * command maps to a specific typed coresdk WorkflowCommand.
  *
  * The run id is carried from decode to encode on the instance: one activation is
  * processed per dispatch cycle, single-threaded, so this is safe.
@@ -105,11 +109,12 @@ use Temporal\Workflow\WorkflowExecution;
  * Covered so far: workflow start/completion, timers, activities (regular and
  * local), side effects (persisted through a private local activity), signals,
  * queries, cancellation (of the workflow, its timers,
- * activities and child workflows), child workflows, continue-as-new, signalling
- * and cancelling external/child workflows, updates (validate/accept/reject/
- * complete), upserting search attributes (untyped and typed) and memo, panic
- * (a retryable workflow error reported as a failed task), versioning via
- * getVersion/patches, and surviving a reset (the new random seed is consumed).
+ * activities, child workflows and Nexus operations), child workflows, Nexus
+ * operations, continue-as-new, signalling and cancelling external/child
+ * workflows, updates (validate/accept/reject/complete), upserting search
+ * attributes (untyped and typed) and memo, panic (a retryable workflow error
+ * reported as a failed task), versioning via getVersion/patches, and surviving
+ * a reset (the new random seed is consumed).
  * Jobs and commands that are not yet mapped raise so the gap is explicit rather
  * than a silently hung workflow.
  */
@@ -153,6 +158,7 @@ final class CoresdkWorkflowCodec implements CodecInterface
      *     kind: array<int, string>,
      *     wfId: string,
      *     children: array<int, array{wfId: string, getId: int|null}>,
+     *     nexus: array<int, array{getId: int|null}>,
      *     updates: array<string, string>,
      *     patchesNotified: array<string, true>,
      *     patchesMarked: array<string, true>,
@@ -200,8 +206,8 @@ final class CoresdkWorkflowCodec implements CodecInterface
      * when workflow code throws a *retryable* error (see Process::complete). That
      * is a workflow-*task* failure, not a workflow failure — the whole activation
      * completes as failed (so the core retries the task), discarding any commands
-     * queued before it, exactly as the RoadRunner host does. Captured here and
-     * turned into the failed completion by {@see encodeStaged}.
+     * queued before it. Captured here and turned into the failed completion by
+     * {@see encodeStaged}.
      */
     private ?\Throwable $panic = null;
 
@@ -312,6 +318,25 @@ final class CoresdkWorkflowCodec implements CodecInterface
             $seq = $run['idToSeq'][$executeId]
                 ?? throw new \RuntimeException("GetChildWorkflowExecution for unknown command id {$executeId}");
             $run['children'][$seq]['getId'] = $command->getID();
+            return [];
+        }
+
+        /* Like a child workflow, a Nexus operation has a separate start
+           handshake and result promise. Associate the handshake request with
+           the ScheduleNexusOperation seq so ResolveNexusOperationStart can
+           answer the right promise without putting a second command on the
+           core wire. */
+        if ($command->getName() === 'GetNexusOperationStarted') {
+            $executeId = (int) ($command->getOptions()['id'] ?? 0);
+            $run = &$this->run();
+            $seq = $run['idToSeq'][$executeId]
+                ?? throw new \RuntimeException("GetNexusOperationStarted for unknown command id {$executeId}");
+            if (($run['kind'][$seq] ?? '') !== 'nexus' || !isset($run['nexus'][$seq])) {
+                throw new \RuntimeException(
+                    "GetNexusOperationStarted command id {$executeId} is not a Nexus operation",
+                );
+            }
+            $run['nexus'][$seq]['getId'] = $command->getID();
             return [];
         }
 
@@ -651,6 +676,37 @@ final class CoresdkWorkflowCodec implements CodecInterface
         ];
     }
 
+    private static function nexusStartEnvelope(bool $async, string $token): NexusStartEnvelope
+    {
+        $envelope = new NexusStartEnvelope();
+        $envelope->async = $async;
+        $envelope->token = $token;
+
+        return $envelope;
+    }
+
+    /**
+     * SDK and Core use different numeric values for WaitCompleted: SDK follows
+     * sdk-go (4), while Core makes it the protobuf default (0).
+     */
+    private static function nexusCancellationType(int $type): int
+    {
+        return match ($type) {
+            NexusOperationCancellationType::Unspecified->value,
+            NexusOperationCancellationType::WaitCompleted->value =>
+                CoresdkNexusCancellationType::WAIT_CANCELLATION_COMPLETED,
+            NexusOperationCancellationType::Abandon->value =>
+                CoresdkNexusCancellationType::ABANDON,
+            NexusOperationCancellationType::TryCancel->value =>
+                CoresdkNexusCancellationType::TRY_CANCEL,
+            NexusOperationCancellationType::WaitRequested->value =>
+                CoresdkNexusCancellationType::WAIT_CANCELLATION_REQUESTED,
+            default => throw new \RuntimeException(
+                "unsupported Nexus operation cancellation type {$type}",
+            ),
+        };
+    }
+
     /**
      * Cancel previously issued commands. Each id maps back to its seq and kind;
      * an unmapped id was pulled from the queue before it ever reached the core
@@ -691,6 +747,12 @@ final class CoresdkWorkflowCodec implements CodecInterface
                 $this->staged[] = (new WorkflowCommand())->setCancelChildWorkflowExecution(
                     (new CancelChildWorkflowExecution())->setChildWorkflowSeq($seq),
                 );
+            } elseif ($kind === 'nexus') {
+                /* Core applies the cancellation type carried by the schedule and
+                   resolves the operation promise when that policy permits. */
+                $this->staged[] = (new WorkflowCommand())->setRequestCancelNexusOperation(
+                    (new RequestCancelNexusOperation())->setSeq($seq),
+                );
             } else {
                 throw new \RuntimeException(
                     "cancel of a '{$kind}' command not yet supported (seq {$seq})",
@@ -725,6 +787,8 @@ final class CoresdkWorkflowCodec implements CodecInterface
             'resolve_activity' => $this->resolveActivity($job, $tick),
             'resolve_child_workflow_execution_start' => $this->resolveChildStart($job, $tick),
             'resolve_child_workflow_execution' => [$this->resolveChild($job, $tick)],
+            'resolve_nexus_operation_start' => $this->resolveNexusStart($job, $tick),
+            'resolve_nexus_operation' => [$this->resolveNexus($job, $tick)],
             'resolve_signal_external_workflow' => [$this->resolveSignalExternal($job, $tick)],
             'resolve_request_cancel_external_workflow' => [$this->resolveCancelExternal($job, $tick)],
             'do_update' => [$this->doUpdate($job, $tick)],
@@ -1060,6 +1124,145 @@ final class CoresdkWorkflowCodec implements CodecInterface
     }
 
     /**
+     * Resolve the Nexus start handshake. An asynchronous start carries its
+     * operation token; a synchronous start is acknowledged with an empty token
+     * and is followed by ResolveNexusOperation in the same activation. A failed
+     * start is terminal, so both the start waiter and the result promise must be
+     * rejected because Core will not send a later result job.
+     *
+     * @return list<CommandInterface>
+     */
+    private function resolveNexusStart(WorkflowActivationJob $job, TickInfo $tick): array
+    {
+        $resolve = $job->getResolveNexusOperationStart()
+            ?? throw new \RuntimeException('Nexus start resolution job has no resolution');
+        $seq = $resolve->getSeq();
+        $executeId = $this->idForSeq($seq);
+
+        $run = &$this->run();
+        $getId = $run['nexus'][$seq]['getId'] ?? null;
+        if ($getId === null) {
+            throw new \RuntimeException("no start waiter registered for Nexus operation seq {$seq}");
+        }
+        $run['nexus'][$seq]['getId'] = null;
+
+        switch ($resolve->getStatus()) {
+            case 'operation_token':
+                return [new SuccessResponse(
+                    values: EncodedValues::fromValues([
+                        self::nexusStartEnvelope(true, $resolve->getOperationToken()),
+                    ], $this->dataConverter),
+                    id: $getId,
+                    info: $tick,
+                )];
+
+            case 'started_sync':
+                return [new SuccessResponse(
+                    values: EncodedValues::fromValues([
+                        self::nexusStartEnvelope(false, ''),
+                    ], $this->dataConverter),
+                    id: $getId,
+                    info: $tick,
+                )];
+
+            case 'failed':
+                $protoFailure = $resolve->getFailed()
+                    ?? throw new \RuntimeException(
+                        "Nexus operation start seq {$seq} failed without a failure",
+                    );
+                $failure = FailureConverter::mapFailureToException(
+                    $protoFailure,
+                    $this->dataConverter,
+                );
+                unset($run['nexus'][$seq]);
+
+                return [
+                    new FailureResponse(failure: $failure, id: $getId, info: $tick),
+                    new FailureResponse(failure: $failure, id: $executeId, info: $tick),
+                ];
+        }
+
+        throw new \RuntimeException(
+            "coresdk Nexus operation start resolution not supported: {$resolve->getStatus()}",
+        );
+    }
+
+    /**
+     * Resolve the result promise for a Nexus operation that started
+     * asynchronously or synchronously.
+     */
+    private function resolveNexus(
+        WorkflowActivationJob $job,
+        TickInfo $tick,
+    ): ServerResponseInterface {
+        $resolve = $job->getResolveNexusOperation()
+            ?? throw new \RuntimeException('Nexus result job has no resolution');
+        $seq = $resolve->getSeq();
+        $id = $this->idForSeq($seq);
+        $result = $resolve->getResult()
+            ?? throw new \RuntimeException("Nexus operation seq {$seq} resolved without a result");
+
+        $response = match ($result->getStatus()) {
+            'completed' => new SuccessResponse(
+                values: $this->valuesFromPayload($result->getCompleted()),
+                id: $id,
+                info: $tick,
+            ),
+            'failed' => $this->nexusFailureResponse(
+                $result->getFailed(),
+                $id,
+                $tick,
+                $seq,
+                'failed',
+            ),
+            'cancelled' => $this->nexusFailureResponse(
+                $result->getCancelled(),
+                $id,
+                $tick,
+                $seq,
+                'cancelled',
+            ),
+            'timed_out' => $this->nexusFailureResponse(
+                $result->getTimedOut(),
+                $id,
+                $tick,
+                $seq,
+                'timed_out',
+            ),
+            default => throw new \RuntimeException(
+                "coresdk Nexus operation resolution not supported: {$result->getStatus()}",
+            ),
+        };
+
+        unset($this->run()['nexus'][$seq]);
+
+        return $response;
+    }
+
+    private function nexusFailureResponse(
+        ?Failure $failure,
+        int $id,
+        TickInfo $tick,
+        int $seq,
+        string $status,
+    ): FailureResponse {
+        if ($failure === null) {
+            throw new \RuntimeException(
+                "Nexus operation seq {$seq} resolved {$status} without a failure",
+            );
+        }
+
+        return new FailureResponse(
+            failure: FailureConverter::mapFailureToException(
+                $failure,
+                $this->dataConverter,
+            ),
+            id: $id,
+            info: $tick,
+        );
+    }
+
+    /**
      * The signal we sent to an external (or child) workflow was delivered, or
      * failed.
      */
@@ -1289,6 +1492,7 @@ final class CoresdkWorkflowCodec implements CodecInterface
             'kind' => [],
             'wfId' => '',
             'children' => [],
+            'nexus' => [],
             'updates' => [],
             'patchesNotified' => [],
             'patchesMarked' => [],
@@ -1513,6 +1717,7 @@ final class CoresdkWorkflowCodec implements CodecInterface
             'ExecuteLocalActivity' => $this->scheduleLocalActivity($command),
             'SideEffect' => $this->scheduleSideEffect($command),
             'ExecuteChildWorkflow' => $this->startChildWorkflow($command),
+            'ExecuteNexusOperation' => $this->scheduleNexusOperation($command),
             'SignalExternalWorkflow' => $this->signalExternalWorkflow($command),
             'CancelExternalWorkflow' => $this->cancelExternalWorkflow($command),
             'UpsertWorkflowSearchAttributes' => $this->upsertSearchAttributes($command),
@@ -1605,6 +1810,59 @@ final class CoresdkWorkflowCodec implements CodecInterface
             (new WorkflowCommand())->setStartChildWorkflowExecution($start),
             (string) ($co['StaticSummary'] ?? ''),
             (string) ($co['StaticDetails'] ?? ''),
+        );
+    }
+
+    /**
+     * Schedule a Nexus operation. Its seq is deterministic across replay and
+     * correlates both the separate start handshake and the eventual result.
+     * Nexus headers are raw strings and intentionally distinct from the
+     * payload-typed Temporal interceptor header on the SDK request.
+     */
+    private function scheduleNexusOperation(RequestInterface $command): WorkflowCommand
+    {
+        $options = $command->getOptions();
+        $no = (array) ($options['options'] ?? []);
+        $seq = $this->seqFor($command->getID(), 'nexus');
+        $run = &$this->run();
+        $run['nexus'][$seq] = ['getId' => null];
+
+        $schedule = (new ScheduleNexusOperation())
+            ->setSeq($seq)
+            ->setEndpoint((string) ($options['endpoint'] ?? ''))
+            ->setService((string) ($options['service'] ?? ''))
+            ->setOperation((string) ($options['operation'] ?? ''))
+            ->setCancellationType(self::nexusCancellationType(
+                (int) ($no['cancellationType'] ?? $no['CancellationType'] ?? 0),
+            ));
+
+        $command->getPayloads()->setDataConverter($this->dataConverter);
+        $payloads = $command->getPayloads()->toPayloads()->getPayloads();
+        if (\count($payloads) > 0) {
+            $schedule->setInput($payloads[0]);
+        }
+
+        $headers = [];
+        foreach ((array) ($options['nexusHeaders'] ?? []) as $name => $value) {
+            $headers[(string) $name] = (string) $value;
+        }
+        if ($headers !== []) {
+            $schedule->setNexusHeader($headers);
+        }
+
+        if (($ns = (int) ($no['scheduleToCloseTimeout'] ?? $no['ScheduleToCloseTimeout'] ?? 0)) > 0) {
+            $schedule->setScheduleToCloseTimeout(self::nsToDuration($ns));
+        }
+        if (($ns = (int) ($no['scheduleToStartTimeout'] ?? $no['ScheduleToStartTimeout'] ?? 0)) > 0) {
+            $schedule->setScheduleToStartTimeout(self::nsToDuration($ns));
+        }
+        if (($ns = (int) ($no['startToCloseTimeout'] ?? $no['StartToCloseTimeout'] ?? 0)) > 0) {
+            $schedule->setStartToCloseTimeout(self::nsToDuration($ns));
+        }
+
+        return $this->withUserMetadata(
+            (new WorkflowCommand())->setScheduleNexusOperation($schedule),
+            (string) ($no['summary'] ?? $no['Summary'] ?? ''),
         );
     }
 

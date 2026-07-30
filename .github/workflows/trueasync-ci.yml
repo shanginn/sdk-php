@@ -155,7 +155,7 @@ jobs:
       - name: Start the Temporal dev server
         run: |
           docker run -d --name temporal-dev -p 7233:7233 \
-            temporalio/temporal server start-dev --ip 0.0.0.0 --log-level error
+            temporalio/temporal:1.8.1 server start-dev --ip 0.0.0.0 --log-level error
           ready=0
           for i in $(seq 1 60); do
             # A TCP accept happens before the frontend can reliably serve

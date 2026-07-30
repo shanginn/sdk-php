@@ -24,6 +24,7 @@ use Temporal\Nexus\OperationInfo;
 use Temporal\Nexus\OperationState;
 use Temporal\Nexus\WorkflowHandle;
 use Temporal\Tests\Unit\AbstractUnit;
+use Temporal\Worker\TrueAsync\NullRpcConnection;
 use Temporal\WorkerFactory;
 
 #[Service]
@@ -99,7 +100,7 @@ final class NexusRegistrationGuardTestCase extends AbstractUnit
 {
     public function testSyncOnlyServiceWithoutClientIsAllowed(): void
     {
-        $worker = WorkerFactory::create()->newWorker();
+        $worker = WorkerFactory::create(rpc: new NullRpcConnection())->newWorker();
 
         $worker->registerNexusServiceImplementation(new GuardSyncOnlyServiceImpl());
 
@@ -108,7 +109,7 @@ final class NexusRegistrationGuardTestCase extends AbstractUnit
 
     public function testAsyncServiceWithoutClientThrows(): void
     {
-        $worker = WorkerFactory::create()->newWorker();
+        $worker = WorkerFactory::create(rpc: new NullRpcConnection())->newWorker();
 
         $this->expectException(\LogicException::class);
         $this->expectExceptionMessage('declares async operation "runAsync", which needs cluster access');
@@ -118,7 +119,7 @@ final class NexusRegistrationGuardTestCase extends AbstractUnit
 
     public function testFactoryBackedAsyncServiceWithoutClientIsAllowed(): void
     {
-        $worker = WorkerFactory::create()->newWorker();
+        $worker = WorkerFactory::create(rpc: new NullRpcConnection())->newWorker();
 
         $worker->registerNexusServiceImplementation(new GuardManualServiceImpl());
 

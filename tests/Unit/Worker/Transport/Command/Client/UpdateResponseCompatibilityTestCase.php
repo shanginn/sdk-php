@@ -9,7 +9,6 @@ use PHPUnit\Framework\TestCase;
 use Temporal\DataConverter\DataConverter;
 use Temporal\DataConverter\EncodedValues;
 use Temporal\Worker\Transport\Codec\JsonCodec\Encoder as JsonEncoder;
-use Temporal\Worker\Transport\Codec\ProtoCodec\Encoder as ProtoEncoder;
 use Temporal\Worker\Transport\Command\Client\UpdateResponse;
 use Temporal\Worker\Transport\Command\ResponseInterface;
 
@@ -51,7 +50,7 @@ final class UpdateResponseCompatibilityTestCase extends TestCase
         self::assertSame(['id' => 42], $response->getOptions());
     }
 
-    public function testRemainsEncodableByBothTransports(): void
+    public function testRemainsEncodableByJsonCompatibilityCodec(): void
     {
         $converter = DataConverter::createDefault();
         $response = new UpdateResponse(
@@ -65,24 +64,5 @@ final class UpdateResponseCompatibilityTestCase extends TestCase
         self::assertSame('UpdateCompleted', $json['command']);
         self::assertSame(['id' => 'update-id'], $json['options']);
         self::assertArrayHasKey('payloads', $json);
-
-        $proto = (new ProtoEncoder($converter))->encode($response);
-        self::assertSame('UpdateCompleted', $proto->getCommand());
-        self::assertSame('{"id":"update-id"}', $proto->getOptions());
-        self::assertNotNull($proto->getPayloads());
-    }
-
-    public function testProtoEncodingPreservesLegacyJsonFlags(): void
-    {
-        $response = new UpdateResponse(
-            command: UpdateResponse::COMMAND_VALIDATED,
-            values: null,
-            failure: null,
-            updateId: "идентификатор-\xFF",
-        );
-
-        $proto = (new ProtoEncoder(DataConverter::createDefault()))->encode($response);
-
-        self::assertSame('{"id":"идентификатор-"}', $proto->getOptions());
     }
 }

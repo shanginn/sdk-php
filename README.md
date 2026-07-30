@@ -133,10 +133,11 @@ Unsupported worker options fail at registration instead of being silently
 ignored. The native bridge supports identity, heartbeat throttling, activity
 and task-queue rate limits, eager-activity controls, activity-only workers,
 legacy Build ID versioning, and Worker Deployment Versioning. It does not yet
-expose local-activity rate limiting, RoadRunner sessions, Nexus polling, or a
-distinct local-activity-only poll mode. Non-default workflow panic policy and
-registration-alias controls are also rejected until Core-equivalent behavior is
-wired end to end.
+expose local-activity rate limiting, legacy host-process sessions, or a distinct
+local-activity-only poll mode. Nexus polling, execution limits, and poller
+limits are wired directly to Temporal Core. Non-default workflow panic policy
+and registration-alias controls are also rejected until Core-equivalent
+behavior is wired end to end.
 
 Workflow code must remain deterministic. Use Temporal workflow primitives such
 as `Workflow::timer()` and `Workflow::executeActivity()`; use TrueAsync APIs in

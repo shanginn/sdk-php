@@ -24,8 +24,8 @@ use Temporal\Worker\Transport\Command\ServerRequestInterface;
 use Temporal\Worker\Transport\RPCConnectionInterface;
 
 /**
- * Routes operation cancellation and attaches cooperative handler-method
- * cancellation when RoadRunner supplied an invocation ID and RPC transport.
+ * Routes operation cancellation for compatibility transports and attaches
+ * cooperative handler-method cancellation when an invocation ID is supplied.
  */
 final class CancelNexusOperation extends Route
 {

@@ -45,7 +45,7 @@ use Temporal\Nexus\Exception\ErrorType;
 use Temporal\Worker\Environment\EnvironmentInterface;
 
 /**
- * Bridges Temporal RoadRunner tasks to the Nexus SDK ServiceHandler; ServiceHandler is built lazily.
+ * Bridges Temporal Nexus requests to the SDK ServiceHandler; ServiceHandler is built lazily.
  */
 final class NexusTaskHandler
 {
@@ -93,6 +93,7 @@ final class NexusTaskHandler
         Request $request,
         NexusOperationContext $operationContext,
         ?MethodCanceller $methodCanceller = null,
+        ?\DateTimeImmutable $requestDeadline = null,
     ): Response {
         $operationContext = self::withRequestEndpoint($request, $operationContext);
         $startRequest = $request->getStartOperation();
@@ -115,7 +116,7 @@ final class NexusTaskHandler
             service: $startRequest->getService(),
             operation: $startRequest->getOperation(),
             headers: $headers,
-            deadline: self::deadlineFromHeaders($headers),
+            deadline: $requestDeadline ?? self::deadlineFromHeaders($headers),
             methodCanceller: $methodCanceller,
             env: $this->env,
         );
@@ -186,6 +187,7 @@ final class NexusTaskHandler
         Request $request,
         NexusOperationContext $operationContext,
         ?MethodCanceller $methodCanceller = null,
+        ?\DateTimeImmutable $requestDeadline = null,
     ): Response {
         $operationContext = self::withRequestEndpoint($request, $operationContext);
         $cancelRequest = $request->getCancelOperation();
@@ -200,7 +202,7 @@ final class NexusTaskHandler
             service: $cancelRequest->getService(),
             operation: $cancelRequest->getOperation(),
             headers: $headers,
-            deadline: self::deadlineFromHeaders($headers),
+            deadline: $requestDeadline ?? self::deadlineFromHeaders($headers),
             methodCanceller: $methodCanceller,
             env: $this->env,
         );
@@ -271,6 +273,13 @@ final class NexusTaskHandler
     private function toHandlerException(\Throwable $e): HandlerException
     {
         if ($e instanceof HandlerException) {
+            if ($e->errorType === ErrorType::Internal || $e->errorType === ErrorType::Unavailable) {
+                $this->logSafely('error', 'Nexus handler returned a redacted infrastructure error.', [
+                    'exception' => $e,
+                    'nexus_error_type' => $e->errorType->value,
+                ]);
+            }
+
             return $e;
         }
 
@@ -280,17 +289,37 @@ final class NexusTaskHandler
 
         $mapped = HandlerErrorMapper::mapToHandlerException($e);
         if ($mapped !== null) {
-            $this->logger->warning('Mapped an internal Nexus handler dependency exception.', [
+            $this->logSafely('warning', 'Mapped an internal Nexus handler dependency exception.', [
                 'exception' => $e,
                 'nexus_error_type' => $mapped->errorType->value,
             ]);
             return $mapped;
         }
 
-        $this->logger->error('Unhandled exception while executing a Nexus operation.', [
+        $this->logSafely('error', 'Unhandled exception while executing a Nexus operation.', [
             'exception' => $e,
         ]);
 
         return HandlerException::create(ErrorType::Internal, 'Internal Nexus handler error');
+    }
+
+    /**
+     * Observability must never replace the handler failure that controls Nexus
+     * retry semantics. PSR-3 implementations should accept arbitrary context,
+     * but user processors and transports can still throw.
+     *
+     * @param array<string, mixed> $context
+     */
+    private function logSafely(string $level, string $message, array $context): void
+    {
+        try {
+            match ($level) {
+                'error' => $this->logger->error($message, $context),
+                'warning' => $this->logger->warning($message, $context),
+                default => $this->logger->log($level, $message, $context),
+            };
+        } catch (\Throwable) {
+            // Preserve the original handler outcome.
+        }
     }
 }

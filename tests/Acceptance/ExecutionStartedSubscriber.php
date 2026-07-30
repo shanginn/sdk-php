@@ -9,6 +9,8 @@ use PHPUnit\Event\TestRunner\ExecutionStarted;
 use PHPUnit\Event\TestRunner\ExecutionStartedSubscriber as ExecutionStartedSubscriberInterface;
 use Psr\Log\LoggerInterface;
 use Spiral\Core\Container;
+use Symfony\Component\HttpClient\HttpClient;
+use Symfony\Contracts\HttpClient\HttpClientInterface;
 use Temporal\Client\ClientOptions;
 use Temporal\Client\GRPC\ServiceClient;
 use Temporal\Client\GRPC\ServiceClientInterface;
@@ -107,6 +109,24 @@ final class ExecutionStartedSubscriber implements ExecutionStartedSubscriberInte
         $sharedStore = SharedStore::fromEnvironment($state->workDir);
         $sharedStore->clear();
         $temporalRunner->start();
+
+        $httpAddress = \getenv('TEMPORAL_HTTP_ADDRESS');
+        if (!\is_string($httpAddress) || $httpAddress === '') {
+            $httpHost = \parse_url('http://' . $state->address, PHP_URL_HOST);
+            if (!\is_string($httpHost) || $httpHost === '') {
+                throw new \RuntimeException("Cannot derive Temporal HTTP host from {$state->address}.");
+            }
+            $httpHost = \str_contains($httpHost, ':') ? "[{$httpHost}]" : $httpHost;
+            $httpAddress = "http://{$httpHost}:7243";
+        } elseif (!\str_contains($httpAddress, '://')) {
+            $httpAddress = 'http://' . $httpAddress;
+        }
+
+        $nexusHttp = HttpClient::createForBaseUri($httpAddress);
+        $container->bindSingleton(HttpClientInterface::class, $nexusHttp);
+        $container->bindSingleton(NexusHttpClient::class, new NexusHttpClient($nexusHttp));
+        $container->bindSingleton(NexusEndpoints::class, new NexusEndpoints($state));
+
         $workerRunner->start();
 
         $serviceClient = $state->command->tlsKey === null && $state->command->tlsCert === null
