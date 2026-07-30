@@ -14,9 +14,9 @@ namespace Temporal\Worker\Tuning;
 /**
  * Applies one resource controller to all Worker task types.
  */
-final readonly class ResourceBasedTuner implements WorkerTuner
+final class ResourceBasedTuner implements WorkerTuner
 {
-    private CompositeTuner $tuner;
+    private readonly CompositeTuner $tuner;
 
     public function __construct(
         ResourceBasedTunerConfig $tunerConfig,

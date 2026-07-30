@@ -18,12 +18,12 @@ namespace Temporal\Worker\Tuning;
  * delay for Workflows; a minimum of 1 and a 50 ms ramp delay for Activities,
  * Local Activities, and Nexus tasks; and a maximum of 500 for every task type.
  */
-final readonly class ResourceBasedSlotConfig
+final class ResourceBasedSlotConfig
 {
     public function __construct(
-        public ?int $minimumSlots = null,
-        public ?int $maximumSlots = null,
-        public ?int $rampThrottleMs = null,
+        public readonly ?int $minimumSlots = null,
+        public readonly ?int $maximumSlots = null,
+        public readonly ?int $rampThrottleMs = null,
     ) {
         ($minimumSlots === null || $minimumSlots > 0)
             or throw new \InvalidArgumentException('minimumSlots must be greater than 0.');

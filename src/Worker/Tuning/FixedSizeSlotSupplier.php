@@ -14,10 +14,10 @@ namespace Temporal\Worker\Tuning;
 /**
  * A slot supplier that permits at most a fixed number of concurrent tasks.
  */
-final readonly class FixedSizeSlotSupplier implements SlotSupplier
+final class FixedSizeSlotSupplier implements SlotSupplier
 {
     public function __construct(
-        public int $slots,
+        public readonly int $slots,
     ) {
         $slots > 0 or throw new \InvalidArgumentException(
             'Fixed-size slot supplier requires at least one slot.',

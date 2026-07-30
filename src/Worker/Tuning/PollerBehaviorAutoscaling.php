@@ -14,12 +14,12 @@ namespace Temporal\Worker\Tuning;
 /**
  * Scale concurrent long polls using feedback from the Temporal Server.
  */
-final readonly class PollerBehaviorAutoscaling implements PollerBehavior
+final class PollerBehaviorAutoscaling implements PollerBehavior
 {
     public function __construct(
-        public int $minimum = 1,
-        public int $maximum = 100,
-        public int $initial = 5,
+        public readonly int $minimum = 1,
+        public readonly int $maximum = 100,
+        public readonly int $initial = 5,
     ) {
         $minimum > 0 or throw new \InvalidArgumentException(
             'Autoscaling poller minimum must be greater than 0.',

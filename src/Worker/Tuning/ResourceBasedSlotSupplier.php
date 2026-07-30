@@ -14,10 +14,10 @@ namespace Temporal\Worker\Tuning;
 /**
  * Dynamically grants slots based on process memory and CPU usage.
  */
-final readonly class ResourceBasedSlotSupplier implements SlotSupplier
+final class ResourceBasedSlotSupplier implements SlotSupplier
 {
     public function __construct(
-        public ResourceBasedSlotConfig $slotConfig,
-        public ResourceBasedTunerConfig $tunerConfig,
+        public readonly ResourceBasedSlotConfig $slotConfig,
+        public readonly ResourceBasedTunerConfig $tunerConfig,
     ) {}
 }

@@ -14,11 +14,11 @@ namespace Temporal\Worker\Tuning;
 /**
  * Process resource targets shared by every resource-based supplier in a Worker.
  */
-final readonly class ResourceBasedTunerConfig
+final class ResourceBasedTunerConfig
 {
     public function __construct(
-        public float $targetMemoryUsage,
-        public float $targetCpuUsage,
+        public readonly float $targetMemoryUsage,
+        public readonly float $targetCpuUsage,
     ) {
         self::assertUsageTarget($targetMemoryUsage, 'targetMemoryUsage');
         self::assertUsageTarget($targetCpuUsage, 'targetCpuUsage');

@@ -14,13 +14,13 @@ namespace Temporal\Worker\Tuning;
 /**
  * Combines independent slot suppliers for each Worker task type.
  */
-final readonly class CompositeTuner implements WorkerTuner
+final class CompositeTuner implements WorkerTuner
 {
     public function __construct(
-        private SlotSupplier $workflowSlotSupplier,
-        private SlotSupplier $activitySlotSupplier,
-        private SlotSupplier $localActivitySlotSupplier,
-        private SlotSupplier $nexusSlotSupplier,
+        private readonly SlotSupplier $workflowSlotSupplier,
+        private readonly SlotSupplier $activitySlotSupplier,
+        private readonly SlotSupplier $localActivitySlotSupplier,
+        private readonly SlotSupplier $nexusSlotSupplier,
     ) {
         $resourceConfig = null;
         foreach ([
