@@ -55,6 +55,46 @@ final class ActivityExecutionDescription
         return $values->count() === 0 ? null : $values->getValue(0, $type);
     }
 
+    public function hasOutcome(): bool
+    {
+        return $this->raw->hasOutcome();
+    }
+
+    /**
+     * Decode the successful terminal result returned when `includeOutcome`
+     * was requested. Returns null when the execution is still open, failed,
+     * or completed without a result payload.
+     */
+    public function getResult(mixed $type = null): mixed
+    {
+        $outcome = $this->raw->getOutcome();
+        if ($outcome === null || !$outcome->hasResult()) {
+            return null;
+        }
+
+        $values = EncodedValues::fromPayloads(
+            $outcome->getResult() ?? new \Temporal\Api\Common\V1\Payloads(),
+            $this->converter,
+        )->withSerializationContext($this->serializationContext);
+
+        return $values->count() === 0 ? null : $values->getValue(0, $type);
+    }
+
+    /**
+     * Decode the terminal failure returned when `includeOutcome` was
+     * requested. This differs from `getLastFailure()`, which is the most
+     * recent failed attempt and can be present while the Activity is retrying.
+     */
+    public function getFailure(): ?TemporalFailure
+    {
+        $failure = $this->raw->getOutcome()?->getFailure();
+
+        return $failure === null
+            ? null
+            : FailureConverter::mapFailureToException($failure, $this->converter)
+                ->withSerializationContext($this->serializationContext);
+    }
+
     public function hasHeartbeatDetails(): bool
     {
         return $this->raw->getInfo()?->hasHeartbeatDetails() ?? false;

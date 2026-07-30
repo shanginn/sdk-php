@@ -109,13 +109,14 @@ final class ActivityClient implements ActivityClientInterface
             ->withSerializationContext($serializationContext);
         $input->isEmpty() or $request->setInput($input->toPayloads());
 
-        $searchAttributes = $options->toSearchAttributes($converter);
+        // Headers and Search Attributes are service metadata rather than
+        // Activity-owned payloads, so they intentionally stay unbound.
+        $searchAttributes = $options->toSearchAttributes($this->converter);
         $searchAttributes === null or $request->setSearchAttributes($searchAttributes);
 
         if (!$options->header->isEmpty()) {
-            $header = $options->header->withSerializationContext($serializationContext);
-            $header->setDataConverter($this->converter);
-            $request->setHeader($header->toHeader());
+            $options->header->setDataConverter($this->converter);
+            $request->setHeader($options->header->toHeader());
         }
 
         if ($options->summary !== '' || $options->details !== '') {
@@ -196,13 +197,13 @@ final class ActivityClient implements ActivityClientInterface
             ->setPageSize($pageSize)
             ->setQuery($query);
 
-        $loader = function () use ($request, $namespace): \Generator {
+        $loader = function () use ($request): \Generator {
             do {
                 $response = $this->client->ListActivityExecutions($request);
                 $nextPageToken = $response->getNextPageToken();
                 $page = [];
                 foreach ($response->getExecutions() as $execution) {
-                    $page[] = new ActivityExecutionInfo($execution, $this->converter, $namespace);
+                    $page[] = new ActivityExecutionInfo($execution, $this->converter);
                 }
                 yield $page;
                 $request->setNextPageToken($nextPageToken);

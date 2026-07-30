@@ -43,6 +43,11 @@ The SDK provides one of these immutable context values:
 The Workflow fields are nullable for Standalone Activities because they do not
 belong to a Workflow Execution.
 
+Headers and Search Attributes intentionally remain context-free service
+metadata. Context is bound to execution-owned payloads such as inputs, results,
+failure details, heartbeat details, memo, and user metadata where the owning
+Workflow or Activity is known.
+
 Serialization runs during Workflow replay. A context-aware converter must
 therefore produce the same bytes for the same input and context, and it must
 continue to decode payloads written before context-aware conversion was enabled.

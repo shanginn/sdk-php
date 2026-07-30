@@ -248,10 +248,10 @@ final class ActivityClientTestCase extends TestCase
         $bound = $converter->withSerializationContext($context);
 
         self::assertSame('input', $bound->fromPayload($captured->getInput()->getPayloads()[0], 'string'));
-        self::assertSame('abc', $bound->fromPayload($captured->getHeader()->getFields()['trace-id'], 'string'));
+        self::assertSame('abc', $converter->fromPayload($captured->getHeader()->getFields()['trace-id'], 'string'));
         self::assertSame(
             'acme',
-            $bound->fromPayload($captured->getSearchAttributes()->getIndexedFields()['CustomerId'], 'string'),
+            $converter->fromPayload($captured->getSearchAttributes()->getIndexedFields()['CustomerId'], 'string'),
         );
         self::assertSame('Summary', $bound->fromPayload($captured->getUserMetadata()->getSummary(), 'string'));
         self::assertSame('Details', $bound->fromPayload($captured->getUserMetadata()->getDetails(), 'string'));
@@ -378,7 +378,12 @@ final class ActivityClientTestCase extends TestCase
                 (new DescribeActivityExecutionResponse())
                     ->setRunId('activity-run')
                     ->setInfo($info)
-                    ->setInput((new Payloads())->setPayloads([$bound->toPayload('input')])),
+                    ->setInput((new Payloads())->setPayloads([$bound->toPayload('input')]))
+                    ->setOutcome(
+                        (new ActivityExecutionOutcome())->setResult(
+                            (new Payloads())->setPayloads([$bound->toPayload('result')]),
+                        ),
+                    ),
             );
         $service
             ->expects(self::once())
@@ -391,7 +396,7 @@ final class ActivityClientTestCase extends TestCase
                         ->setActivityType((new ActivityType())->setName('Demo.activity'))
                         ->setTaskQueue('activity-queue')
                         ->setSearchAttributes(
-                            (new SearchAttributes())->setIndexedFields(['CustomerId' => $bound->toPayload('acme')]),
+                            (new SearchAttributes())->setIndexedFields(['CustomerId' => $converter->toPayload('acme')]),
                         ),
                 ]),
             );
@@ -413,6 +418,9 @@ final class ActivityClientTestCase extends TestCase
         $client = $this->client($service, $converter);
         $description = $client->getHandle('activity-id', 'activity-run')->describe();
         self::assertSame('input', $description->getInput('string'));
+        self::assertTrue($description->hasOutcome());
+        self::assertSame('result', $description->getResult('string'));
+        self::assertNull($description->getFailure());
         self::assertSame('heartbeat', $description->getHeartbeatDetails()->getValue(0, 'string'));
         self::assertSame('failure-detail', $description->getLastFailure()?->getDetails()->getValue(0, 'string'));
         self::assertSame('Summary', $description->getSummary());
@@ -421,6 +429,42 @@ final class ActivityClientTestCase extends TestCase
         $items = \iterator_to_array($client->list());
         self::assertSame('acme', $items[0]->searchAttributes->getValue('CustomerId', 'string'));
         self::assertSame('Demo.activity', $client->count()->groups[0]->values[0]);
+    }
+
+    public function testDescribeTerminalFailureUsesOwnerContext(): void
+    {
+        $converter = new StandaloneActivitySigningDataConverter();
+        $context = $this->serializationContext();
+        $failure = (new Failure())
+            ->setMessage('terminal failure')
+            ->setApplicationFailureInfo(
+                (new ApplicationFailureInfo())
+                    ->setType('TerminalFailure')
+                    ->setDetails(
+                        (new Payloads())->setPayloads([
+                            $converter->withSerializationContext($context)->toPayload('terminal-detail'),
+                        ]),
+                    ),
+            );
+        $service = $this->service();
+        $service
+            ->expects(self::once())
+            ->method('DescribeActivityExecution')
+            ->willReturn(
+                $this->description()
+                    ->setOutcome((new ActivityExecutionOutcome())->setFailure($failure)),
+            );
+
+        $description = $this->client($service, $converter)
+            ->getHandle('activity-id', 'activity-run')
+            ->describe();
+
+        self::assertTrue($description->hasOutcome());
+        self::assertNull($description->getResult());
+        self::assertSame(
+            'terminal-detail',
+            $description->getFailure()?->getDetails()->getValue(0, 'string'),
+        );
     }
 
     public function testLifecycleMethodsCarryIdentityRunAndReasons(): void

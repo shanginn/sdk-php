@@ -15,7 +15,6 @@ use React\Promise\Deferred;
 use Temporal\Activity;
 use Temporal\Activity\ActivityInfo;
 use Temporal\DataConverter\EncodedValues;
-use Temporal\DataConverter\SerializationContextAwareInterface;
 use Temporal\Exception\DoNotCompleteOnResultException;
 use Temporal\Exception\Failure\TemporalFailure;
 use Temporal\Interceptor\ActivityInbound\ActivityInput;
@@ -81,10 +80,6 @@ class InvokeActivity extends Route
         $serializationContext = ActivitySerializationContextFactory::fromActivityInfo($info, $this->isLocal());
 
         $context = $context->withInput($context->getInput()->withSerializationContext($serializationContext));
-        $header = $context->getHeader();
-        if ($header instanceof SerializationContextAwareInterface) {
-            $context = $context->withHeader($header->withSerializationContext($serializationContext));
-        }
         if ($heartbeatDetails !== null) {
             $context = $context->withLastHeartbeatDetails(
                 $heartbeatDetails->withSerializationContext($serializationContext),

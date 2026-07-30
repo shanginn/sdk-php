@@ -77,6 +77,8 @@ $handle = $activities->getHandle(
 );
 
 $description = $handle->describe();
+$completedResult = $description->getResult('string');
+$terminalFailure = $description->getFailure();
 
 $handle->cancel('Customer removed the source image');
 $handle->terminate('Administrative stop');

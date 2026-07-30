@@ -6,7 +6,6 @@ namespace Temporal\Client\Activity;
 
 use Carbon\CarbonInterval;
 use Temporal\Api\Activity\V1\ActivityExecutionListInfo as ProtoActivityExecutionListInfo;
-use Temporal\DataConverter\ActivitySerializationContext;
 use Temporal\DataConverter\DataConverterInterface;
 use Temporal\DataConverter\EncodedCollection;
 use Temporal\Internal\Support\DateInterval;
@@ -31,7 +30,6 @@ final class ActivityExecutionInfo
     public function __construct(
         public readonly ProtoActivityExecutionListInfo $raw,
         DataConverterInterface $converter,
-        string $namespace,
     ) {
         $this->activityId = $raw->getActivityId();
         $this->runId = $raw->getRunId();
@@ -44,14 +42,7 @@ final class ActivityExecutionInfo
             ? null
             : DateInterval::parse($raw->getExecutionDuration());
         $fields = $raw->getSearchAttributes()?->getIndexedFields() ?? [];
-        $this->searchAttributes = EncodedCollection::fromPayloadCollection($fields, $converter)
-            ->withSerializationContext(new ActivitySerializationContext(
-                namespace: $namespace,
-                activityType: $this->activityType,
-                taskQueue: $this->taskQueue,
-                workflowId: null,
-                workflowType: null,
-                isLocal: false,
-            ));
+        // Visibility Search Attributes are not Activity-owned payloads.
+        $this->searchAttributes = EncodedCollection::fromPayloadCollection($fields, $converter);
     }
 }
