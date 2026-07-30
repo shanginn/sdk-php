@@ -12,6 +12,7 @@ declare(strict_types=1);
 namespace Temporal\Tests\Unit\DTO;
 
 use Temporal\Workflow\WorkflowInfo;
+use Temporal\Workflow\ContinueAsNewSuggestedReason;
 
 class WorkflowInfoTestCase extends AbstractDTOMarshalling
 {
@@ -28,7 +29,7 @@ class WorkflowInfoTestCase extends AbstractDTOMarshalling
                 'RunID' => null,
             ],
             'WorkflowType' => [
-                'Name' => ''
+                'Name' => '',
             ],
             'TaskQueueName' => 'default',
             'WorkflowExecutionTimeout' => 290304000000000000,
@@ -39,6 +40,8 @@ class WorkflowInfoTestCase extends AbstractDTOMarshalling
             'HistoryLength' => 0,
             'HistorySize' => 0,
             'ShouldContinueAsNew' => false,
+            'ContinueAsNewSuggestedReasons' => [],
+            'TargetWorkerDeploymentVersionChanged' => false,
             'CronSchedule' => null,
             'ContinuedExecutionRunID' => null,
             'FirstRunID' => null,
@@ -59,5 +62,33 @@ class WorkflowInfoTestCase extends AbstractDTOMarshalling
         ];
 
         $this->assertSame($expected, $this->marshal($dto));
+    }
+
+    public function testContinueAsNewSuggestionReasonsRoundTripAsEnums(): void
+    {
+        $info = new WorkflowInfo();
+        $info->continueAsNewSuggestedReasons = [
+            ContinueAsNewSuggestedReason::HistorySizeTooLarge,
+            ContinueAsNewSuggestedReason::TooManyUpdates,
+        ];
+
+        self::assertSame(
+            [
+                ContinueAsNewSuggestedReason::HistorySizeTooLarge->value,
+                ContinueAsNewSuggestedReason::TooManyUpdates->value,
+            ],
+            $this->marshal($info)['ContinueAsNewSuggestedReasons'],
+        );
+
+        $decoded = $this->unmarshal([
+            'ContinueAsNewSuggestedReasons' => [
+                ContinueAsNewSuggestedReason::TooManyHistoryEvents->value,
+            ],
+        ], new WorkflowInfo());
+
+        self::assertSame(
+            [ContinueAsNewSuggestedReason::TooManyHistoryEvents],
+            $decoded->continueAsNewSuggestedReasons,
+        );
     }
 }

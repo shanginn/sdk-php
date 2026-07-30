@@ -12,6 +12,7 @@ declare(strict_types=1);
 namespace Temporal\Tests\Unit\DTO;
 
 use Temporal\Workflow\ContinueAsNewOptions;
+use Temporal\Workflow\ContinueAsNewVersioningBehavior;
 
 class ContinueAsNewOptionsTestCase extends AbstractDTOMarshalling
 {
@@ -26,8 +27,31 @@ class ContinueAsNewOptionsTestCase extends AbstractDTOMarshalling
             'WorkflowRunTimeout'  => 0,
             'TaskQueueName'       => 'default',
             'WorkflowTaskTimeout' => 0,
+            'InitialVersioningBehavior' => ContinueAsNewVersioningBehavior::Unspecified->value,
         ];
 
         $this->assertSame($expected, $this->marshal($dto));
+    }
+
+    public function testInitialVersioningBehaviorIsConfiguredImmutably(): void
+    {
+        $original = ContinueAsNewOptions::new();
+        $configured = $original->withInitialVersioningBehavior(
+            ContinueAsNewVersioningBehavior::UseRampingVersion,
+        );
+
+        self::assertNotSame($original, $configured);
+        self::assertSame(
+            ContinueAsNewVersioningBehavior::Unspecified,
+            $original->initialVersioningBehavior,
+        );
+        self::assertSame(
+            ContinueAsNewVersioningBehavior::UseRampingVersion,
+            $configured->initialVersioningBehavior,
+        );
+        self::assertSame(
+            ContinueAsNewVersioningBehavior::UseRampingVersion->value,
+            $this->marshal($configured)['InitialVersioningBehavior'],
+        );
     }
 }

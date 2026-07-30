@@ -73,6 +73,7 @@ use Temporal\Worker\Transport\Command\Server\SuccessResponse;
 use Temporal\Worker\Transport\Command\Server\TickInfo;
 use Temporal\Worker\Transport\Command\ServerResponseInterface;
 use Temporal\Workflow\NexusOperationCancellationType;
+use Temporal\Workflow\ContinueAsNewSuggestedReason;
 use Temporal\Workflow\WorkflowExecution;
 
 /**
@@ -249,16 +250,41 @@ final class CoresdkWorkflowCodec implements CodecInterface
         $this->isReplaying = $activation->getIsReplaying();
 
         $timestamp = $activation->getTimestamp();
+        $continueAsNewSuggestedReasons = [];
+        foreach ($activation->getSuggestContinueAsNewReasons() as $reason) {
+            $reason = ContinueAsNewSuggestedReason::tryFrom($reason);
+            /** @psalm-suppress TypeDoesNotContainType Future Core versions may send an enum value unknown to this SDK. */
+            if ($reason !== null) {
+                $continueAsNewSuggestedReasons[] = $reason;
+            }
+        }
         $tick = new TickInfo(
             time: $timestamp !== null ? $timestamp->toDateTime() : new \DateTimeImmutable(),
             historyLength: $activation->getHistoryLength(),
             historySize: (int) $activation->getHistorySizeBytes(),
             continueAsNewSuggested: $activation->getContinueAsNewSuggested(),
+            continueAsNewSuggestedReasons: $continueAsNewSuggestedReasons,
+            targetWorkerDeploymentVersionChanged: $activation->getTargetWorkerDeploymentVersionChanged(),
             isReplaying: $activation->getIsReplaying(),
         );
 
+        $emitted = false;
         foreach ($activation->getJobs() as $job) {
-            yield from $this->decodeJob($job, $tick, $taskQueue, $namespace);
+            foreach ($this->decodeJob($job, $tick, $taskQueue, $namespace) as $command) {
+                $emitted = true;
+                yield $command;
+            }
+        }
+
+        // Some Core jobs only mutate codec state (for example notify_has_patch
+        // and update_random_seed) and therefore produce no SDK command. Still
+        // deliver the activation metadata before the Workflow is ticked.
+        if (!$emitted && $this->runId !== '' && isset($this->runs[$this->runId])) {
+            yield new ServerRequest(
+                name: 'UpdateWorkflowInfo',
+                info: $tick,
+                id: $this->runId,
+            );
         }
     }
 
@@ -1545,6 +1571,8 @@ final class CoresdkWorkflowCodec implements CodecInterface
             historyLength: $tick->historyLength,
             historySize: $tick->historySize,
             continueAsNewSuggested: $tick->continueAsNewSuggested,
+            continueAsNewSuggestedReasons: $tick->continueAsNewSuggestedReasons,
+            targetWorkerDeploymentVersionChanged: $tick->targetWorkerDeploymentVersionChanged,
             isReplaying: false,
         );
 
@@ -2027,7 +2055,8 @@ final class CoresdkWorkflowCodec implements CodecInterface
         $can = (new ContinueAsNewWorkflowExecution())
             ->setWorkflowType((string) ($options['name'] ?? ''))
             ->setTaskQueue((string) ($co['TaskQueueName'] ?? ''))
-            ->setArguments($command->getPayloads()->toPayloads()->getPayloads());
+            ->setArguments($command->getPayloads()->toPayloads()->getPayloads())
+            ->setInitialVersioningBehavior((int) ($co['InitialVersioningBehavior'] ?? 0));
 
         if (($ns = (int) ($co['WorkflowRunTimeout'] ?? 0)) > 0) {
             $can->setWorkflowRunTimeout(self::nsToDuration($ns));

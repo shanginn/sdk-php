@@ -26,6 +26,7 @@ use Temporal\Api\Common\V1\RetryPolicy;
 use Temporal\Api\Common\V1\SearchAttributes;
 use Temporal\Api\Common\V1\WorkflowExecution;
 use Temporal\Api\Enums\V1\VersioningBehavior;
+use Temporal\Api\Enums\V1\SuggestContinueAsNewReason;
 use Temporal\Api\Failure\V1\ApplicationFailureInfo;
 use Temporal\Api\Failure\V1\Failure;
 use Temporal\DataConverter\DataConverter;
@@ -34,6 +35,7 @@ use Temporal\DataConverter\EncodedValues;
 use Temporal\Interceptor\Header;
 use Temporal\Internal\Transport\Request\ExecuteChildWorkflow;
 use Temporal\Internal\Transport\Request\ExecuteNexusOperation;
+use Temporal\Internal\Transport\Request\ContinueAsNew;
 use Temporal\Internal\Transport\Request\GetChildWorkflowExecution;
 use Temporal\Internal\Transport\Request\GetNexusOperationStarted;
 use Temporal\Internal\Workflow\NexusStartEnvelope;
@@ -43,10 +45,113 @@ use Temporal\Worker\Transport\Command\Server\ServerRequest;
 use Temporal\Worker\Transport\Command\Server\SuccessResponse;
 use Temporal\Worker\TrueAsync\CoresdkWorkflowCodec;
 use Temporal\Workflow\NexusOperationCancellationType;
+use Temporal\Workflow\ContinueAsNewSuggestedReason;
+use Temporal\Workflow\ContinueAsNewVersioningBehavior;
 use Temporal\Workflow\WorkflowExecution as SdkWorkflowExecution;
 
 final class CoresdkWorkflowCodecTestCase extends TestCase
 {
+    public function testActivationCarriesCurrentContinueAsNewAndDeploymentMetadata(): void
+    {
+        $codec = new CoresdkWorkflowCodec(DataConverter::createDefault());
+        $commands = \iterator_to_array($codec->decode(
+            (new WorkflowActivation())
+                ->setRunId('run-metadata')
+                ->setHistoryLength(42)
+                ->setHistorySizeBytes(1024)
+                ->setContinueAsNewSuggested(true)
+                ->setSuggestContinueAsNewReasons([
+                    SuggestContinueAsNewReason::SUGGEST_CONTINUE_AS_NEW_REASON_HISTORY_SIZE_TOO_LARGE,
+                    SuggestContinueAsNewReason::SUGGEST_CONTINUE_AS_NEW_REASON_TOO_MANY_UPDATES,
+                ])
+                ->setTargetWorkerDeploymentVersionChanged(true)
+                ->setJobs([
+                    (new WorkflowActivationJob())->setInitializeWorkflow(
+                        (new InitializeWorkflow())
+                            ->setWorkflowType('PinnedWorkflow')
+                            ->setWorkflowId('workflow-id'),
+                    ),
+                ])
+                ->serializeToString(),
+            ['taskQueue' => 'queue'],
+        ));
+
+        self::assertCount(1, $commands);
+        $tick = $commands[0]->getTickInfo();
+        self::assertSame(42, $tick->historyLength);
+        self::assertSame(1024, $tick->historySize);
+        self::assertTrue($tick->continueAsNewSuggested);
+        self::assertSame([
+            ContinueAsNewSuggestedReason::HistorySizeTooLarge,
+            ContinueAsNewSuggestedReason::TooManyUpdates,
+        ], $tick->continueAsNewSuggestedReasons);
+        self::assertTrue($tick->targetWorkerDeploymentVersionChanged);
+    }
+
+    public function testCodecEmitsWorkflowInfoUpdateForActivationWithoutRuntimeCommand(): void
+    {
+        $codec = $this->initializedCodec(DataConverter::createDefault(), 'patch-run');
+        $commands = \iterator_to_array($codec->decode(
+            (new WorkflowActivation())
+                ->setRunId('patch-run')
+                ->setHistoryLength(7)
+                ->setTargetWorkerDeploymentVersionChanged(true)
+                ->setJobs([
+                    (new WorkflowActivationJob())->setNotifyHasPatch(
+                        (new NotifyHasPatch())->setPatchId('existing-patch'),
+                    ),
+                ])
+                ->serializeToString(),
+            ['taskQueue' => 'queue'],
+        ));
+
+        self::assertCount(1, $commands);
+        self::assertInstanceOf(ServerRequest::class, $commands[0]);
+        self::assertSame('UpdateWorkflowInfo', $commands[0]->getName());
+        self::assertSame(7, $commands[0]->getTickInfo()->historyLength);
+        self::assertTrue($commands[0]->getTickInfo()->targetWorkerDeploymentVersionChanged);
+    }
+
+    public function testContinueAsNewInitialVersioningBehaviorIsReplayStable(): void
+    {
+        $converter = DataConverter::createDefault();
+
+        $encode = function (bool $isReplaying) use ($converter): string {
+            $codec = $this->initializedCodec(
+                $converter,
+                $isReplaying ? 'replay-run' : 'live-run',
+                $isReplaying,
+            );
+            $codec->stage(new ContinueAsNew(
+                'PinnedWorkflow',
+                EncodedValues::fromValues(['next-run'], $converter),
+                [
+                    'TaskQueueName' => 'versioned-queue',
+                    'WorkflowRunTimeout' => 0,
+                    'WorkflowTaskTimeout' => 0,
+                    'InitialVersioningBehavior' => ContinueAsNewVersioningBehavior::UseRampingVersion->value,
+                ],
+                Header::empty(),
+            ));
+
+            $command = self::completion($codec)
+                ->getSuccessful()
+                ->getCommands()[0]
+                ->getContinueAsNewWorkflowExecution();
+
+            self::assertSame('PinnedWorkflow', $command->getWorkflowType());
+            self::assertSame('versioned-queue', $command->getTaskQueue());
+            self::assertSame(
+                ContinueAsNewVersioningBehavior::UseRampingVersion->value,
+                $command->getInitialVersioningBehavior(),
+            );
+
+            return $command->serializeToString();
+        };
+
+        self::assertSame($encode(false), $encode(true));
+    }
+
     public function testWorkflowVersioningBehaviorIsReportedToCore(): void
     {
         $codec = new CoresdkWorkflowCodec(
@@ -758,6 +863,25 @@ final class CoresdkWorkflowCodecTestCase extends TestCase
         );
     }
 
+    private static function completion(CoresdkWorkflowCodec $codec): WorkflowActivationCompletion
+    {
+        $completion = new WorkflowActivationCompletion();
+        $completion->mergeFromString($codec->encodeStaged());
+
+        return $completion;
+    }
+
+    private static function failure(string $message): Failure
+    {
+        return (new Failure())
+            ->setMessage($message)
+            ->setApplicationFailureInfo(
+                (new ApplicationFailureInfo())
+                    ->setType('NexusTestFailure')
+                    ->setNonRetryable(true),
+            );
+    }
+
     private function initializedCodec(
         DataConverterInterface $converter,
         string $runId = 'nexus-run',
@@ -801,24 +925,5 @@ final class CoresdkWorkflowCodecTestCase extends TestCase
                 'x-tenant' => 'tenant-a',
             ],
         );
-    }
-
-    private static function completion(CoresdkWorkflowCodec $codec): WorkflowActivationCompletion
-    {
-        $completion = new WorkflowActivationCompletion();
-        $completion->mergeFromString($codec->encodeStaged());
-
-        return $completion;
-    }
-
-    private static function failure(string $message): Failure
-    {
-        return (new Failure())
-            ->setMessage($message)
-            ->setApplicationFailureInfo(
-                (new ApplicationFailureInfo())
-                    ->setType('NexusTestFailure')
-                    ->setNonRetryable(true),
-            );
     }
 }

@@ -22,6 +22,7 @@ use Temporal\Internal\Marshaller\Meta\Marshal;
 use Temporal\Internal\Marshaller\Type\ArrayType;
 use Temporal\Internal\Marshaller\Type\CronType;
 use Temporal\Internal\Marshaller\Type\DateIntervalType;
+use Temporal\Internal\Marshaller\Type\EnumValueArrayType;
 use Temporal\Internal\Marshaller\Type\NullableType;
 use Temporal\Internal\Marshaller\Type\ObjectType;
 use Temporal\Worker\WorkerFactoryInterface;
@@ -90,6 +91,32 @@ final class WorkflowInfo
      */
     #[Marshal(name: 'ShouldContinueAsNew')]
     public bool $shouldContinueAsNew = false;
+
+    /**
+     * Reasons reported by the Service when Continue-As-New is suggested.
+     *
+     * This value changes during the lifetime of a Workflow Execution.
+     *
+     * @var list<ContinueAsNewSuggestedReason>
+     * @internal ExperimentalAPI
+     */
+    #[Marshal(
+        name: 'ContinueAsNewSuggestedReasons',
+        type: EnumValueArrayType::class,
+        of: ContinueAsNewSuggestedReason::class,
+    )]
+    public array $continueAsNewSuggestedReasons = [];
+
+    /**
+     * Whether this Pinned Workflow's Target Worker Deployment Version differs
+     * from the Deployment Version to which the Workflow is pinned.
+     *
+     * This value changes during the lifetime of a Workflow Execution.
+     *
+     * @internal ExperimentalAPI
+     */
+    #[Marshal(name: 'TargetWorkerDeploymentVersionChanged')]
+    public bool $targetWorkerDeploymentVersionChanged = false;
 
     /**
      * @see CronSchedule::$interval for more info about cron format.

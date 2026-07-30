@@ -163,6 +163,7 @@ class Worker implements NexusWorkerInterface, EventListenerInterface, Dispatcher
         $router->add(new Router\CancelWorkflow($this->services->running));
         $router->add(new Router\DestroyWorkflow($this->services->running, $this->services->loop));
         $router->add(new Router\StackTrace($this->services->running));
+        $router->add(new Router\UpdateWorkflowInfo($this->services->running));
 
         // Nexus routes
         $router->add(new Router\InvokeNexusOperation(

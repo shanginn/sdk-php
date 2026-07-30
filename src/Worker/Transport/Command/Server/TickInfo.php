@@ -12,18 +12,22 @@ declare(strict_types=1);
 namespace Temporal\Worker\Transport\Command\Server;
 
 use Temporal\Workflow\WorkflowInfo;
+use Temporal\Workflow\ContinueAsNewSuggestedReason;
 
 final class TickInfo
 {
     /**
      * @param int<0, max> $historyLength
      * @param int<0, max> $historySize
+     * @param list<ContinueAsNewSuggestedReason> $continueAsNewSuggestedReasons
      */
     public function __construct(
         public readonly \DateTimeInterface $time,
         public readonly int $historyLength = 0,
         public readonly int $historySize = 0,
         public readonly bool $continueAsNewSuggested = false,
+        public readonly array $continueAsNewSuggestedReasons = [],
+        public readonly bool $targetWorkerDeploymentVersionChanged = false,
         public readonly bool $isReplaying = false,
     ) {}
 
@@ -35,5 +39,7 @@ final class TickInfo
         $info->historyLength = $this->historyLength;
         $info->historySize = $this->historySize;
         $info->shouldContinueAsNew = $this->continueAsNewSuggested;
+        $info->continueAsNewSuggestedReasons = $this->continueAsNewSuggestedReasons;
+        $info->targetWorkerDeploymentVersionChanged = $this->targetWorkerDeploymentVersionChanged;
     }
 }

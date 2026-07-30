@@ -95,6 +95,14 @@ synchronous or Workflow-backed Nexus operations directly in TrueAsync PHP
 workers. See the [Nexus guide](docs/nexus.md) for endpoint setup, handler and
 caller examples, timeouts, cancellation, links, errors, and test coverage.
 
+## Worker Deployment upgrades
+
+Pinned Workflows can explicitly move the next run to a Task Queue's Target or
+Ramping Worker Deployment Version when they Continue-As-New. The current
+Workflow Task also exposes whether the target changed and why the Service
+suggests Continue-As-New. See the
+[Upgrade-on-Continue-As-New guide](docs/upgrade-on-continue-as-new.md).
+
 ## Development and testing
 
 Start a local Temporal service:

@@ -7,6 +7,7 @@ namespace Temporal\Tests\Unit\Worker\Transport\Command\Server;
 use PHPUnit\Framework\Attributes\CoversClass;
 use Temporal\Tests\Unit\AbstractUnit;
 use Temporal\Worker\Transport\Command\Server\TickInfo;
+use Temporal\Workflow\ContinueAsNewSuggestedReason;
 use Temporal\Workflow\WorkflowInfo;
 
 #[CoversClass(TickInfo::class)]
@@ -20,6 +21,11 @@ final class TickInfoTestCase extends AbstractUnit
             historyLength: 42,
             historySize: 1024,
             continueAsNewSuggested: true,
+            continueAsNewSuggestedReasons: [
+                ContinueAsNewSuggestedReason::HistorySizeTooLarge,
+                ContinueAsNewSuggestedReason::TooManyUpdates,
+            ],
+            targetWorkerDeploymentVersionChanged: true,
         );
 
         $tick->applyTo($info);
@@ -27,6 +33,11 @@ final class TickInfoTestCase extends AbstractUnit
         self::assertSame(42, $info->historyLength);
         self::assertSame(1024, $info->historySize);
         self::assertTrue($info->shouldContinueAsNew);
+        self::assertSame([
+            ContinueAsNewSuggestedReason::HistorySizeTooLarge,
+            ContinueAsNewSuggestedReason::TooManyUpdates,
+        ], $info->continueAsNewSuggestedReasons);
+        self::assertTrue($info->targetWorkerDeploymentVersionChanged);
     }
 
     public function testApplyToOverwritesPreviousValues(): void
@@ -35,11 +46,17 @@ final class TickInfoTestCase extends AbstractUnit
         $info->historyLength = 99;
         $info->historySize = 99;
         $info->shouldContinueAsNew = true;
+        $info->continueAsNewSuggestedReasons = [
+            ContinueAsNewSuggestedReason::TooManyHistoryEvents,
+        ];
+        $info->targetWorkerDeploymentVersionChanged = true;
 
         (new TickInfo(time: new \DateTimeImmutable('2026-01-01T00:00:00+00:00')))->applyTo($info);
 
         self::assertSame(0, $info->historyLength);
         self::assertSame(0, $info->historySize);
         self::assertFalse($info->shouldContinueAsNew);
+        self::assertSame([], $info->continueAsNewSuggestedReasons);
+        self::assertFalse($info->targetWorkerDeploymentVersionChanged);
     }
 }

@@ -61,7 +61,7 @@ final class Client implements ClientInterface
         unset($this->requests[$id]);
 
         $info = $context->getInfo();
-        if ($info !== null && $response->getTickInfo()->historyLength > $info->historyLength) {
+        if ($info !== null) {
             $response->getTickInfo()->applyTo($info);
         }
 

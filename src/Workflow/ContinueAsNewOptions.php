@@ -15,6 +15,7 @@ use Carbon\CarbonInterval;
 use JetBrains\PhpStorm\Pure;
 use Temporal\Internal\Marshaller\Meta\Marshal;
 use Temporal\Internal\Marshaller\Type\DateIntervalType;
+use Temporal\Internal\Marshaller\Type\EnumValueType;
 use Temporal\Internal\Support\DateInterval;
 use Temporal\Worker\WorkerFactoryInterface;
 use Temporal\Worker\Worker;
@@ -48,6 +49,18 @@ final class ContinueAsNewOptions
      */
     #[Marshal(name: 'WorkflowTaskTimeout', type: DateIntervalType::class)]
     public \DateInterval $workflowTaskTimeout;
+
+    /**
+     * Versioning behavior to use for the first Workflow Task of the new run.
+     *
+     * @internal ExperimentalAPI
+     */
+    #[Marshal(
+        name: 'InitialVersioningBehavior',
+        type: EnumValueType::class,
+        of: ContinueAsNewVersioningBehavior::class,
+    )]
+    public ContinueAsNewVersioningBehavior $initialVersioningBehavior = ContinueAsNewVersioningBehavior::Unspecified;
 
     /**
      * @throws \Exception
@@ -131,6 +144,23 @@ final class ContinueAsNewOptions
 
         $self = clone $this;
         $self->workflowTaskTimeout = $timeout;
+        return $self;
+    }
+
+    /**
+     * Choose the Worker Deployment Version used for the first Workflow Task of
+     * the new run.
+     *
+     * @internal ExperimentalAPI
+     *
+     * @return $this
+     */
+    #[Pure]
+    public function withInitialVersioningBehavior(ContinueAsNewVersioningBehavior $behavior): self
+    {
+        $self = clone $this;
+        $self->initialVersioningBehavior = $behavior;
+
         return $self;
     }
 }
