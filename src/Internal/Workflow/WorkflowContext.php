@@ -28,6 +28,7 @@ use Temporal\DataConverter\EncodedValues;
 use Temporal\DataConverter\Type;
 use Temporal\DataConverter\ValuesInterface;
 use Temporal\DataConverter\WorkflowSerializationContext;
+use Temporal\Exception\Failure\TemporalFailure;
 use Temporal\Interceptor\HeaderInterface;
 use Temporal\Interceptor\WorkflowOutboundCalls\AwaitInput;
 use Temporal\Interceptor\WorkflowOutboundCalls\AwaitWithTimeoutInput;
@@ -318,13 +319,18 @@ class WorkflowContext implements NexusWorkflowContextInterface, HeaderCarrier, D
 
         return $this->callsInterceptor->with(
             function (CompleteInput $input): PromiseInterface {
+                $serializationContext = $this->getSerializationContext();
                 $values = $input->result !== null
                     ? EncodedValues::fromValues($input->result)
                     : EncodedValues::empty();
 
-                $values = $values->withSerializationContext($this->getSerializationContext());
+                $values = $values->withSerializationContext($serializationContext);
+                $failure = $input->failure;
+                if ($failure instanceof TemporalFailure) {
+                    $failure = $failure->withSerializationContext($serializationContext);
+                }
 
-                return $this->request(new CompleteWorkflow($values, $input->failure), false);
+                return $this->request(new CompleteWorkflow($values, $failure), false);
             },
             /** @see WorkflowOutboundCallsInterceptor::complete() */
             'complete',
