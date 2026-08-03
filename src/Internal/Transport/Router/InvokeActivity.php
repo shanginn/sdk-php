@@ -18,6 +18,7 @@ use Temporal\DataConverter\EncodedValues;
 use Temporal\Exception\DoNotCompleteOnResultException;
 use Temporal\Exception\Failure\TemporalFailure;
 use Temporal\Interceptor\ActivityInbound\ActivityInput;
+use Temporal\Interceptor\ActivityExecutionInterceptor;
 use Temporal\Interceptor\ActivityInboundInterceptor;
 use Temporal\Interceptor\PipelineProvider;
 use Temporal\Internal\Activity\ActivityContext;
@@ -89,29 +90,38 @@ class InvokeActivity extends Route
         $prototype = $this->findDeclarationOrFail($context->getInfo());
 
         try {
-            // Create ActivityInstance
-            $instance = $prototype->getInstance();
-
-            // Register Activity instance in the context
-            $context = $context->withInstance($instance->getContext());
-            $handler = $instance->getHandler();
-
-            // Define Context for interceptors Pipeline
+            // Lifecycle interceptors run before the activity factory. They can
+            // establish a DI/request scope that remains active for construction
+            // and execution without changing the existing inbound-interceptor
+            // contract (Activity::getInstance() is available before $next).
             Activity::setCurrentContext($context);
 
-            // Run Activity in an interceptors pipeline
             $result = $this->interceptorProvider
-                ->getPipeline(ActivityInboundInterceptor::class)
+                ->getPipeline(ActivityExecutionInterceptor::class)
                 ->with(
-                    static function (ActivityInput $input) use ($handler, $context): mixed {
-                        Activity::setCurrentContext(
-                            $context->withInput($input->arguments)->withHeader($input->header),
-                        );
-                        return $handler($input->arguments);
+                    function () use ($prototype, $context): mixed {
+                        $instance = $prototype->getInstance();
+                        $handler = $instance->getHandler();
+                        $context = $context->withInstance($instance->getContext());
+                        Activity::setCurrentContext($context);
+
+                        return $this->interceptorProvider
+                            ->getPipeline(ActivityInboundInterceptor::class)
+                            ->with(
+                                static function (ActivityInput $input) use ($handler, $context): mixed {
+                                    Activity::setCurrentContext(
+                                        $context->withInput($input->arguments)->withHeader($input->header),
+                                    );
+
+                                    return $handler($input->arguments);
+                                },
+                                /** @see ActivityInboundInterceptor::handleActivityInbound() */
+                                'handleActivityInbound',
+                            )(new ActivityInput($context->getInput(), $context->getHeader()));
                     },
-                    /** @see ActivityInboundInterceptor::handleActivityInbound() */
-                    'handleActivityInbound',
-                )(new ActivityInput($context->getInput(), $context->getHeader()));
+                    /** @see ActivityExecutionInterceptor::executeActivity() */
+                    'executeActivity',
+                )();
 
             /** @var ActivityContext $context */
             $context = Activity::getCurrentContext();

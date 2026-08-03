@@ -13,6 +13,7 @@ use Spiral\Attributes\ReaderInterface;
 use Temporal\DataConverter\DataConverterInterface;
 use Temporal\DataConverter\EncodedValues;
 use Temporal\Exception\ExceptionInterceptorInterface;
+use Temporal\Interceptor\ActivityExecutionInterceptor;
 use Temporal\Interceptor\Header;
 use Temporal\Interceptor\SimplePipelineProvider;
 use Temporal\Internal\Activity\ActivityContext;
@@ -65,6 +66,55 @@ final class InvokeActivityTestCase extends AbstractUnit
         $request = new Request('DummyActivityDoFail', EncodedValues::fromValues([]));
         $this->router->handle($request, [], new Deferred());
         $this->assertTrue($finalizerWasCalled);
+    }
+
+    public function testExecutionInterceptorWrapsActivityFactory(): void
+    {
+        $events = new \ArrayObject();
+        $interceptor = new class($events) implements ActivityExecutionInterceptor {
+            public function __construct(
+                private readonly \ArrayObject $events,
+            ) {}
+
+            public function executeActivity(callable $next): mixed
+            {
+                $this->events[] = 'interceptor.before';
+
+                try {
+                    return $next();
+                } finally {
+                    $this->events[] = 'interceptor.after';
+                }
+            }
+        };
+
+        $prototype = $this->services->activities->find('DummyActivityDoNothing');
+        self::assertNotNull($prototype);
+        $this->services->activities->add(
+            $prototype->withFactory(
+                static function () use ($events): DummyActivity {
+                    $events[] = 'factory';
+
+                    return new DummyActivity();
+                },
+            ),
+            overwrite: true,
+        );
+
+        $router = new InvokeActivity(
+            $this->services,
+            $this->createMock(RPCConnectionInterface::class),
+            new SimplePipelineProvider([$interceptor]),
+        );
+
+        $this->activityContext->getInfo()->type->name = 'DummyActivityDoNothing';
+        $request = new Request('DummyActivityDoNothing', EncodedValues::fromValues([]));
+        $router->handle($request, [], new Deferred());
+
+        self::assertSame(
+            ['interceptor.before', 'factory', 'interceptor.after'],
+            $events->getArrayCopy(),
+        );
     }
 
     protected function setUp(): void
