@@ -54,7 +54,7 @@ class TrueAsyncTypedSAWorkflow
     }
 
     #[WorkflowMethod(name: 'TrueAsyncTypedSAWorkflow')]
-    public function handler(int $number, string $word): iterable
+    public function handler(int $number, string $word)
     {
         Workflow::upsertTypedSearchAttributes(
             SearchAttributeUpdate::valueSet('CustomIntField', ValueType::Int, $number),
@@ -62,13 +62,13 @@ class TrueAsyncTypedSAWorkflow
             SearchAttributeUpdate::valueSet('CustomBoolField', ValueType::Bool, true),
         );
 
-        yield Workflow::await(fn() => $this->unset);
+        Workflow::await(fn() => $this->unset);
 
         Workflow::upsertTypedSearchAttributes(
             SearchAttributeUpdate::valueUnset('CustomBoolField', ValueType::Bool),
         );
 
-        yield Workflow::await(fn() => $this->done);
+        Workflow::await(fn() => $this->done);
 
         return 'done';
     }

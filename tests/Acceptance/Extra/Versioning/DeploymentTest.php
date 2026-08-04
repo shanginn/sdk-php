@@ -15,7 +15,6 @@ use Temporal\Testing\Environment;
 use Temporal\Tests\Acceptance\App\Attribute\Worker;
 use Temporal\Tests\Acceptance\App\Runtime\Feature;
 use Temporal\Tests\Acceptance\App\Runtime\WorkerStarter;
-use Temporal\Tests\Acceptance\App\Runtime\TemporalStarter;
 use Temporal\Tests\Acceptance\App\TestCase;
 use Temporal\Worker\WorkerDeploymentOptions;
 use Temporal\Worker\WorkerOptions;

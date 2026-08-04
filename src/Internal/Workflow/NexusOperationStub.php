@@ -21,6 +21,7 @@ use Temporal\Interceptor\HeaderInterface;
 use Temporal\Internal\Marshaller\MarshallerInterface;
 use Temporal\Internal\Transport\Request\ExecuteNexusOperation;
 use Temporal\Internal\Transport\Request\GetNexusOperationStarted;
+use Temporal\Internal\Workflow\Process\Awaiter;
 use Temporal\Nexus\Internal\Headers;
 use Temporal\Worker\Transport\Command\RequestInterface;
 use Temporal\Workflow;
@@ -50,13 +51,43 @@ final class NexusOperationStub implements NexusOperationStubInterface
         array $args = [],
         Type|string|\ReflectionClass|\ReflectionType|null $returnType = null,
         array $nexusHeaders = [],
+    ): mixed {
+        $this->assertOperationInput($operation, $args, $nexusHeaders);
+        Awaiter::assertManaged();
+        return Awaiter::await(
+            $this->executeAsync($operation, $args, $returnType, $nexusHeaders),
+            interruptOnCancel: false,
+            preserveCancellationFailure: true,
+        );
+    }
+
+    public function executeAsync(
+        string $operation,
+        array $args = [],
+        Type|string|\ReflectionClass|\ReflectionType|null $returnType = null,
+        array $nexusHeaders = [],
     ): PromiseInterface {
         return $this
-            ->start($operation, $args, $returnType, $nexusHeaders)
-            ->then(static fn(NexusOperationHandle $handle): PromiseInterface => $handle->getResult());
+            ->startAsync($operation, $args, $returnType, $nexusHeaders)
+            ->then(static fn(NexusOperationHandle $handle): PromiseInterface => $handle->getResultAsync());
     }
 
     public function start(
+        string $operation,
+        array $args = [],
+        Type|string|\ReflectionClass|\ReflectionType|null $returnType = null,
+        array $nexusHeaders = [],
+    ): NexusOperationHandle {
+        $this->assertOperationInput($operation, $args, $nexusHeaders);
+        Awaiter::assertManaged();
+        return Awaiter::await(
+            $this->startAsync($operation, $args, $returnType, $nexusHeaders),
+            interruptOnCancel: false,
+            preserveCancellationFailure: true,
+        );
+    }
+
+    public function startAsync(
         string $operation,
         array $args = [],
         Type|string|\ReflectionClass|\ReflectionType|null $returnType = null,
@@ -65,13 +96,7 @@ final class NexusOperationStub implements NexusOperationStubInterface
         // Programming errors throw synchronously; runtime errors reject the promise.
         $endpoint = $this->options->endpoint;
         $service = $this->options->service;
-        $this->assertOperationParams($endpoint, $service, $operation);
-        if (\count($args) > 1) {
-            throw new \InvalidArgumentException(\sprintf(
-                'Nexus operation input must contain at most one argument; got %d',
-                \count($args),
-            ));
-        }
+        $this->assertOperationInput($operation, $args, $nexusHeaders);
 
         $startRequest = new ExecuteNexusOperation(
             endpoint: $endpoint,
@@ -147,6 +172,24 @@ final class NexusOperationStub implements NexusOperationStubInterface
         if ($operation === '') {
             throw new \InvalidArgumentException('Nexus operation name must be a non-empty string');
         }
+    }
+
+    /**
+     * @psalm-assert non-empty-string $operation
+     */
+    private function assertOperationInput(string $operation, array $args, array $nexusHeaders): void
+    {
+        $this->assertOperationParams($this->options->endpoint, $this->options->service, $operation);
+        if (\count($args) > 1) {
+            throw new \InvalidArgumentException(\sprintf(
+                'Nexus operation input must contain at most one argument; got %d',
+                \count($args),
+            ));
+        }
+
+        // Validate header programming errors before the managed-Fiber
+        // preflight. This is pure and cannot contaminate Workflow history.
+        Headers::normalize($nexusHeaders);
     }
 
     private function normalizeFailure(

@@ -61,7 +61,7 @@ class FeatureWorkflow
     {
         $this->value += $arg;
 
-        yield Workflow::await(fn() => $this->value > 0);
+        Workflow::await(fn() => $this->value > 0);
 
         return $this->value;
     }

@@ -161,9 +161,9 @@ final class TimeoutModesService
 final class TimeoutModesHandlerWorkflow
 {
     #[WorkflowMethod(name: 'Extra_Nexus_TimeoutModes_Handler')]
-    public function run(string $input): \Generator
+    public function run(string $input): string
     {
-        yield Workflow::timer(CarbonInterval::seconds(30));
+        Workflow::timer(CarbonInterval::seconds(30));
         return "should-not-complete:{$input}";
     }
 }
@@ -172,7 +172,7 @@ final class TimeoutModesHandlerWorkflow
 final class ScheduleToStartCallerWorkflow
 {
     #[WorkflowMethod(name: 'Extra_Nexus_TimeoutModes_ScheduleToStartCaller')]
-    public function run(string $endpoint): \Generator
+    public function run(string $endpoint): array
     {
         $stub = Workflow::newNexusServiceStub(
             TimeoutModesService::class,
@@ -183,7 +183,7 @@ final class ScheduleToStartCallerWorkflow
         );
 
         try {
-            yield $stub->longRunning('schedule-to-start');
+            $stub->longRunning('schedule-to-start');
         } catch (NexusOperationFailure $failure) {
             $cause = $failure->getPrevious();
             return [
@@ -205,7 +205,7 @@ final class ScheduleToStartCallerWorkflow
 final class StartToCloseCallerWorkflow
 {
     #[WorkflowMethod(name: 'Extra_Nexus_TimeoutModes_StartToCloseCaller')]
-    public function run(string $endpoint): \Generator
+    public function run(string $endpoint): array
     {
         $stub = Workflow::newNexusServiceStub(
             TimeoutModesService::class,
@@ -216,7 +216,7 @@ final class StartToCloseCallerWorkflow
         );
 
         try {
-            yield $stub->longRunning('start-to-close');
+            $stub->longRunning('start-to-close');
         } catch (NexusOperationFailure $failure) {
             $cause = $failure->getPrevious();
             return [

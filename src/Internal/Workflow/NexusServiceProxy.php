@@ -17,6 +17,7 @@ use Temporal\Interceptor\NexusWorkflowOutboundCallsInterceptor;
 use Temporal\Internal\Declaration\Prototype\NexusOperationPrototype;
 use Temporal\Internal\Declaration\Prototype\NexusServicePrototype;
 use Temporal\Internal\Interceptor\Pipeline;
+use Temporal\Internal\Workflow\Process\Awaiter;
 use Temporal\Workflow\NexusOperationOptions;
 use Temporal\Workflow\NexusWorkflowContextInterface;
 
@@ -48,7 +49,7 @@ final class NexusServiceProxy extends Proxy
         $this->operationsByMethod = $byMethod;
     }
 
-    public function __call(string $method, array $args = []): PromiseInterface
+    public function __call(string $method, array $args = []): mixed
     {
         $operation = $this->operationsByMethod[$method] ?? null;
 
@@ -61,12 +62,13 @@ final class NexusServiceProxy extends Proxy
             ));
         }
 
+        Awaiter::assertManaged();
         \assert($this->options->service !== '');
 
-        return $this->callsInterceptor->with(
+        $result = $this->callsInterceptor->with(
             fn(ExecuteNexusOperationInput $input): PromiseInterface => $this->ctx
                 ->newUntypedNexusOperationStub(self::effectiveOptions($input))
-                ->execute($input->operation, $input->args, $input->returnType, $input->nexusHeaders),
+                ->executeAsync($input->operation, $input->args, $input->returnType, $input->nexusHeaders),
             /** @see NexusWorkflowOutboundCallsInterceptor::executeNexusOperation() */
             'executeNexusOperation',
         )(
@@ -78,6 +80,12 @@ final class NexusServiceProxy extends Proxy
                 $this->options,
                 $operation->outputType,
             ),
+        );
+
+        return Awaiter::await(
+            $result,
+            interruptOnCancel: false,
+            preserveCancellationFailure: true,
         );
     }
 

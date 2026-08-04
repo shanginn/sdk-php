@@ -44,14 +44,14 @@ class ChildSumWorkflow
 class ParentWorkflow
 {
     #[WorkflowMethod(name: 'ParentWorkflow')]
-    public function handler(): iterable
+    public function handler()
     {
         $child = Workflow::newChildWorkflowStub(
             ChildSumWorkflow::class,
             ChildWorkflowOptions::new()->withTaskQueue(Workflow::getInfo()->taskQueue),
         );
 
-        $sum = yield $child->handler(40, 2);
+        $sum = $child->handler(40, 2);
 
         return 'child-sum:' . $sum;
     }

@@ -41,7 +41,7 @@ use function Async\spawn;
 class CancelActivityWorkflow
 {
     #[WorkflowMethod(name: 'CancelActivityWorkflow')]
-    public function handler(): iterable
+    public function handler()
     {
         /* A short heartbeat timeout matters: the core throttles outbound
            heartbeats to ~0.8x of it, and the server reports cancel-requested
@@ -54,7 +54,7 @@ class CancelActivityWorkflow
                 ->withHeartbeatTimeout(2),
         );
 
-        return yield $act->linger();
+        return $act->linger();
     }
 }
 

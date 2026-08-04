@@ -105,7 +105,9 @@ class InterceptorTest extends TestCase
         self::assertStringNotContainsString('Hello, World!', $body);
     }
 
-    /** Caller cancels an async op mid-flight; the cancel-side interceptor must leave its marker. */
+    /**
+     * Caller cancels an async op mid-flight; the cancel-side interceptor must leave its marker.
+     */
     #[Test]
     public function cancelInvokesInterceptorAndHandlerSeesMarker(
         State $state,
@@ -268,7 +270,7 @@ class CancelHandlerWorkflow
     {
         try {
             // Long enough that the caller can request cancel before we finish.
-            yield Workflow::timer(CarbonInterval::seconds(30));
+            Workflow::timer(CarbonInterval::seconds(30));
             return "completed:{$input}";
         } catch (CanceledFailure) {
             // Marker isn't read here: handler may run in a different RR worker process.
@@ -291,17 +293,14 @@ class CancelCallerWorkflow
                 ->withCancellationType(NexusOperationCancellationType::WaitRequested),
         );
 
-        $promise = null;
-        $scope = Workflow::async(static function () use ($stub, $handlerWorkflowId, &$promise): void {
-            $promise = $stub->longRunning($handlerWorkflowId);
-        });
+        $scope = Workflow::async(static fn() => $stub->longRunning($handlerWorkflowId));
 
         // Give the handler workflow a chance to actually start before cancelling.
-        yield Workflow::timer(CarbonInterval::seconds(NexusWorkerOptions::PRE_CANCEL_TIMER_SECONDS));
+        Workflow::timer(CarbonInterval::seconds(NexusWorkerOptions::PRE_CANCEL_TIMER_SECONDS));
         $scope->cancel();
 
         try {
-            yield $promise;
+            $scope->await();
         } catch (NexusOperationFailure $e) {
             if ($e->getPrevious() instanceof CanceledFailure) {
                 return 'cancelled';

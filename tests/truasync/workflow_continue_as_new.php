@@ -7,10 +7,10 @@ declare(strict_types=1);
  *
  *   php -d extension=temporal.so tests/truasync/workflow_continue_as_new.php [address]
  *
- * A workflow continues itself as a new run until a counter reaches 3, then
- * completes. The handler returns the never-resolving continueAsNew promise,
- * so the completion's terminal command is ContinueAsNewWorkflowExecution; the
- * client's getResult follows the run chain to the final value.
+ * A workflow continues itself as a new run from a child Workflow scope until
+ * a counter reaches 3, then completes. This verifies that Continue-As-New is
+ * terminal for the whole execution even when the root handler returns while
+ * the child scope is suspended on the command.
  *
  * Exits 0 on pass or skip (no server), 1 on failure.
  */
@@ -38,7 +38,35 @@ class HopWorkflow
             return 'hops:' . $hop;
         }
 
-        return Workflow::continueAsNew('HopWorkflow', [$hop + 1]);
+        Workflow::async(
+            static fn() => Workflow::continueAsNew('HopWorkflow', [$hop + 1]),
+        );
+
+        return 'must-not-complete:' . $hop;
+    }
+}
+
+#[Workflow\WorkflowInterface]
+class SignalHopWorkflow
+{
+    private bool $finishCurrentRun = false;
+
+    #[Workflow\SignalMethod(name: 'continue')]
+    public function continue(): void
+    {
+        $this->finishCurrentRun = true;
+        Workflow::continueAsNew('SignalHopWorkflow', [1]);
+    }
+
+    #[WorkflowMethod(name: 'SignalHopWorkflow')]
+    public function handler(int $hop): string
+    {
+        if ($hop >= 1) {
+            return 'signal-hops:' . $hop;
+        }
+
+        Workflow::await(fn(): bool => $this->finishCurrentRun);
+        return 'must-not-complete-signal:' . $hop;
     }
 }
 
@@ -59,11 +87,17 @@ if (!\extension_loaded('temporal')) {
 
 $taskQueue = 'truasync-can-' . \bin2hex(\random_bytes(3));
 $wfId = 'truasync-can-' . \bin2hex(\random_bytes(4));
+$signalWfId = $wfId . '-signal';
 
-$result = await(spawn(static function () use ($address, $taskQueue, $wfId): string {
+[$result, $signalResult] = await(spawn(static function () use (
+    $address,
+    $taskQueue,
+    $wfId,
+    $signalWfId,
+): array {
     $core = new CoreWorker(new Connection($address), $taskQueue, 'default', 10);
     $worker = new TemporalWorker($core, $taskQueue);
-    $worker->registerWorkflowTypes(HopWorkflow::class);
+    $worker->registerWorkflowTypes(HopWorkflow::class, SignalHopWorkflow::class);
 
     $loop = spawn(fn() => $worker->run());
 
@@ -75,10 +109,17 @@ $result = await(spawn(static function () use ($address, $taskQueue, $wfId): stri
 
     $value = (string) $run->getResult(null, 30);
 
+    $signalStub = $client->newUntypedWorkflowStub('SignalHopWorkflow', (new WorkflowOptions())
+        ->withTaskQueue($taskQueue)
+        ->withWorkflowId($signalWfId));
+    $signalRun = $client->start($signalStub, 0);
+    $signalStub->signal('continue');
+    $signalValue = (string) $signalRun->getResult(null, 30);
+
     $worker->shutdown();
     await($loop);
 
-    return $value;
+    return [$value, $signalValue];
 }));
 
 if ($result !== 'hops:3') {
@@ -86,5 +127,13 @@ if ($result !== 'hops:3') {
     exit(1);
 }
 
-\fwrite(\STDOUT, "PASS: workflow={$wfId} result={$result}\n");
+if ($signalResult !== 'signal-hops:1') {
+    \fwrite(\STDERR, "FAIL: unexpected signal workflow result: {$signalResult}\n");
+    exit(1);
+}
+
+\fwrite(
+    \STDOUT,
+    "PASS: workflow={$wfId} result={$result} signalWorkflow={$signalWfId} signalResult={$signalResult}\n",
+);
 exit(0);

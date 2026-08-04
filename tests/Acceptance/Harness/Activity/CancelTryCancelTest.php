@@ -76,29 +76,33 @@ class FeatureWorkflow
                 ->withHeartbeatTimeout('5 seconds')
                 # Disable retry
                 ->withRetryOptions(RetryOptions::new()->withMaximumAttempts(1))
-                ->withCancellationType(Activity\ActivityCancellationType::TryCancel)
+                ->withCancellationType(Activity\ActivityCancellationType::TryCancel),
         );
 
         $scope = Workflow::async(static fn() => $activity->cancellableActivity());
 
         # Sleep for short time (force task turnover)
-        yield Workflow::timer(1);
+        Workflow::timer(1);
 
         try {
             $scope->cancel();
-            yield $scope;
+            $scope->await();
         } catch (CanceledFailure) {
             # Expected
         }
 
+        # Regression: cancelling and awaiting a child scope must restore the parent
+        # workflow context so the parent can schedule another Temporal command.
+        Workflow::timer(1);
+
         # Wait for activity result
-        yield Workflow::awaitWithTimeout('5 seconds', fn() => $this->result !== '');
+        Workflow::awaitWithTimeout('5 seconds', fn() => $this->result !== '');
 
         return $this->result;
     }
 
     #[Workflow\SignalMethod('activity_result')]
-    public function activityResult(string $result)
+    public function activityResult(string $result): void
     {
         $this->result = $result;
     }
@@ -109,8 +113,7 @@ class FeatureActivity
 {
     public function __construct(
         private readonly WorkflowClientInterface $client,
-    ) {
-    }
+    ) {}
 
     /**
      * @return PromiseInterface<null>

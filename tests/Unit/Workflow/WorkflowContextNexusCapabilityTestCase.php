@@ -27,7 +27,7 @@ use Temporal\Workflow\WorkflowContextInterface;
 use Temporal\Workflow\WorkflowExecution;
 use Temporal\Workflow\WorkflowInfo;
 
-final class WorkflowContextInterfaceCompatibilityTestCase extends TestCase
+final class WorkflowContextNexusCapabilityTestCase extends TestCase
 {
     /**
      * @return iterable<string, array{\Closure(): mixed}>
@@ -46,13 +46,13 @@ final class WorkflowContextInterfaceCompatibilityTestCase extends TestCase
             ),
         ];
         yield 'direct execution' => [
-            static fn(): PromiseInterface => Workflow::executeNexusOperation('operation'),
+            static fn(): mixed => Workflow::executeNexusOperation('operation'),
         ];
     }
 
-    public function testLegacyThirdPartyContextStillLoads(): void
+    public function testBaseContextCanExistWithoutNexusCapability(): void
     {
-        $context = new LegacyThirdPartyWorkflowContext();
+        $context = new BaseWorkflowContext();
 
         self::assertInstanceOf(WorkflowContextInterface::class, $context);
         self::assertNotInstanceOf(NexusWorkflowContextInterface::class, $context);
@@ -60,13 +60,13 @@ final class WorkflowContextInterfaceCompatibilityTestCase extends TestCase
     }
 
     #[DataProvider('nexusFacadeProvider')]
-    public function testNexusFacadeFailsClearlyForLegacyContext(\Closure $call): void
+    public function testNexusFacadeFailsClearlyWithoutNexusCapability(\Closure $call): void
     {
-        Workflow::setCurrentContext(new LegacyThirdPartyWorkflowContext());
+        Workflow::setCurrentContext(new BaseWorkflowContext());
 
         try {
             $call();
-            self::fail('Expected a clear compatibility error.');
+            self::fail('Expected a clear Nexus capability error.');
         } catch (\LogicException $e) {
             self::assertSame(
                 'The active Workflow context does not support Nexus operations.',
@@ -79,10 +79,9 @@ final class WorkflowContextInterfaceCompatibilityTestCase extends TestCase
 }
 
 /**
- * Snapshot of a third-party implementation compiled against the pre-Nexus
- * WorkflowContextInterface. It intentionally has no Nexus methods.
+ * Minimal base workflow context without the optional Nexus capability.
  */
-final class LegacyThirdPartyWorkflowContext implements WorkflowContextInterface
+final class BaseWorkflowContext implements WorkflowContextInterface
 {
     public function now(): \DateTimeInterface
     {

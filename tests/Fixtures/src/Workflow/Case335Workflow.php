@@ -1,5 +1,7 @@
 <?php
 
+declare(strict_types=1);
+
 /**
  * This file is part of Temporal package.
  *
@@ -20,11 +22,11 @@ class Case335Workflow
     private bool $timerRun = false;
 
     #[SignalMethod('signal')]
-    public function signal()
+    public function signal(): void
     {
         $this->exit = true;
 
-        yield Workflow::timer(1);
+        Workflow::timer(1);
 
         $this->timerRun = true;
     }
@@ -32,7 +34,7 @@ class Case335Workflow
     #[WorkflowMethod('case335_workflow')]
     public function run()
     {
-        yield Workflow::await(fn() => $this->exit);
+        Workflow::await(fn() => $this->exit);
         return $this->timerRun;
     }
 }

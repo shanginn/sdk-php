@@ -62,14 +62,14 @@ class TimeoutTest extends TestCase
 class TestWorkflow
 {
     #[WorkflowMethod(name: "Extra_Timeout_WorkflowUpdate")]
-    public function handle()
+    public function handle(): void
     {
-        yield Workflow::await(static fn() => false);
+        Workflow::await(static fn() => false);
     }
 
     #[Workflow\UpdateMethod(name: 'sleep')]
     public function sleep(string $sleep): mixed
     {
-        yield Workflow::timer(\DateInterval::createFromDateString($sleep));
+        Workflow::timer(\DateInterval::createFromDateString($sleep));
     }
 }

@@ -40,7 +40,7 @@ class FeatureWorkflow
     #[WorkflowMethod('Harness_Update_BasicAsync')]
     public function run()
     {
-        yield Workflow::await(fn(): bool => $this->state !== '');
+        Workflow::await(fn(): bool => $this->state !== '');
         return $this->state;
     }
 

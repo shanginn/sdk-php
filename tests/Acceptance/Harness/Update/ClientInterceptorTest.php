@@ -22,11 +22,6 @@ use Temporal\Workflow\WorkflowMethod;
 
 class ClientInterceptorTest extends TestCase
 {
-    public function pipelineProvider(): PipelineProvider
-    {
-        return new SimplePipelineProvider([new Interceptor()]);
-    }
-
     #[Test]
     public static function check(
         #[Stub('Harness_Update_ClientInterceptor')]
@@ -36,6 +31,11 @@ class ClientInterceptorTest extends TestCase
         $updated = $stub->update('my_update', 1)->getValue(0);
         self::assertSame(2, $updated);
         $stub->getResult();
+    }
+
+    public function pipelineProvider(): PipelineProvider
+    {
+        return new SimplePipelineProvider([new Interceptor()]);
     }
 }
 
@@ -47,7 +47,7 @@ class FeatureWorkflow
     #[WorkflowMethod('Harness_Update_ClientInterceptor')]
     public function run()
     {
-        yield Workflow::await(fn(): bool => $this->done);
+        Workflow::await(fn(): bool => $this->done);
         return 'Hello, World!';
     }
 

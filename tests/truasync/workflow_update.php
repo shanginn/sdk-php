@@ -56,9 +56,9 @@ class TrueAsyncUpdateWorkflow
     }
 
     #[WorkflowMethod(name: 'TrueAsyncUpdateWorkflow')]
-    public function handler(): iterable
+    public function handler()
     {
-        yield Workflow::await(fn() => $this->done);
+        Workflow::await(fn() => $this->done);
 
         return 'total: ' . $this->total;
     }

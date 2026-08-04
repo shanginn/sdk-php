@@ -48,9 +48,9 @@ final class UpgradeOnContinueAsNewV1
 
     #[WorkflowMethod(name: 'TrueAsyncUpgradeOnContinueAsNew')]
     #[WorkflowVersioningBehavior(VersioningBehavior::Pinned)]
-    public function run(int $generation = 1): iterable
+    public function run(int $generation = 1)
     {
-        yield Workflow::await(fn(): bool => $this->upgrade);
+        Workflow::await(fn(): bool => $this->upgrade);
 
         $targetChanged = Workflow::getInfo()->targetWorkerDeploymentVersionChanged;
 

@@ -69,14 +69,16 @@ class TestWorkflow
         );
 
         /** @see TestActivity::sleep() */
-        $run = $stub->execute('Extra_Activity_ActivityPaused.sleep', args: [10]);
+        $run = Workflow::async(
+            static fn() => $stub->execute('Extra_Activity_ActivityPaused.sleep', args: [10]),
+        );
 
-        $timerFired = ! yield Workflow::awaitWithTimeout(
+        $timerFired = !Workflow::awaitWithTimeout(
             '10 seconds',
             $run,
         );
 
-        return $timerFired ? 'timeout' : yield $run;
+        return $timerFired ? 'timeout' : $run->await();
     }
 }
 

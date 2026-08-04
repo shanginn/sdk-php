@@ -3,6 +3,7 @@
 declare(strict_types=1);
 
 namespace Temporal\Tests\Acceptance\Harness\Update\Self;
+
 use PHPUnit\Framework\Attributes\Test;
 use Temporal\Activity;
 use Temporal\Activity\ActivityInterface;
@@ -35,18 +36,18 @@ class FeatureWorkflow
     #[WorkflowMethod('Harness_Update_Self')]
     public function run()
     {
-        yield Workflow::executeActivity(
+        Workflow::executeActivity(
             'result',
             options: ActivityOptions::new()->withStartToCloseTimeout(10),
         );
 
-        yield Workflow::await(fn(): bool => $this->done);
+        Workflow::await(fn(): bool => $this->done);
 
         return 'Hello, world!';
     }
 
     #[Workflow\UpdateMethod('my_update')]
-    public function myUpdate()
+    public function myUpdate(): void
     {
         $this->done = true;
     }

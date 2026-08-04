@@ -106,7 +106,7 @@ class SharedHandlerWorkflow
     #[WorkflowMethod(name: 'Extra_Nexus_MultipleCallers_SharedHandler')]
     public function handle(string $input)
     {
-        yield Workflow::await(fn() => $this->unblocked);
+        Workflow::await(fn() => $this->unblocked);
         return 'shared-handler-result';
     }
 
@@ -130,6 +130,6 @@ class MultipleCallersCallerWorkflow
                 ->withScheduleToCloseTimeout(CarbonInterval::seconds(15)),
         );
 
-        return yield $stub->run($handlerWorkflowId);
+        return  $stub->run($handlerWorkflowId);
     }
 }

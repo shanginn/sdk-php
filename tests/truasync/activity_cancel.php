@@ -40,7 +40,7 @@ use function Async\spawn;
 class CancelProbeWorkflow
 {
     #[WorkflowMethod(name: 'CancelProbeWorkflow')]
-    public function handler(): iterable
+    public function handler()
     {
         $act = Workflow::newActivityStub(
             CancelProbeActivity::class,
@@ -49,7 +49,7 @@ class CancelProbeWorkflow
                 ->withHeartbeatTimeout(20),
         );
 
-        return yield $act->waitForCancel();
+        return $act->waitForCancel();
     }
 }
 

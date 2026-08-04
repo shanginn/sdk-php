@@ -6,8 +6,12 @@ namespace Temporal\Tests\Unit\Workflow;
 
 use React\Promise\Deferred;
 use PHPUnit\Framework\Attributes\CoversClass;
+use Temporal\DataConverter\EncodedValues;
+use Temporal\Internal\Workflow\Process\DeferredFiber;
+use Temporal\Internal\Workflow\Process\FiberSuspension;
 use Temporal\Tests\Unit\AbstractUnit;
 use Temporal\Workflow\NexusOperationHandle;
+use Temporal\Workflow\WorkflowContextInterface;
 
 /**
  * @group unit
@@ -16,7 +20,7 @@ use Temporal\Workflow\NexusOperationHandle;
 #[CoversClass(NexusOperationHandle::class)]
 final class NexusOperationHandleTestCase extends AbstractUnit
 {
-    public function testGetResultReturnsTheWrappedPromise(): void
+    public function testGetResultSuspendsTheWorkflowFiberAndReturnsDecodedValue(): void
     {
         $deferred = new Deferred();
         $handle = new NexusOperationHandle(
@@ -24,19 +28,24 @@ final class NexusOperationHandleTestCase extends AbstractUnit
             rawResult: $deferred->promise(),
         );
 
-        $received = null;
-        $handle->getResult()->then(
-            function ($v) use (&$received): void {
-                $received = $v;
-            },
+        $fiber = DeferredFiber::fromHandler(
+            static fn() => $handle->getResult(),
+            EncodedValues::empty(),
+            $this->createStub(WorkflowContextInterface::class),
         );
+        $suspended = $fiber->start();
+        self::assertInstanceOf(FiberSuspension::class, $suspended);
+        self::assertSame($handle->getResultAsync(), $suspended->promise);
+        self::assertFalse($suspended->interruptOnCancel);
+        self::assertTrue($suspended->preserveCancellationFailure);
 
         // A non-Values resolution flows through decodePromise unchanged.
         $deferred->resolve('hello');
-        self::assertSame('hello', $received);
+        self::assertNull($fiber->resume('hello'));
+        self::assertSame('hello', $fiber->getReturn());
     }
 
-    public function testGetResultIsIdempotent(): void
+    public function testGetResultAsyncIsIdempotent(): void
     {
         $handle = new NexusOperationHandle(
             operationToken: null,
@@ -46,7 +55,7 @@ final class NexusOperationHandleTestCase extends AbstractUnit
         // Multiple calls must return the same promise — callers may attach
         // handlers at different points in the workflow without spawning
         // duplicate operations.
-        self::assertSame($handle->getResult(), $handle->getResult());
+        self::assertSame($handle->getResultAsync(), $handle->getResultAsync());
     }
 
     public function testTokenAvailableBeforeResultResolves(): void
@@ -63,7 +72,7 @@ final class NexusOperationHandleTestCase extends AbstractUnit
         self::assertSame('observed-while-pending', $handle->getOperationToken());
 
         $resolved = false;
-        $handle->getResult()->then(static function () use (&$resolved): void {
+        $handle->getResultAsync()->then(static function () use (&$resolved): void {
             $resolved = true;
         });
         self::assertFalse($resolved);

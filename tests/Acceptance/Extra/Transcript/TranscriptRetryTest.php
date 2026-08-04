@@ -12,7 +12,6 @@ use Temporal\Client\WorkflowStubInterface;
 use Temporal\Common\RetryOptions;
 use Temporal\Exception\Failure\ApplicationFailure;
 use Temporal\Tests\Acceptance\App\Attribute\Stub;
-use Temporal\Testing\Transcript\TranscriptLine;
 use Temporal\Testing\Transcript\TranscriptSection;
 use Temporal\Tests\Acceptance\App\TestCase;
 use Temporal\Workflow;
@@ -70,7 +69,7 @@ final class TranscriptRetryTest extends TestCase
 class RetryWorkflow
 {
     #[WorkflowMethod(name: 'Extra_Transcript_TranscriptRetry_run')]
-    public function run(): \Generator
+    public function run(): string
     {
         $activity = Workflow::newActivityStub(
             RetryActivity::class,
@@ -78,7 +77,7 @@ class RetryWorkflow
                 ->withScheduleToCloseTimeout(30)
                 ->withRetryOptions(RetryOptions::new()->withMaximumAttempts(3)->withInitialInterval(1)),
         );
-        return yield $activity->flaky();
+        return  $activity->flaky();
     }
 }
 

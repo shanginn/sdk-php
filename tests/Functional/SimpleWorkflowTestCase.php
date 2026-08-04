@@ -16,8 +16,8 @@ use Temporal\Tests\TestCase;
 use Temporal\Tests\Workflow\Inheritance\ExtendingWorkflow;
 use Temporal\Tests\Workflow\SimpleDTOWorkflow;
 use Temporal\Tests\Workflow\SimpleWorkflow;
-use Temporal\Tests\Workflow\YieldGeneratorWorkflow;
-use Temporal\Tests\Workflow\YieldScalarsWorkflow;
+use Temporal\Tests\Workflow\DirectStepsWorkflow;
+use Temporal\Tests\Workflow\ScalarValuesWorkflow;
 use Temporal\Workflow\WorkflowExecution;
 
 final class SimpleWorkflowTestCase extends TestCase
@@ -109,19 +109,17 @@ final class SimpleWorkflowTestCase extends TestCase
         $this->fail('LocalActivity not found in history');
     }
 
-    public function testYieldNonPromises(): void
+    public function testReturnsScalarValuesDirectly(): void
     {
-        $workflow = $this->workflowClient->newWorkflowStub(YieldScalarsWorkflow::class);
+        $workflow = $this->workflowClient->newWorkflowStub(ScalarValuesWorkflow::class);
         $run = $this->workflowClient->start($workflow, ['hello', 'world', '!']);
         $this->assertSame(['hello', 'world', '!'], $run->getResult('array'));
     }
 
-    public function testYieldGenerator(): void
+    public function testRunsNestedStepsDirectly(): void
     {
-        $workflow = $this->workflowClient->newWorkflowStub(YieldGeneratorWorkflow::class);
+        $workflow = $this->workflowClient->newWorkflowStub(DirectStepsWorkflow::class);
         $run = $this->workflowClient->start($workflow);
-        // When a generator is yielded, the coroutine doesn't return resolved value from the generator
-        // but returns the generator result itself.
         $this->assertSame('bar', $run->getResult());
     }
 

@@ -24,7 +24,9 @@ use Temporal\Workflow;
 use Temporal\Workflow\WorkflowInterface;
 use Temporal\Workflow\WorkflowMethod;
 
-/** Two HTTP starts with the same Nexus-Request-Id must yield identical operation tokens. */
+/**
+ * Two HTTP starts with the same Nexus-Request-Id must produce identical operation tokens.
+ */
 #[Worker(options: [self::class, 'workerOptions'])]
 class RequestIdIdempotencyTest extends TestCase
 {
@@ -75,7 +77,7 @@ class RequestIdIdempotencyTest extends TestCase
         self::assertSame(
             $token1,
             $token2,
-            "Same Nexus-Request-Id must yield identical operation tokens. token1={$token1} token2={$token2}",
+            "Same Nexus-Request-Id must produce identical operation tokens. token1={$token1} token2={$token2}",
         );
     }
 
@@ -123,7 +125,7 @@ class RequestIdIdempotencyTest extends TestCase
         self::assertNotSame(
             $tokenA,
             $tokenB,
-            'Different Nexus-Request-Ids must yield distinct operation tokens (no accidental cross-request dedup).',
+            'Different Nexus-Request-Ids must produce distinct operation tokens (no accidental cross-request dedup).',
         );
     }
 
@@ -158,7 +160,7 @@ class IdempotentHandlerWorkflow
     #[WorkflowMethod(name: 'Extra_Nexus_Idempotency_Handler')]
     public function handle(string $input)
     {
-        yield Workflow::timer(CarbonInterval::seconds(3));
+        Workflow::timer(CarbonInterval::seconds(3));
         return 'done:' . $input;
     }
 }

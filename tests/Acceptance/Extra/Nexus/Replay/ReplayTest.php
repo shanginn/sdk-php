@@ -31,7 +31,9 @@ use Temporal\Workflow\NexusOperationOptions;
 use Temporal\Workflow\WorkflowInterface;
 use Temporal\Workflow\WorkflowMethod;
 
-/** Replay coverage for caller-side Nexus operations: a clean replay proves determinism. */
+/**
+ * Replay coverage for caller-side Nexus operations: a clean replay proves determinism.
+ */
 #[Worker(options: [self::class, 'workerOptions'])]
 class ReplayTest extends TestCase
 {
@@ -280,7 +282,7 @@ class ReplayAsyncHandlerWorkflow
     public function handle(string $input)
     {
         // One task transition so the operation goes async (Started event).
-        yield Workflow::timer(CarbonInterval::milliseconds(50));
+        Workflow::timer(CarbonInterval::milliseconds(50));
         return 'HELLO, ' . \strtoupper($input) . '!';
     }
 }
@@ -299,7 +301,7 @@ class ReplaySyncCallerWorkflow
                 ->withEndpoint($endpoint)
                 ->withScheduleToCloseTimeout(CarbonInterval::seconds(20)),
         );
-        return yield $stub->greet($name);
+        return  $stub->greet($name);
     }
 }
 
@@ -315,7 +317,7 @@ class ReplayAsyncCallerWorkflow
                 ->withEndpoint($endpoint)
                 ->withScheduleToCloseTimeout(CarbonInterval::seconds(20)),
         );
-        return yield $stub->shout($input);
+        return  $stub->shout($input);
     }
 }
 
@@ -326,7 +328,7 @@ class ReplayTimerThenSyncCallerWorkflow
     public function run(string $endpoint, string $name)
     {
         // Timer first: minimal interleaving that catches per-task command-id drift.
-        yield Workflow::timer(CarbonInterval::milliseconds(50));
+        Workflow::timer(CarbonInterval::milliseconds(50));
 
         $stub = Workflow::newNexusServiceStub(
             ReplaySyncService::class,
@@ -334,7 +336,7 @@ class ReplayTimerThenSyncCallerWorkflow
                 ->withEndpoint($endpoint)
                 ->withScheduleToCloseTimeout(CarbonInterval::seconds(20)),
         );
-        return yield $stub->greet($name);
+        return  $stub->greet($name);
     }
 }
 
@@ -360,7 +362,7 @@ class ReplayCancelHandlerWorkflow
     #[WorkflowMethod(name: 'Extra_Nexus_Replay_CancelHandler')]
     public function handle(string $input)
     {
-        yield Workflow::timer(CarbonInterval::seconds(30));
+        Workflow::timer(CarbonInterval::seconds(30));
         return "completed:{$input}";
     }
 }
@@ -380,16 +382,13 @@ class ReplayCancelCallerWorkflow
                 ->withCancellationType(NexusOperationCancellationType::WaitCompleted),
         );
 
-        $promise = null;
-        $scope = Workflow::async(static function () use ($stub, $input, &$promise): void {
-            $promise = $stub->longRunning($input);
-        });
+        $scope = Workflow::async(static fn() => $stub->longRunning($input));
 
-        yield Workflow::timer(CarbonInterval::seconds(NexusWorkerOptions::PRE_CANCEL_TIMER_SECONDS));
+        Workflow::timer(CarbonInterval::seconds(NexusWorkerOptions::PRE_CANCEL_TIMER_SECONDS));
         $scope->cancel();
 
         try {
-            yield $promise;
+            $scope->await();
         } catch (NexusOperationFailure $e) {
             if ($e->getPrevious() instanceof CanceledFailure) {
                 return 'cancelled';

@@ -9,7 +9,6 @@ use Temporal\Client\WorkflowClientInterface;
 use Temporal\Client\WorkflowStubInterface;
 use Temporal\Exception\Failure\CanceledFailure;
 use Temporal\Exception\Failure\ChildWorkflowFailure;
-use Temporal\Promise;
 use Temporal\Tests\Acceptance\App\Attribute\Stub;
 use Temporal\Tests\Acceptance\App\TestCase;
 use Temporal\Workflow;
@@ -145,10 +144,15 @@ class MainScopeWorkflow
                 ->withParentClosePolicy(Workflow\ParentClosePolicy::Abandon),
         );
 
-        yield $stub->start($input);
+        $stub->start($input);
 
         try {
-            yield Promise::race([$stub->getResult(), Workflow::timer(5)]);
+            Workflow::race([
+                Workflow::async(static fn() => $stub->getResult()),
+                Workflow::async(static function (): void {
+                    Workflow::timer(5);
+                }),
+            ]);
             return 'timer';
         } catch (CanceledFailure) {
             return 'cancelled';
@@ -158,11 +162,11 @@ class MainScopeWorkflow
                 ? 'cancelled'
                 : throw $failure;
         } finally {
-            yield Workflow::asyncDetached(function () {
+            Workflow::asyncDetached(static function (): void {
                 # We shouldn't complete the Workflow immediately:
                 # all the commands from the tick must be sent for testing purposes.
-                yield Workflow::timer(1);
-            });
+                Workflow::timer(1);
+            })->await();
         }
     }
 }
@@ -183,14 +187,19 @@ class InnerScopeCancelWorkflow
                     ->withWorkflowRunTimeout('20 seconds')
                     ->withParentClosePolicy(Workflow\ParentClosePolicy::Abandon),
             );
-            yield $stub->start($input);
+            $stub->start($input);
 
-            return yield $stub->getResult('string');
+            return $stub->getResult('string');
         });
 
 
         try {
-            yield Promise::race([Workflow::timer(5) ,$this->scope]);
+            Workflow::race([
+                Workflow::async(static function (): void {
+                    Workflow::timer(5);
+                }),
+                $this->scope,
+            ]);
             return 'timer';
         } catch (CanceledFailure) {
             return 'cancelled';
@@ -200,11 +209,11 @@ class InnerScopeCancelWorkflow
                 ? 'cancelled'
                 : throw $failure;
         } finally {
-            yield Workflow::asyncDetached(function () {
+            Workflow::asyncDetached(static function (): void {
                 # We shouldn't complete the Workflow immediately:
                 # all the commands from the tick must be sent for testing purposes.
-                yield Workflow::timer(1);
-            });
+                Workflow::timer(1);
+            })->await();
         }
     }
 
@@ -223,7 +232,7 @@ class ChildWorkflow
     #[WorkflowMethod('Harness_ChildWorkflow_CancelAbandon_Child')]
     public function run(string $input)
     {
-        yield Workflow::await(fn(): bool => $this->exit);
+        Workflow::await(fn(): bool => $this->exit);
         return $input;
     }
 

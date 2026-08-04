@@ -31,14 +31,14 @@ class PauseTest extends TestCase
                 ->withAction(
                     StartWorkflowAction::new('Harness_Schedule_Pause')
                         ->withTaskQueue($feature->taskQueue)
-                        ->withInput(['arg1'])
+                        ->withInput(['arg1']),
                 )->withSpec(
                     ScheduleSpec::new()
-                        ->withIntervalList(CarbonInterval::minute(1))
+                        ->withIntervalList(CarbonInterval::minute(1)),
                 )->withState(
                     ScheduleState::new()
                         ->withPaused(true)
-                        ->withNotes('initial note')
+                        ->withNotes('initial note'),
                 ),
             options: ScheduleOptions::new()
                 ->withNamespace($runtime->namespace),

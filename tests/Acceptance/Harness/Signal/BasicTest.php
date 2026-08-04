@@ -32,12 +32,12 @@ class FeatureWorkflow
     #[WorkflowMethod('Harness_Signal_Basic')]
     public function run()
     {
-        yield Workflow::await(fn(): bool => $this->value !== '');
+        Workflow::await(fn(): bool => $this->value !== '');
         return $this->value;
     }
 
     #[SignalMethod('my_signal')]
-    public function mySignal(string $arg)
+    public function mySignal(string $arg): void
     {
         $this->value = $arg;
     }

@@ -60,7 +60,7 @@ class FeatureWorkflow
         // Non-deterministic hack
         $replay = Workflow::isReplaying();
 
-        yield Workflow::await(fn(): bool => $this->values !== []);
+        Workflow::await(fn(): bool => $this->values !== []);
 
         // Add some blocking lag 500ms
         \usleep(500_000);

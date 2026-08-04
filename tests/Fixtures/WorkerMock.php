@@ -20,6 +20,7 @@ use Temporal\Worker\Transport\Codec\JsonCodec;
 use Temporal\Worker\WorkerFactoryInterface;
 use Temporal\WorkerFactory;
 use Temporal\Worker\Transport\CommandBatch;
+use Temporal\Worker\TrueAsync\NullRpcConnection;
 
 class WorkerMock
 {
@@ -41,7 +42,7 @@ class WorkerMock
     {
         $mock = new self();
 
-        $mock->factory = WorkerFactory::create();
+        $mock->factory = WorkerFactory::create(rpc: new NullRpcConnection());
         $mock->registerWorkflowAndActivities();
 
         Request::resetLastId(9000);

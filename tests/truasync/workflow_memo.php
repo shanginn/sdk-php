@@ -39,11 +39,11 @@ class TrueAsyncMemoWorkflow
     }
 
     #[WorkflowMethod(name: 'TrueAsyncMemoWorkflow')]
-    public function handler(string $value): iterable
+    public function handler(string $value)
     {
         Workflow::upsertMemo(['note' => $value, 'count' => 7]);
 
-        yield Workflow::await(fn() => $this->done);
+        Workflow::await(fn() => $this->done);
 
         return 'done';
     }

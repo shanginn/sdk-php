@@ -39,7 +39,7 @@ use function Async\spawn;
 class HeartbeatWorkflow
 {
     #[WorkflowMethod(name: 'HeartbeatWorkflow')]
-    public function handler(string $input): iterable
+    public function handler(string $input)
     {
         $act = Workflow::newActivityStub(
             HeartbeatActivity::class,
@@ -52,7 +52,7 @@ class HeartbeatWorkflow
                 ),
         );
 
-        return yield $act->step($input);
+        return $act->step($input);
     }
 }
 

@@ -33,6 +33,48 @@ $factory->run();
 register multiple task queues; each gets its own Rust Core worker and all of
 them run concurrently in one structured TrueAsync scope.
 
+## Direct Workflow API
+
+Workflow handlers return their domain value directly. Activities, timers, child
+Workflows, Nexus operations, and other blocking Workflow primitives suspend the
+current TrueAsync fiber internally:
+
+```php
+use Temporal\Activity\ActivityOptions;
+use Temporal\Workflow;
+
+#[Workflow\WorkflowInterface]
+final class OrderWorkflow
+{
+    #[Workflow\WorkflowMethod]
+    public function place(string $orderId): OrderResult
+    {
+        $activities = Workflow::newActivityStub(
+            OrderActivities::class,
+            ActivityOptions::new()->withStartToCloseTimeout('30 seconds'),
+        );
+
+        $inventory = Workflow::async(
+            fn(): Reservation => $activities->reserve($orderId),
+        );
+        $payment = Workflow::async(
+            fn(): Payment => $activities->charge($orderId),
+        );
+
+        [$reservation, $receipt] = Workflow::all([$inventory, $payment]);
+        Workflow::timer('1 second');
+
+        return new OrderResult($reservation, $receipt);
+    }
+}
+```
+
+Use `Workflow::async()` only when operations should run concurrently, then join
+their cancellation scopes with `Workflow::all()`, `Workflow::any()`, or
+`Workflow::race()`. Generator Workflow handlers and generator-based suspension
+are intentionally unsupported; this SDK does not preserve that legacy
+execution model.
+
 ## Requirements
 
 | Component | Requirement |

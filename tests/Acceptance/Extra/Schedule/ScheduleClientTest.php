@@ -20,8 +20,7 @@ class ScheduleClientTest extends TestCase
     #[Test]
     public function listSchedulesWithQuery(
         ScheduleClientInterface $client,
-    ): void
-    {
+    ): void {
         /** @var list<ScheduleHandle> $handle */
         $handle = [];
         // Create a new schedules
@@ -35,8 +34,8 @@ class ScheduleClientTest extends TestCase
                     ->withSearchAttributes(
                         EncodedCollection::fromValues([
                             'bar' => $i % 2 === 0 ? 4242 : 24,
-                        ])
-                    )
+                        ]),
+                    ),
             );
         }
 
@@ -45,7 +44,7 @@ class ScheduleClientTest extends TestCase
         check:
         $paginator = $client->listSchedules(
             pageSize: 10,
-            query: 'bar = 4242'
+            query: 'bar = 4242',
         );
         if (\count($paginator->getPageItems()) < 6 && \microtime(true) < $deadline) {
             goto check;
@@ -54,7 +53,7 @@ class ScheduleClientTest extends TestCase
         try {
             $paginator = $client->listSchedules(
                 pageSize: 5,
-                query: 'bar = 4242'
+                query: 'bar = 4242',
             );
 
             $this->assertCount(5, $paginator->getPageItems());

@@ -114,7 +114,9 @@ final class Item
 #[Service(name: 'ShapeService')]
 class ShapeService
 {
-    /** Operation with no input parameter — handler receives `null`. */
+    /**
+     * Operation with no input parameter — handler receives `null`.
+     */
     #[Operation]
     public function pingNoInput(): string
     {

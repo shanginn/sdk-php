@@ -44,18 +44,12 @@ Steps:
 */
 
 const CODEC_ENCODING = 'binary/plain';
-\define(__NAMESPACE__ . '\EXPECTED_RESULT', (string)0xDEADBEEF);
+\define(__NAMESPACE__ . '\EXPECTED_RESULT', (string) 0xDEADBEEF);
 \define(__NAMESPACE__ . '\INPUT', new Bytes(EXPECTED_RESULT));
 
 class BinaryTest extends TestCase
 {
     private Interceptor $interceptor;
-
-    protected function setUp(): void
-    {
-        $this->interceptor = new Interceptor();
-        parent::setUp();
-    }
 
     public function pipelineProvider(): PipelineProvider
     {
@@ -87,6 +81,12 @@ class BinaryTest extends TestCase
         /** @var Payload $resultPayload */
         $resultPayload = $this->interceptor->result->toPayloads()->getPayloads()[0];
         self::assertSame(CODEC_ENCODING, $resultPayload->getMetadata()['encoding']);
+    }
+
+    protected function setUp(): void
+    {
+        $this->interceptor = new Interceptor();
+        parent::setUp();
     }
 }
 

@@ -14,6 +14,7 @@ final class SearchAttributeTestInvoker
 {
     public function __invoke(): void
     {
+        $namespace = \getenv('TEMPORAL_NAMESPACE');
         $operation = new NativeUnaryClient(
             new Connection(TemporalServer::address()),
             NativeUnaryClient::SERVICE_OPERATOR,
@@ -22,6 +23,7 @@ final class SearchAttributeTestInvoker
             'AddSearchAttributes',
             new AddSearchAttributesRequest(
                 [
+                    'namespace' => \is_string($namespace) && $namespace !== '' ? $namespace : 'default',
                     'search_attributes' => [
                         'attr1' => 2, // Keyword
                         'attr2' => 5, // Bool

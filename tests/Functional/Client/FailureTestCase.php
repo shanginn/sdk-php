@@ -22,6 +22,7 @@ use Temporal\Exception\Failure\ApplicationFailure;
 use Temporal\Exception\Failure\ChildWorkflowFailure;
 use Temporal\Tests\Workflow\SignalExceptionsWorkflow;
 use Temporal\Tests\Workflow\UpdateExceptionsWorkflow;
+use Temporal\Workflow\WorkflowStub;
 
 /**
  * @group client
@@ -88,20 +89,30 @@ class FailureTestCase extends AbstractClient
         }
     }
 
+    /**
+     * @group skip-on-test-server
+     */
     public function testSignalThatThrowsRetryableException()
     {
         $client = $this->createClient();
         $wf = $client->newWorkflowStub(SignalExceptionsWorkflow::class);
 
-        $run = $client->start($wf);
+        $client->start($wf);
 
-        $wf->failRetryable();
+        try {
+            $wf->failRetryable();
 
-        sleep(1);
-        $wf->exit();
+            sleep(1);
+            $wf->exit();
 
-        // There is no any exception because the workflow has not failed after the `failRetryable` signal.
-        $this->assertTrue(true);
+            // There is no any exception because the workflow has not failed after the `failRetryable` signal.
+            $this->assertTrue(true);
+        } finally {
+            // A retryable signal failure keeps failing the same Workflow Task
+            // before the later exit signal can run. Close that intentional
+            // retry loop so it cannot starve the shared functional worker.
+            WorkflowStub::fromWorkflow($wf)->terminate('functional test cleanup');
+        }
     }
 
     public function testSignalThatThrowsCustomError()

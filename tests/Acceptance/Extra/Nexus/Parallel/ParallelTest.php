@@ -10,7 +10,6 @@ use Temporal\Client\WorkflowClientInterface;
 use Temporal\Client\WorkflowOptions;
 use Temporal\Nexus\Attribute\Operation;
 use Temporal\Nexus\Attribute\Service;
-use Temporal\Promise;
 use Temporal\Tests\Acceptance\App\Attribute\Worker;
 use Temporal\Tests\Acceptance\App\Runtime\State;
 use Temporal\Tests\Acceptance\App\TestCase;
@@ -23,7 +22,7 @@ use Temporal\Workflow\WorkflowInterface;
 use Temporal\Workflow\WorkflowMethod;
 
 /**
- * P4 #17 — workflow fans out N Nexus sync operations via {@see Promise::all()}
+ * P4 #17 — workflow fans out N Nexus sync operations via {@see Workflow::all()}
  * and waits for all of them to complete.
  *
  * Distinct from {@see \Temporal\Tests\Acceptance\Extra\Nexus\MultiOperation\MultiOperationTest}
@@ -86,10 +85,10 @@ class ParallelCallerWorkflow
 
         $promises = [];
         for ($i = 1; $i <= 5; $i++) {
-            $promises[] = $stub->double($i);
+            $promises[] = Workflow::async(static fn() => $stub->double($i));
         }
 
-        $results = yield Promise::all($promises);
+        $results = Workflow::all($promises);
 
         return 'sum=' . \array_sum($results);
     }

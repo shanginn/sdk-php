@@ -86,7 +86,7 @@ class CoexistenceWorkflow
             CoexistenceActivity::class,
             ActivityOptions::new()->withStartToCloseTimeout(10),
         );
-        return yield $activity->process('hello');
+        return  $activity->process('hello');
     }
 }
 

@@ -29,7 +29,9 @@ use Temporal\Workflow\NexusOperationOptions;
 use Temporal\Workflow\WorkflowInterface;
 use Temporal\Workflow\WorkflowMethod;
 
-/** Async-cancel matrix: TryCancel, WaitCompleted, Unspecified, Abandon, cancel-before-sent. */
+/**
+ * Async-cancel matrix: TryCancel, WaitCompleted, Unspecified, Abandon, cancel-before-sent.
+ */
 #[Worker(options: [self::class, 'workerOptions'])]
 class AsyncCancelTypesTest extends TestCase
 {
@@ -158,7 +160,7 @@ class LongRunningHandlerWorkflow
     public function handle(string $input)
     {
         try {
-            yield Workflow::timer(CarbonInterval::seconds(30));
+            Workflow::timer(CarbonInterval::seconds(30));
             return "completed:{$input}";
         } catch (CanceledFailure) {
             return "cancelled:{$input}";
@@ -188,7 +190,7 @@ class AbandonHandlerWorkflow
     #[WorkflowMethod(name: 'Extra_Nexus_AsyncCancelTypes_AbandonHandler')]
     public function handle(string $input)
     {
-        yield Workflow::timer(CarbonInterval::seconds(5));
+        Workflow::timer(CarbonInterval::seconds(5));
         return "completed:{$input}";
     }
 }
@@ -211,18 +213,15 @@ class CancelTypesCallerWorkflow
                 ->withCancellationType($cancelType),
         );
 
-        $promise = null;
-        $scope = Workflow::async(static function () use ($stub, $opName, &$promise): void {
-            $promise = $stub->{$opName}('payload');
-        });
+        $scope = Workflow::async(static fn() => $stub->{$opName}('payload'));
 
         if ($waitBeforeCancel > 0) {
-            yield Workflow::timer(CarbonInterval::milliseconds($waitBeforeCancel));
+            Workflow::timer(CarbonInterval::milliseconds($waitBeforeCancel));
         }
         $scope->cancel();
 
         try {
-            $result = yield $promise;
+            $result = $scope->await();
 
             return $result;
         } catch (NexusOperationFailure $e) {

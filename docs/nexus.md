@@ -231,7 +231,7 @@ $payments = Workflow::newNexusServiceStub(
         ->withCancellationType(NexusOperationCancellationType::WaitCompleted),
 );
 
-$result = yield $payments->capture($input);
+$result = $payments->capture($input);
 ```
 
 Use `Workflow::newUntypedNexusOperationStub()` only when the wire service and

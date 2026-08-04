@@ -38,17 +38,17 @@ use function Async\spawn;
 class TrueAsyncReplayWorkflow
 {
     #[WorkflowMethod(name: 'TrueAsyncReplayWorkflow')]
-    public function handler(string $input): iterable
+    public function handler(string $input)
     {
         $act = Workflow::newActivityStub(
             TrueAsyncReplayActivity::class,
             ActivityOptions::new()->withStartToCloseTimeout(10),
         );
 
-        yield Workflow::timer(1);
-        $a = yield $act->upper($input);
-        yield Workflow::timer(1);
-        $b = yield $act->upper($a . '-2');
+        Workflow::timer(1);
+        $a = $act->upper($input);
+        Workflow::timer(1);
+        $b = $act->upper($a . '-2');
 
         return 'done: ' . $a . '/' . $b;
     }

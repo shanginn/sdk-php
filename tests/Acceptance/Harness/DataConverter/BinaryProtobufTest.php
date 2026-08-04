@@ -27,12 +27,6 @@ class BinaryProtobufTest extends TestCase
 {
     private GrpcCallInterceptor $interceptor;
 
-    protected function setUp(): void
-    {
-        $this->interceptor = new GrpcCallInterceptor();
-        parent::setUp();
-    }
-
     public function pipelineProvider(): PipelineProvider
     {
         return new SimplePipelineProvider([$this->interceptor]);
@@ -64,6 +58,12 @@ class BinaryProtobufTest extends TestCase
 
         self::assertSame('binary/protobuf', $payload->getMetadata()['encoding']);
         self::assertSame('temporal.api.common.v1.DataBlob', $payload->getMetadata()['messageType']);
+    }
+
+    protected function setUp(): void
+    {
+        $this->interceptor = new GrpcCallInterceptor();
+        parent::setUp();
     }
 }
 

@@ -43,11 +43,11 @@ class TrueAsyncSearchAttrWorkflow
     }
 
     #[WorkflowMethod(name: 'TrueAsyncSearchAttrWorkflow')]
-    public function handler(string $value): iterable
+    public function handler(string $value)
     {
         Workflow::upsertSearchAttributes(['CustomKeywordField' => $value]);
 
-        yield Workflow::await(fn() => $this->done);
+        Workflow::await(fn() => $this->done);
 
         return 'done';
     }

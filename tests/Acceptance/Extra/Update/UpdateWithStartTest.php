@@ -40,7 +40,7 @@ class UpdateWithStartTest extends TestCase
         $stub->signal('exit');
         $result = $stub->getResult();
 
-        $this->assertSame(['key' => null], (array)$result);
+        $this->assertSame(['key' => null], (array) $result);
         $this->assertFalse($handle->hasResult());
     }
 
@@ -151,20 +151,19 @@ class TestWorkflow
     public function handle()
     {
         $this->updateStarted or throw new \RuntimeException('Not started with update');
-        yield Workflow::await(fn() => $this->exit);
+        Workflow::await(fn() => $this->exit);
         return $this->awaits;
     }
 
     /**
      * @param non-empty-string $name
-     * @return mixed
      */
     #[Workflow\UpdateMethod(name: 'await')]
     public function add(string $name): mixed
     {
         $this->updateStarted = true;
         $this->awaits[$name] ??= null;
-        yield Workflow::await(fn() => $this->awaits[$name] !== null);
+        Workflow::await(fn() => $this->awaits[$name] !== null);
         return $this->awaits[$name];
     }
 

@@ -26,7 +26,9 @@ use Temporal\Worker\WorkerOptions;
 use Temporal\Workflow\WorkflowInterface;
 use Temporal\Workflow\WorkflowMethod;
 
-/** Async Nexus operation over HTTP: handler returns an operation token (manual-token start). */
+/**
+ * Async Nexus operation over HTTP: handler returns an operation token (manual-token start).
+ */
 #[Worker(options: [self::class, 'workerOptions'])]
 class AsyncOperationTest extends TestCase
 {
@@ -66,7 +68,9 @@ class AsyncOperationTest extends TestCase
         self::assertNotSame('', $token, 'Operation token must be non-empty.');
     }
 
-    /** Async start without `Nexus-Callback-Url`: server policy decides 201 vs 4xx; never a 5xx. */
+    /**
+     * Async start without `Nexus-Callback-Url`: server policy decides 201 vs 4xx; never a 5xx.
+     */
     #[Test]
     public function asyncOperationWithoutCallbackStillStarts(
         State $state,

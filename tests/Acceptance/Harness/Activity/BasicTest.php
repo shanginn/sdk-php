@@ -45,12 +45,12 @@ class FeatureWorkflow
     #[WorkflowMethod('Harness_Activity_Basic')]
     public function run()
     {
-        yield Workflow::newActivityStub(
+        Workflow::newActivityStub(
             FeatureActivity::class,
             ActivityOptions::new()->withScheduleToCloseTimeout('1 minute'),
         )->echo();
 
-        return yield Workflow::newActivityStub(
+        return  Workflow::newActivityStub(
             FeatureActivity::class,
             ActivityOptions::new()->withStartToCloseTimeout('1 minute'),
         )->echo();

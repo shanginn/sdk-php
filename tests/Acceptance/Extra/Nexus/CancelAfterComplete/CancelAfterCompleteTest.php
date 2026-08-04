@@ -84,7 +84,7 @@ class CancelAfterCompleteHandlerWorkflow
     #[WorkflowMethod(name: 'Extra_Nexus_Cancel_AfterComplete_Handler')]
     public function handle(string $input)
     {
-        yield Workflow::timer(CarbonInterval::milliseconds(50));
+        Workflow::timer(CarbonInterval::milliseconds(50));
         return "completed:{$input}";
     }
 }
@@ -107,20 +107,17 @@ class CancelAfterCompleteCallerWorkflow
                 ->withCancellationType(NexusOperationCancellationType::WaitRequested),
         );
 
-        $promise = null;
-        $scope = Workflow::async(static function () use ($stub, $input, &$promise): void {
-            $promise = $stub->quick($input);
-        });
+        $scope = Workflow::async(static fn() => $stub->quick($input));
 
         try {
-            $result = yield $promise;
+            $result = $scope->await();
         } catch (CanceledFailure) {
             return 'unexpected-cancel-before-completion';
         }
 
         $scope->cancel();
 
-        yield Workflow::timer(CarbonInterval::milliseconds(50));
+        Workflow::timer(CarbonInterval::milliseconds(50));
 
         return $result;
     }

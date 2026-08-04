@@ -23,7 +23,13 @@ interface ChildWorkflowStubInterface
     /**
      * @throws \LogicException
      */
-    public function getExecution(): PromiseInterface;
+    public function getExecution(): WorkflowExecution;
+
+    /**
+     * @internal
+     * @return PromiseInterface<WorkflowExecution>
+     */
+    public function getExecutionAsync(): PromiseInterface;
 
     public function getChildWorkflowType(): string;
 
@@ -32,27 +38,49 @@ interface ChildWorkflowStubInterface
     /**
      * @param TType $returnType
      *
-     * @return CompletableResultInterface
      */
-    public function execute(array $args = [], $returnType = null): PromiseInterface;
+    public function execute(array $args = [], $returnType = null): mixed;
 
     /**
-     * @param array $args
-     *
-     * @return CompletableResultInterface<WorkflowExecution>
+     * @internal
+     * @param null|mixed $returnType
+     * @return PromiseInterface<mixed>
      */
-    public function start(...$args): PromiseInterface;
+    public function executeAsync(array $args = [], $returnType = null): PromiseInterface;
+
+    /**
+     * @param mixed ...$args
+     *
+     */
+    public function start(...$args): WorkflowExecution;
+
+    /**
+     * @internal
+     * @param mixed ...$args
+     */
+    public function startAsync(...$args): PromiseInterface;
 
     /**
      * @param TType $returnType
      */
-    public function getResult($returnType = null): PromiseInterface;
+    public function getResult($returnType = null): mixed;
+
+    /**
+     * @internal
+     * @param null|mixed $returnType
+     */
+    public function getResultAsync($returnType = null): PromiseInterface;
 
     /**
      * @param non-empty-string $name
      *
-     * @return CompletableResultInterface
      * @throws \LogicException
      */
-    public function signal(string $name, array $args = []): PromiseInterface;
+    public function signal(string $name, array $args = []): void;
+
+    /**
+     * @internal
+     * @return CompletableResultInterface
+     */
+    public function signalAsync(string $name, array $args = []): PromiseInterface;
 }

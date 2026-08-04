@@ -18,11 +18,11 @@ use Temporal\Workflow\WorkflowMethod;
 final class MatchingReplayWorkflow
 {
     #[WorkflowMethod(name: 'Extra_Versioning_Classic')]
-    public function run(): iterable
+    public function run()
     {
-        $version = yield Workflow::getVersion('test', Workflow::DEFAULT_VERSION, 2);
+        $version = Workflow::getVersion('test', Workflow::DEFAULT_VERSION, 2);
         if ($version === 1) {
-            yield Workflow::sideEffect(static fn(): string => 'test');
+            Workflow::sideEffect(static fn(): string => 'test');
         }
 
         return 'v1';
@@ -33,9 +33,9 @@ final class MatchingReplayWorkflow
 final class MismatchingReplayWorkflow
 {
     #[WorkflowMethod(name: 'Extra_Versioning_Classic')]
-    public function run(): iterable
+    public function run()
     {
-        yield Workflow::timer(1);
+        Workflow::timer(1);
     }
 }
 

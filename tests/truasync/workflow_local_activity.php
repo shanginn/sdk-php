@@ -40,7 +40,7 @@ use function Async\spawn;
 class TrueAsyncLocalActivityWorkflow
 {
     #[WorkflowMethod(name: 'TrueAsyncLocalActivityWorkflow')]
-    public function handler(string $input): iterable
+    public function handler(string $input)
     {
         // Passing LocalActivityOptions routes executeActivity down the local path
         // (the typed-stub proxy instead keys off a #[LocalActivityInterface] attr).
@@ -53,8 +53,8 @@ class TrueAsyncLocalActivityWorkflow
                     ->withMaximumAttempts(2),
             );
 
-        $a = yield Workflow::executeActivity('TrueAsyncLocalActivity.upper', [$input], $options);
-        $b = yield Workflow::executeActivity('TrueAsyncLocalActivity.upper', [$a . '-2'], $options);
+        $a = Workflow::executeActivity('TrueAsyncLocalActivity.upper', [$input], $options);
+        $b = Workflow::executeActivity('TrueAsyncLocalActivity.upper', [$a . '-2'], $options);
 
         return 'local: ' . $a . '/' . $b;
     }

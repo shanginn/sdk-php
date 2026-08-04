@@ -34,7 +34,7 @@ use Temporal\Workflow;
 use Temporal\Workflow\CancellationScopeInterface;
 
 /**
- * Unlike Java implementation, PHP has merged coroutine and cancellation scope into a single instance.
+ * A workflow Fiber and its cancellation scope are represented by one instance.
  *
  * @internal CoroutineScope is an internal library class, please do not use it in your code.
  * @psalm-internal Temporal\Internal
@@ -61,12 +61,13 @@ class Scope implements CancellationScopeInterface, Destroyable
     protected Deferred $deferred;
 
     /**
-     * Worker handler generator that yields promises and requests that are processed in the {@see self::next()} method.
+     * Workflow handler Fiber. It suspends only through {@see Awaiter} and is
+     * resumed by this scope after the suspended promise settles.
      */
-    protected DeferredGenerator $coroutine;
+    protected DeferredFiber $coroutine;
 
     /**
-     * Every coroutine runs on its own loop layer.
+     * Every workflow Fiber runs on its own loop layer.
      *
      * @var non-empty-string
      */
@@ -91,6 +92,7 @@ class Scope implements CancellationScopeInterface, Destroyable
     private bool $cancelled = false;
     private bool $closed = false;
     private ?\Throwable $cancelReason = null;
+    private bool $preserveCancellationFailure = false;
 
     public function __construct(
         ServiceContainer $services,
@@ -127,8 +129,8 @@ class Scope implements CancellationScopeInterface, Destroyable
      */
     public function start(MethodHandler|\Closure $handler, ValuesInterface $values, bool $deferred): void
     {
-        // Create a coroutine generator
-        $this->coroutine = DeferredGenerator::fromHandler($handler, $values)
+        // Create a managed workflow Fiber
+        $this->coroutine = DeferredFiber::fromHandler($handler, $values, $this->scopeContext)
             ->catch($this->onException(...));
 
         $deferred
@@ -158,7 +160,7 @@ class Scope implements CancellationScopeInterface, Destroyable
             },
         );
 
-        // Create a coroutine generator
+        // Create a managed workflow Fiber
         $this->coroutine = $this->callSignalOrUpdateHandler($handler, $input->arguments);
         $this->next();
     }
@@ -176,21 +178,9 @@ class Scope implements CancellationScopeInterface, Destroyable
             fn() => $this->context->getHandlerState()->removeSignal($id),
         );
 
-        // Create a coroutine generator
+        // Create a managed workflow Fiber
         $this->coroutine = $this->callSignalOrUpdateHandler($handler, $values);
         $this->next();
-    }
-
-    /**
-     * @return $this
-     */
-    public function attach(\Generator $generator): self
-    {
-        $this->coroutine = DeferredGenerator::fromGenerator($generator)
-            ->catch($this->onException(...));
-
-        $this->next();
-        return $this;
     }
 
     public function onCancel(callable $then): self
@@ -211,22 +201,27 @@ class Scope implements CancellationScopeInterface, Destroyable
 
     public function cancel(?\Throwable $reason = null): void
     {
-        if ($this->detached && !$reason instanceof DestructMemorizedInstanceException) {
-            // detaches scopes can be offload via memory flush
-            return;
-        }
-
-        if ($this->cancelled) {
+        if ($this->cancelled || $this->closed) {
             return;
         }
 
         $this->cancelled = true;
         $this->cancelReason = $reason;
 
-        foreach ($this->onCancel as $i => $handler) {
-            $this->makeCurrent();
-            unset($this->onCancel[$i]);
-            $handler($reason);
+        try {
+            $previousContext = Workflow::getCurrentContext();
+        } catch (\Throwable) {
+            $previousContext = null;
+        }
+
+        try {
+            foreach ($this->onCancel as $i => $handler) {
+                $this->makeCurrent();
+                unset($this->onCancel[$i]);
+                $handler($reason);
+            }
+        } finally {
+            Workflow::setCurrentContext($previousContext);
         }
     }
 
@@ -236,7 +231,14 @@ class Scope implements CancellationScopeInterface, Destroyable
     public function startScope(callable $handler, bool $detached, ?string $layer = null): CancellationScopeInterface
     {
         $scope = $this->createScope($detached, $layer);
-        $scope->start($handler(...), EncodedValues::empty(), false);
+        try {
+            $scope->start($handler(...), EncodedValues::empty(), false);
+        } finally {
+            // Starting a child runs it immediately up to its first
+            // deterministic suspension point. Always rebind the parent even
+            // if child startup or a condition predicate throws.
+            $this->makeCurrent();
+        }
 
         return $scope;
     }
@@ -244,6 +246,11 @@ class Scope implements CancellationScopeInterface, Destroyable
     public function promise(): PromiseInterface
     {
         return $this->deferred->promise();
+    }
+
+    public function await(): mixed
+    {
+        return Awaiter::await($this);
     }
 
     public function then(
@@ -331,7 +338,7 @@ class Scope implements CancellationScopeInterface, Destroyable
             $scope->layer = $layer;
         }
 
-        $cancelID = $this->addOnCancel($scope->cancel(...));
+        $cancelID = $this->addOnCancel($scope->cancelFromParent(...));
 
         $scope->onClose(
             function () use ($cancelID): void {
@@ -358,16 +365,20 @@ class Scope implements CancellationScopeInterface, Destroyable
      *
      * @param callable(ValuesInterface): mixed $handler
      */
-    protected function callSignalOrUpdateHandler(callable $handler, ValuesInterface $values): DeferredGenerator
+    protected function callSignalOrUpdateHandler(callable $handler, ValuesInterface $values): DeferredFiber
     {
-        return DeferredGenerator::fromHandler(static function (ValuesInterface $values) use ($handler): mixed {
-            try {
-                return $handler($values);
-            } catch (InvalidArgumentException) {
-                // Skip deserialization errors
-                return null;
-            }
-        }, $values)->catch($this->onException(...));
+        return DeferredFiber::fromHandler(
+            static function (ValuesInterface $values) use ($handler): mixed {
+                try {
+                    return $handler($values);
+                } catch (InvalidArgumentException) {
+                    // Skip deserialization errors
+                    return null;
+                }
+            },
+            $values,
+            $this->scopeContext,
+        )->catch($this->onException(...));
     }
 
     protected function onRequest(RequestInterface $request, PromiseInterface $promise, bool $cancellable = true): void
@@ -380,11 +391,6 @@ class Scope implements CancellationScopeInterface, Destroyable
                 return;
             }
 
-            if ($client->isQueued($request)) {
-                $client->cancel($request);
-                return;
-            }
-
             if (!$cancellable) {
                 if ($request instanceof RejectedOnCancelInterface) {
                     $client->reject($request, new CanceledFailure('nexus operation cancelled'));
@@ -393,7 +399,12 @@ class Scope implements CancellationScopeInterface, Destroyable
                 return;
             }
 
-            $client->request(new Cancel($request->getID()), $this->scopeContext);
+            if ($client->isQueued($request)) {
+                $client->cancel($request);
+                return;
+            }
+
+            $client->send(new Cancel($request->getID()));
         }, $cancellable);
 
         // do not cancel already complete promises
@@ -414,52 +425,47 @@ class Scope implements CancellationScopeInterface, Destroyable
     protected function next(): void
     {
         $this->makeCurrent();
-        begin:
         $this->context->resolveConditions();
 
         try {
-            if (!$this->coroutine->valid()) {
-                $this->onResult($this->coroutine->getReturn());
-                return;
-            }
+            $suspended = $this->coroutine->start();
         } catch (\Throwable) {
-            $this->onResult(null);
             return;
         }
 
-        $current = $this->coroutine->current();
+        $this->advance($suspended);
+    }
+
+    private function advance(mixed $suspended): void
+    {
+        $this->makeCurrent();
         $this->context->resolveConditions();
 
-        switch (true) {
-            case $current instanceof Workflow\Mutex:
-                $this->nextPromise($this->context->await($current));
-                break;
-
-            case $current instanceof PromiseInterface:
-                $this->nextPromise($current);
-                break;
-
-            case $current instanceof Deferred:
-                $this->nextPromise($current->promise());
-                break;
-
-                // todo ->context or ->scopeContext?
-            case $current instanceof RequestInterface:
-                $this->nextPromise($this->context->getClient()->request($current, $this->scopeContext));
-                break;
-
-            case $current instanceof \Generator:
-                $this->nextPromise($this->createScope(false)->attach($current));
-                break;
-
-            default:
-                try {
-                    $this->coroutine->send($current);
-                } catch (\Throwable) {
-                    // Ignore
-                }
-                goto begin;
+        if ($this->coroutine->isTerminated()) {
+            try {
+                $this->onResult($this->coroutine->getReturn());
+            } catch (\Throwable $e) {
+                $this->onException($e);
+            }
+            return;
         }
+
+        if (!$this->coroutine->isSuspended()) {
+            $this->onException(new \LogicException('Managed workflow Fiber is neither suspended nor terminated.'));
+            return;
+        }
+
+        if (!$suspended instanceof FiberSuspension) {
+            $type = \get_debug_type($suspended);
+            $this->onException(new \LogicException(
+                "Managed workflow Fiber suspended with unsupported value of type `$type`; "
+                . 'expected an Awaiter suspension instruction.',
+            ));
+            return;
+        }
+
+        $this->preserveCancellationFailure = $suspended->preserveCancellationFailure;
+        $this->nextPromise($suspended->promise, $suspended->interruptOnCancel);
     }
 
     private function addOnCancel(callable $handler, bool $cancellable = true): int
@@ -467,8 +473,18 @@ class Scope implements CancellationScopeInterface, Destroyable
         $id = ++$this->cancelID;
 
         if (FeatureFlags::$propagateCancellationToNewScopes && $this->cancelled && $cancellable) {
-            $this->makeCurrent();
-            $handler($this->cancelReason);
+            try {
+                $previousContext = Workflow::getCurrentContext();
+            } catch (\Throwable) {
+                $previousContext = null;
+            }
+
+            try {
+                $this->makeCurrent();
+                $handler($this->cancelReason);
+            } finally {
+                Workflow::setCurrentContext($previousContext);
+            }
             return $id;
         }
 
@@ -476,9 +492,13 @@ class Scope implements CancellationScopeInterface, Destroyable
         return $id;
     }
 
-    private function nextPromise(PromiseInterface $promise): void
+    private function nextPromise(PromiseInterface $promise, bool $interruptOnCancel): void
     {
-        if ($promise instanceof CancellationScopeInterface && $promise->isCancelled()) {
+        if (
+            $promise instanceof CancellationScopeInterface
+            && $promise->isCancelled()
+            && (!$promise instanceof self || !$promise->preserveCancellationFailure)
+        ) {
             $reason = FeatureFlags::$propagateCancellationToNewScopes && $promise instanceof self
                 ? $promise->cancelReason
                 : null;
@@ -486,24 +506,59 @@ class Scope implements CancellationScopeInterface, Destroyable
             return;
         }
 
-        $onFulfilled = function (mixed $result): mixed {
+        $settled = false;
+        $cancelID = null;
+
+        if ($interruptOnCancel) {
+            $cancelID = $this->addOnCancel(function (?\Throwable $reason = null) use (&$settled): void {
+                if ($settled) {
+                    return;
+                }
+
+                $settled = true;
+                $this->defer(
+                    fn() => $this->handleError($reason ?? new CanceledFailure('')),
+                );
+            });
+        }
+
+        $cleanup = function () use (&$cancelID): void {
+            if ($cancelID !== null) {
+                unset($this->onCancel[$cancelID]);
+                $cancelID = null;
+            }
+        };
+
+        $onFulfilled = function (mixed $result) use (&$settled, $cleanup): mixed {
+            if ($settled) {
+                return $result;
+            }
+
+            $settled = true;
+            $cleanup();
             $this->defer(
                 function () use ($result): void {
                     $this->makeCurrent();
                     try {
-                        $this->coroutine->send($result);
-                        $this->next();
-                    } catch (\Throwable $e) {
-                        $this->onException($e);
+                        $suspended = $this->coroutine->resume($result);
+                    } catch (\Throwable) {
                         return;
                     }
+
+                    $this->advance($suspended);
                 },
             );
 
             return $result;
         };
 
-        $onRejected = function (\Throwable $e): void {
+        $onRejected = function (\Throwable $e) use (&$settled, $cleanup): void {
+            if ($settled) {
+                throw $e;
+            }
+
+            $settled = true;
+            $cleanup();
             $this->defer(
                 function () use ($e): void {
                     if ($e instanceof TemporalFailure && !$e->hasOriginalStackTrace()) {
@@ -533,13 +588,12 @@ class Scope implements CancellationScopeInterface, Destroyable
         $this->makeCurrent();
 
         try {
-            $this->coroutine->throw($e);
-        } catch (\Throwable $e) {
-            $this->onException($e);
+            $suspended = $this->coroutine->throw($e);
+        } catch (\Throwable) {
             return;
         }
 
-        $this->next();
+        $this->advance($suspended);
     }
 
     private function onException(\Throwable $e): void
@@ -549,14 +603,11 @@ class Scope implements CancellationScopeInterface, Destroyable
         }
 
         $this->closed = true;
-        $this->deferred->reject($e);
-
         $this->makeCurrent();
+        $this->deferred->reject($e);
         $this->context->resolveConditions();
 
-        foreach ($this->onClose as $close) {
-            $close($e);
-        }
+        $this->releaseExecutionState($e);
     }
 
     private function onResult(mixed $result): void
@@ -566,13 +617,26 @@ class Scope implements CancellationScopeInterface, Destroyable
         }
 
         $this->closed = true;
-        $this->deferred->resolve($result);
-
         $this->makeCurrent();
+        $this->deferred->resolve($result);
         $this->context->resolveConditions();
 
-        foreach ($this->onClose as $close) {
-            $close($result);
+        $this->releaseExecutionState($result);
+    }
+
+    private function releaseExecutionState(mixed $result): void
+    {
+        $onClose = $this->onClose;
+        $this->onClose = [];
+        $this->onCancel = [];
+        unset($this->coroutine);
+
+        try {
+            foreach ($onClose as $close) {
+                $close($result);
+            }
+        } finally {
+            $this->scopeContext->releaseScope();
         }
     }
 
@@ -580,5 +644,14 @@ class Scope implements CancellationScopeInterface, Destroyable
     {
         $this->services->loop->once($this->layer, $tick);
         $this->services->queue->count() === 0 and $this->services->loop->tick();
+    }
+
+    private function cancelFromParent(?\Throwable $reason = null): void
+    {
+        if ($this->detached && !$reason instanceof DestructMemorizedInstanceException) {
+            return;
+        }
+
+        $this->cancel($reason);
     }
 }

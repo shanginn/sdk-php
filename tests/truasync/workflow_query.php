@@ -36,11 +36,11 @@ class QueryProbeWorkflow
     private bool $done = false;
 
     #[WorkflowMethod(name: 'QueryProbeWorkflow')]
-    public function handler(int $start): iterable
+    public function handler(int $start)
     {
         $this->counter = $start;
 
-        yield Workflow::await(fn(): bool => $this->done);
+        Workflow::await(fn(): bool => $this->done);
 
         return 'completed:' . $this->counter;
     }

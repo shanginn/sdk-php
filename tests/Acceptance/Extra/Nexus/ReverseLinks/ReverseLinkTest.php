@@ -151,7 +151,7 @@ class ReverseLinkHandlerWorkflow
     #[WorkflowMethod(name: 'Extra_Nexus_ReverseLinks_Handler')]
     public function handle(string $input)
     {
-        yield Workflow::timer(CarbonInterval::milliseconds(50));
+        Workflow::timer(CarbonInterval::milliseconds(50));
         return 'done-' . $input;
     }
 }
@@ -169,7 +169,7 @@ class ReverseLinkCallerWorkflow
                 ->withScheduleToCloseTimeout(CarbonInterval::seconds(20)),
         );
 
-        return yield $stub->backedByWorkflow('reverse-link');
+        return  $stub->backedByWorkflow('reverse-link');
     }
 }
 

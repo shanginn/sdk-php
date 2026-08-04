@@ -26,12 +26,6 @@ class JsonProtobufTest extends TestCase
 {
     private ResultInterceptor $interceptor;
 
-    protected function setUp(): void
-    {
-        $this->interceptor = new ResultInterceptor();
-        parent::setUp();
-    }
-
     public function pipelineProvider(): PipelineProvider
     {
         return new SimplePipelineProvider([$this->interceptor]);
@@ -58,6 +52,12 @@ class JsonProtobufTest extends TestCase
         self::assertSame('json/protobuf', $payload->getMetadata()['encoding']);
         self::assertSame('temporal.api.common.v1.DataBlob', $payload->getMetadata()['messageType']);
         self::assertSame('{"data":"MzczNTkyODU1OQ=="}', $payload->getData());
+    }
+
+    protected function setUp(): void
+    {
+        $this->interceptor = new ResultInterceptor();
+        parent::setUp();
     }
 }
 

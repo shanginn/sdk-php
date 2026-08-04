@@ -13,7 +13,6 @@ use Temporal\Client\WorkflowStubInterface;
 use Temporal\Tests\Acceptance\App\Attribute\Stub;
 use Temporal\Tests\Acceptance\App\Runtime\SharedStore;
 use Temporal\Tests\Acceptance\App\Runtime\WorkerStarter;
-use Temporal\Tests\Acceptance\App\Runtime\TemporalStarter;
 use Temporal\Tests\Acceptance\App\TestCase;
 use Temporal\Workflow;
 use Temporal\Workflow\WorkflowInterface;
@@ -64,17 +63,17 @@ class FeatureWorkflow
     #[WorkflowMethod('Harness_Update_WorkerRestart')]
     public function run()
     {
-        yield Workflow::await(fn(): bool => $this->done);
+        Workflow::await(fn(): bool => $this->done);
 
         return 'Hello, World!';
     }
 
     #[Workflow\UpdateMethod('do_activities')]
-    public function doActivities()
+    public function doActivities(): void
     {
-        yield Workflow::executeActivity(
+        Workflow::executeActivity(
             'blocks',
-            options: ActivityOptions::new()->withStartToCloseTimeout(10)
+            options: ActivityOptions::new()->withStartToCloseTimeout(10),
         );
         $this->done = true;
     }

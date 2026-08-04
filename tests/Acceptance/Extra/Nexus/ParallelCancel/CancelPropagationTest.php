@@ -16,7 +16,6 @@ use Temporal\Nexus\Attribute\AsyncOperation;
 use Temporal\Nexus\Attribute\Service;
 use Temporal\Nexus\Nexus;
 use Temporal\Nexus\WorkflowHandle;
-use Temporal\Promise;
 use Temporal\Tests\Acceptance\App\Attribute\Stub;
 use Temporal\Tests\Acceptance\App\Attribute\Worker;
 use Temporal\Tests\Acceptance\App\Runtime\State;
@@ -32,7 +31,7 @@ use Temporal\Workflow\WorkflowInterface;
 use Temporal\Workflow\WorkflowMethod;
 
 /**
- * Scope cancel over Promise::all of N async Nexus ops fans out per-sibling.
+ * Scope cancel over Workflow::all of N async Nexus ops fans out per-sibling.
  */
 #[Worker(options: [self::class, 'workerOptions'])]
 class CancelPropagationTest extends TestCase
@@ -119,7 +118,7 @@ class CancelPropagationHandlerWorkflow
     #[WorkflowMethod(name: 'Extra_Nexus_ParallelCancel_Handler')]
     public function handle(string $input)
     {
-        yield Workflow::timer(CarbonInterval::seconds(45));
+        Workflow::timer(CarbonInterval::seconds(45));
         return "completed:{$input}";
     }
 }
@@ -138,23 +137,23 @@ class CancelPropagationCallerWorkflow
                 ->withCancellationType(NexusOperationCancellationType::WaitCompleted),
         );
 
-        $promises = [];
-        $combined = null;
-        $scope = Workflow::async(static function () use ($stub, &$combined, &$promises): void {
-            $promises = [
-                $stub->longRunning('a'),
-                $stub->longRunning('b'),
-                $stub->longRunning('c'),
+        $operations = [];
+        $combined = Workflow::async(static function () use ($stub, &$operations): array {
+            $operations = [
+                Workflow::async(static fn() => $stub->longRunning('a')),
+                Workflow::async(static fn() => $stub->longRunning('b')),
+                Workflow::async(static fn() => $stub->longRunning('c')),
             ];
-            $combined = Promise::all($promises);
+
+            return Workflow::all($operations);
         });
 
-        yield Workflow::timer(CarbonInterval::seconds(NexusWorkerOptions::PRE_CANCEL_TIMER_SECONDS));
-        $scope->cancel();
+        Workflow::timer(CarbonInterval::seconds(NexusWorkerOptions::PRE_CANCEL_TIMER_SECONDS));
+        $combined->cancel();
 
         $outcome = 'unexpected-no-failure';
         try {
-            yield $combined;
+            $combined->await();
         } catch (NexusOperationFailure $e) {
             $outcome = $e->getPrevious() instanceof CanceledFailure
                 ? 'cancelled'
@@ -164,9 +163,9 @@ class CancelPropagationCallerWorkflow
         }
 
         // Drain every sibling so all terminal events land before the caller closes.
-        foreach ($promises as $promise) {
+        foreach ($operations as $operation) {
             try {
-                yield $promise;
+                $operation->await();
             } catch (\Throwable) {
             }
         }

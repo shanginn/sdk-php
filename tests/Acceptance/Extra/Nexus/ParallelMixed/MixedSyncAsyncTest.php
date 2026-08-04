@@ -15,7 +15,6 @@ use Temporal\Nexus\Attribute\Operation;
 use Temporal\Nexus\Attribute\Service;
 use Temporal\Nexus\Nexus;
 use Temporal\Nexus\WorkflowHandle;
-use Temporal\Promise;
 use Temporal\Tests\Acceptance\App\Attribute\Stub;
 use Temporal\Tests\Acceptance\App\Attribute\Worker;
 use Temporal\Tests\Acceptance\App\Runtime\State;
@@ -29,7 +28,9 @@ use Temporal\Workflow\NexusOperationOptions;
 use Temporal\Workflow\WorkflowInterface;
 use Temporal\Workflow\WorkflowMethod;
 
-/** Mixed sync + async Nexus operations awaited via Promise::all in one workflow tick. */
+/**
+ * Mixed sync + async Nexus operations awaited via Workflow::all in one workflow tick.
+ */
 #[Worker(options: [self::class, 'workerOptions'])]
 class MixedSyncAsyncTest extends TestCase
 {
@@ -113,8 +114,8 @@ class MixedAsyncHandlerWorkflow
     public function handle(string $tag)
     {
         // Force a workflow-task transition so the operation actually goes async
-        // (without a yield it collapses to the sync-async path, skipping NEXUS_OPERATION_STARTED).
-        yield Workflow::timer(CarbonInterval::milliseconds(100));
+        // The timer forces a task transition, keeping the async operation path.
+        Workflow::timer(CarbonInterval::milliseconds(100));
         return 'done-' . $tag;
     }
 }
@@ -132,9 +133,9 @@ class MixedSyncAsyncCallerWorkflow
                 ->withScheduleToCloseTimeout(CarbonInterval::seconds(30)),
         );
 
-        [$syncResult, $asyncResult] = yield Promise::all([
-            $stub->syncOp('x'),
-            $stub->asyncOp('y'),
+        [$syncResult, $asyncResult] = Workflow::all([
+            Workflow::async(static fn() => $stub->syncOp('x')),
+            Workflow::async(static fn() => $stub->asyncOp('y')),
         ]);
 
         return "sync={$syncResult}|async={$asyncResult}";

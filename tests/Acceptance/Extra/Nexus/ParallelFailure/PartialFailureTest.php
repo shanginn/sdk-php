@@ -14,7 +14,6 @@ use Temporal\Exception\Client\WorkflowFailedException;
 use Temporal\Nexus\Attribute\Operation;
 use Temporal\Nexus\Attribute\Service;
 use Temporal\Nexus\Exception\OperationException;
-use Temporal\Promise;
 use Temporal\Tests\Acceptance\App\Attribute\Stub;
 use Temporal\Tests\Acceptance\App\Attribute\Worker;
 use Temporal\Tests\Acceptance\App\Runtime\State;
@@ -29,7 +28,7 @@ use Temporal\Workflow\WorkflowInterface;
 use Temporal\Workflow\WorkflowMethod;
 
 /**
- * Promise::all where one of N Nexus ops fails. Product gap: the sibling's failure
+ * Workflow::all where one of N Nexus ops fails. Product gap: the sibling's failure
  * surfaces as TimeoutFailure(SCHEDULE_TO_CLOSE) instead of ApplicationFailure, so the
  * happy path here IS the timeout — hence the short scheduleToClose in the caller.
  */
@@ -73,7 +72,7 @@ class PartialFailureTest extends TestCase
 
         self::assertTrue(
             $callerFailed,
-            'Caller workflow must fail when a sibling Nexus operation fails inside Promise::all.',
+            'Caller workflow must fail when a sibling Nexus operation fails inside Workflow::all.',
         );
 
         $history = $client->getWorkflowHistory($stub->getExecution())->getHistory();
@@ -84,12 +83,12 @@ class PartialFailureTest extends TestCase
         self::assertSame(
             3,
             $scheduled,
-            'All three Promise::all siblings must be scheduled before the workflow fails.',
+            'All three Workflow::all siblings must be scheduled before the workflow fails.',
         );
         self::assertGreaterThanOrEqual(
             1,
             $failed + $timedOut,
-            'At least one Nexus operation must terminate (Failed or TimedOut) so Promise::all can settle.',
+            'At least one Nexus operation must terminate (Failed or TimedOut) so Workflow::all can settle.',
         );
     }
 }
@@ -124,12 +123,12 @@ class PartialFailureCallerWorkflow
         );
 
         $promises = [
-            $stub->succeed('a'),
-            $stub->succeed('b'),
-            $stub->fail('c'),
+            Workflow::async(static fn() => $stub->succeed('a')),
+            Workflow::async(static fn() => $stub->succeed('b')),
+            Workflow::async(static fn() => $stub->fail('c')),
         ];
 
-        return yield Promise::all($promises);
+        return Workflow::all($promises);
     }
 }
 

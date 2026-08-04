@@ -6,6 +6,7 @@ namespace Temporal\Tests\Unit\Internal\Workflow;
 
 use PHPUnit\Framework\TestCase;
 use React\Promise\PromiseInterface;
+use Temporal\DataConverter\EncodedValues;
 use Temporal\DataConverter\Type;
 use Temporal\Interceptor\Trait\WorkflowOutboundCallsInterceptorTrait;
 use Temporal\Interceptor\WorkflowOutboundCalls\ExecuteNexusOperationInput;
@@ -14,6 +15,9 @@ use Temporal\Internal\Declaration\Prototype\NexusOperationPrototype;
 use Temporal\Internal\Declaration\Prototype\NexusServicePrototype;
 use Temporal\Internal\Interceptor\Pipeline;
 use Temporal\Internal\Workflow\NexusServiceProxy;
+use Temporal\Internal\Workflow\Process\DeferredFiber;
+use Temporal\Internal\Workflow\Process\FiberSuspension;
+use Temporal\Workflow\NexusOperationHandle;
 use Temporal\Workflow\NexusOperationOptions;
 use Temporal\Workflow\NexusOperationStubInterface;
 use Temporal\Workflow\NexusWorkflowContextInterface;
@@ -29,8 +33,9 @@ final class NexusServiceProxyTestCase extends TestCase
     public function testInterceptorEndpointRewriteChangesOutgoingOptions(): void
     {
         $captured = null;
+        $context = $this->makeContext($captured);
         $proxy = $this->makeProxy(
-            $this->makeContext($captured),
+            $context,
             new class implements NexusWorkflowOutboundCallsInterceptor {
                 use WorkflowOutboundCallsInterceptorTrait;
 
@@ -43,7 +48,7 @@ final class NexusServiceProxyTestCase extends TestCase
             },
         );
 
-        $proxy->placeOrder('order-1');
+        $this->execute($proxy, $context);
 
         self::assertInstanceOf(NexusOperationOptions::class, $captured);
         self::assertSame('rewritten-ep', $captured->endpoint);
@@ -53,8 +58,9 @@ final class NexusServiceProxyTestCase extends TestCase
     public function testInterceptorServiceRewriteChangesOutgoingOptions(): void
     {
         $captured = null;
+        $context = $this->makeContext($captured);
         $proxy = $this->makeProxy(
-            $this->makeContext($captured),
+            $context,
             new class implements NexusWorkflowOutboundCallsInterceptor {
                 use WorkflowOutboundCallsInterceptorTrait;
 
@@ -67,7 +73,7 @@ final class NexusServiceProxyTestCase extends TestCase
             },
         );
 
-        $proxy->placeOrder('order-1');
+        $this->execute($proxy, $context);
 
         self::assertInstanceOf(NexusOperationOptions::class, $captured);
         self::assertSame('orig-ep', $captured->endpoint);
@@ -77,9 +83,10 @@ final class NexusServiceProxyTestCase extends TestCase
     public function testWithoutInterceptorsOptionsPassThroughUnchanged(): void
     {
         $captured = null;
-        $proxy = $this->makeProxy($this->makeContext($captured));
+        $context = $this->makeContext($captured);
+        $proxy = $this->makeProxy($context);
 
-        $proxy->placeOrder('order-1');
+        $this->execute($proxy, $context);
 
         self::assertInstanceOf(NexusOperationOptions::class, $captured);
         self::assertSame('orig-ep', $captured->endpoint);
@@ -126,8 +133,10 @@ final class NexusServiceProxyTestCase extends TestCase
         $ctx->method('newUntypedNexusOperationStub')
             ->willReturnCallback(static function (NexusOperationOptions $options) use (&$captured) {
                 $captured = $options;
-                $stub = new class implements NexusOperationStubInterface {
-                    public NexusOperationOptions $options;
+                return new class($options) implements NexusOperationStubInterface {
+                    public function __construct(
+                        private readonly NexusOperationOptions $options,
+                    ) {}
 
                     public function getOptions(): NexusOperationOptions
                     {
@@ -135,6 +144,15 @@ final class NexusServiceProxyTestCase extends TestCase
                     }
 
                     public function execute(
+                        string $operation,
+                        array $args = [],
+                        Type|string|\ReflectionClass|\ReflectionType|null $returnType = null,
+                        array $nexusHeaders = [],
+                    ): mixed {
+                        return null;
+                    }
+
+                    public function executeAsync(
                         string $operation,
                         array $args = [],
                         Type|string|\ReflectionClass|\ReflectionType|null $returnType = null,
@@ -148,15 +166,39 @@ final class NexusServiceProxyTestCase extends TestCase
                         array $args = [],
                         Type|string|\ReflectionClass|\ReflectionType|null $returnType = null,
                         array $nexusHeaders = [],
+                    ): NexusOperationHandle {
+                        return new NexusOperationHandle(null, resolve(EncodedValues::empty()), $returnType);
+                    }
+
+                    public function startAsync(
+                        string $operation,
+                        array $args = [],
+                        Type|string|\ReflectionClass|\ReflectionType|null $returnType = null,
+                        array $nexusHeaders = [],
                     ): PromiseInterface {
-                        return resolve(null);
+                        return resolve(
+                            new NexusOperationHandle(null, resolve(EncodedValues::empty()), $returnType),
+                        );
                     }
                 };
-                $stub->options = $options;
-                return $stub;
             });
 
         return $ctx;
+    }
+
+    private function execute(NexusServiceProxy $proxy, NexusWorkflowContextInterface $context): void
+    {
+        $fiber = DeferredFiber::fromHandler(
+            static fn(): mixed => $proxy->placeOrder('order-1'),
+            EncodedValues::empty(),
+            $context,
+        );
+
+        $suspension = $fiber->start();
+        self::assertInstanceOf(FiberSuspension::class, $suspension);
+        self::assertTrue($suspension->preserveCancellationFailure);
+        self::assertNull($fiber->resume(null));
+        self::assertNull($fiber->getReturn());
     }
 }
 

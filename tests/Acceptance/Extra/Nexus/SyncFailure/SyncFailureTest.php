@@ -176,7 +176,7 @@ class AppFailureCallerWorkflow
         );
 
         try {
-            yield $stub->failAlways('ignored');
+            $stub->failAlways('ignored');
         } catch (NexusOperationFailure $e) {
             $cause = $e->getPrevious();
             if (!$cause instanceof ApplicationFailure) {
@@ -258,7 +258,7 @@ class HandlerErrorCallerWorkflow
         );
 
         try {
-            yield $stub->execute($opName, ['ignored']);
+            $stub->execute($opName, ['ignored']);
         } catch (NexusOperationFailure $e) {
             $cause = $e->getPrevious();
             if (!$cause instanceof NexusHandlerFailure) {
@@ -311,7 +311,7 @@ class RichCauseCallerWorkflow
         );
 
         try {
-            yield $stub->failWithRichCause('ignored');
+            $stub->failWithRichCause('ignored');
         } catch (NexusOperationFailure $e) {
             $innerType = self::findApplicationFailureType($e, 'CustomBusinessType');
             if ($innerType === null) {
@@ -397,7 +397,7 @@ class UnknownOperationCallerWorkflow
         );
 
         try {
-            yield $stub->execute('definitelyNotRegistered', ['x']);
+            $stub->execute('definitelyNotRegistered', ['x']);
         } catch (NexusOperationFailure $e) {
             $cause = $e->getPrevious();
             if (!$cause instanceof NexusHandlerFailure) {

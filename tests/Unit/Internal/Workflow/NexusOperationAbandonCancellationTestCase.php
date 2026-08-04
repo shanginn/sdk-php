@@ -22,6 +22,7 @@ use Temporal\Internal\Declaration\WorkflowInstanceInterface;
 use Temporal\Internal\ServiceContainer;
 use Temporal\Internal\Transport\Request\ExecuteNexusOperation;
 use Temporal\Internal\Transport\Request\GetNexusOperationStarted;
+use Temporal\Internal\Transport\Request\Panic;
 use Temporal\Internal\Workflow\Input;
 use Temporal\Internal\Workflow\NexusOperationStub;
 use Temporal\Internal\Workflow\Process\Scope;
@@ -43,6 +44,7 @@ final class NexusOperationAbandonCancellationTestCase extends TestCase
     private WorkerFactoryMock $factory;
     private RecordingNexusWorkflowContext $parentContext;
     private NexusCancellationScope $scope;
+    private ScopeContext $scopeContext;
     private NexusOperationStub $stub;
 
     public function testAlreadyCancelledScopeDoesNotScheduleAbandonedNexusOperation(): void
@@ -50,7 +52,7 @@ final class NexusOperationAbandonCancellationTestCase extends TestCase
         $this->scope->cancel();
 
         try {
-            $this->stub->start('run');
+            $this->stub->startAsync('run');
             self::fail('The local Nexus start must fail immediately in an already-cancelled scope.');
         } catch (CanceledFailure) {
             // Expected: the ExecuteNexusOperation request never reaches the parent context.
@@ -62,7 +64,7 @@ final class NexusOperationAbandonCancellationTestCase extends TestCase
 
     public function testCancelAfterSendBeforeStartedAckRejectsBothLocalRequestsWithoutWireCancel(): void
     {
-        $startPromise = $this->stub->start('run');
+        $startPromise = $this->stub->startAsync('run');
 
         $sent = \iterator_to_array($this->factory->getQueue(), false);
         self::assertCount(2, $sent);
@@ -101,7 +103,7 @@ final class NexusOperationAbandonCancellationTestCase extends TestCase
         );
         self::assertContainsOnlyInstancesOf(CanceledFailure::class, $requestErrors);
 
-        self::assertTrue($startSettled, 'The public start promise must not remain pending after cancellation.');
+        self::assertTrue($startSettled, 'The async start promise must not remain pending after cancellation.');
         self::assertInstanceOf(NexusOperationFailure::class, $startError);
         self::assertInstanceOf(CanceledFailure::class, $startError->getPrevious());
 
@@ -110,6 +112,17 @@ final class NexusOperationAbandonCancellationTestCase extends TestCase
             $this->factory->getQueue(),
             'ABANDON must reject locally without emitting a Cancel/RequestCancelNexusOperation command.',
         );
+    }
+
+    public function testCancelDoesNotRemoveQueuedNonCancellableTerminalRequest(): void
+    {
+        $this->scopeContext->request(new Panic(new \RuntimeException('terminal')), cancellable: false);
+
+        $this->scope->cancel();
+
+        $queued = \iterator_to_array($this->factory->getQueue(), false);
+        self::assertCount(1, $queued);
+        self::assertInstanceOf(Panic::class, $queued[0]);
     }
 
     protected function setUp(): void
@@ -145,7 +158,8 @@ final class NexusOperationAbandonCancellationTestCase extends TestCase
         $this->parentContext->enableRequests();
 
         $this->scope = new NexusCancellationScope($services);
-        Workflow::setCurrentContext($this->scope->bind($this->parentContext));
+        $this->scopeContext = $this->scope->bind($this->parentContext);
+        Workflow::setCurrentContext($this->scopeContext);
 
         $this->stub = new NexusOperationStub(
             $services->marshaller,

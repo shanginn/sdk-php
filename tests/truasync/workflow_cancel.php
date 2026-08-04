@@ -41,9 +41,9 @@ use function Async\spawn;
 class TimerParkWorkflow
 {
     #[WorkflowMethod(name: 'TimerParkWorkflow')]
-    public function handler(): iterable
+    public function handler()
     {
-        yield Workflow::timer(300);
+        Workflow::timer(300);
 
         return 'timer-fired';
     }
@@ -55,9 +55,9 @@ class TimeoutRaceWorkflow
     private bool $go = false;
 
     #[WorkflowMethod(name: 'TimeoutRaceWorkflow')]
-    public function handler(): iterable
+    public function handler()
     {
-        $signaled = yield Workflow::awaitWithTimeout(60, fn(): bool => $this->go);
+        $signaled = Workflow::awaitWithTimeout(60, fn(): bool => $this->go);
 
         return $signaled ? 'signaled' : 'timed-out';
     }

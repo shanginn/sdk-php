@@ -80,18 +80,18 @@ class FeatureWorkflow
     #[WorkflowMethod('Harness_Update_AsyncAccepted')]
     public function run()
     {
-        yield Workflow::await(fn(): bool => $this->done);
+        Workflow::await(fn(): bool => $this->done);
         return 'Hello, World!';
     }
 
     #[Workflow\SignalMethod('finish')]
-    public function finish()
+    public function finish(): void
     {
         $this->done = true;
     }
 
     #[Workflow\SignalMethod('unblock')]
-    public function unblock()
+    public function unblock(): void
     {
         $this->blocked = false;
     }
@@ -100,7 +100,7 @@ class FeatureWorkflow
     public function myUpdate(bool $block)
     {
         if ($block) {
-            yield Workflow::await(fn(): bool => !$this->blocked);
+            Workflow::await(fn(): bool => !$this->blocked);
             $this->blocked = true;
             return 123;
         }

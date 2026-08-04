@@ -195,7 +195,7 @@ class TokenCallerWorkflow
         );
 
         /** @var NexusOperationHandle<string> $handle */
-        $handle = yield $stub->start('startCancellable', [$input], 'string');
+        $handle =  $stub->start('startCancellable', [$input], 'string');
 
         return $handle->getOperationToken();
     }
@@ -220,23 +220,23 @@ class CancelCallerWorkflow
         );
 
         $handle = null;
-        $scope = Workflow::async(static function () use ($stub, $operation, $input, &$handle) {
-            $handle = yield $stub->start($operation, [$input], 'string');
-            yield $handle->getResult();
+        $scope = Workflow::async(static function () use ($stub, $operation, $input, &$handle): mixed {
+            $handle = $stub->start($operation, [$input], 'string');
+            return $handle->getResult();
         });
 
-        yield Workflow::await(static function () use (&$handle): bool {
+        Workflow::await(static function () use (&$handle): bool {
             return $handle !== null;
         });
-        yield Workflow::timer(CarbonInterval::seconds(NexusWorkerOptions::PRE_CANCEL_TIMER_SECONDS));
+        Workflow::timer(CarbonInterval::seconds(NexusWorkerOptions::PRE_CANCEL_TIMER_SECONDS));
         $scope->cancel();
 
         try {
-            yield $scope;
+            $scope->await();
         } catch (\Throwable) {
         }
 
-        yield Workflow::await(fn(): bool => $this->finished);
+        Workflow::await(fn(): bool => $this->finished);
 
         return 'done';
     }

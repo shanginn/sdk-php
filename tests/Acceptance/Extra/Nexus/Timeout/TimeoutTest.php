@@ -187,7 +187,7 @@ class TimeoutSyncCallerWorkflow
         );
 
         try {
-            yield $stub->slowSync('payload');
+            $stub->slowSync('payload');
         } catch (NexusOperationFailure $e) {
             $cause = $e->getPrevious();
             if (!$cause instanceof TimeoutFailure) {
@@ -224,7 +224,7 @@ class SlowHandlerWorkflow
     public function handle(string $input)
     {
         // Sleep well past the caller's 3s timeout.
-        yield Workflow::timer(CarbonInterval::seconds(15));
+        Workflow::timer(CarbonInterval::seconds(15));
         return "should-not-reach:{$input}";
     }
 }
@@ -243,7 +243,7 @@ class TimeoutAsyncCallerWorkflow
         );
 
         try {
-            yield $stub->slowAsync('payload');
+            $stub->slowAsync('payload');
         } catch (NexusOperationFailure $e) {
             $cause = $e->getPrevious();
             if (!$cause instanceof TimeoutFailure) {

@@ -36,15 +36,15 @@ use function Async\spawn;
 class TrueAsyncVersioningWorkflow
 {
     #[WorkflowMethod(name: 'TrueAsyncVersioningWorkflow')]
-    public function handler(): iterable
+    public function handler()
     {
-        $before = yield Workflow::getVersion('a-change', Workflow::DEFAULT_VERSION, 1);
+        $before = Workflow::getVersion('a-change', Workflow::DEFAULT_VERSION, 1);
 
         // A timer ends this workflow task; with caching off the next task replays
         // from history (the core sends notify_has_patch for 'a-change' first).
-        yield Workflow::timer(1);
+        Workflow::timer(1);
 
-        $after = yield Workflow::getVersion('a-change', Workflow::DEFAULT_VERSION, 1);
+        $after = Workflow::getVersion('a-change', Workflow::DEFAULT_VERSION, 1);
 
         if ($before !== $after) {
             throw new \RuntimeException("version changed across replay: {$before} -> {$after}");

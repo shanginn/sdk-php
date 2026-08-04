@@ -23,7 +23,6 @@ use Temporal\Api\Sdk\V1\EnhancedStackTrace;
 use Temporal\Common\SearchAttributes\SearchAttributeKey;
 use Temporal\Common\SearchAttributes\SearchAttributeUpdate;
 use Temporal\Common\SideEffectOptions;
-use Temporal\Common\Uuid;
 use Temporal\DataConverter\EncodedValues;
 use Temporal\DataConverter\Type;
 use Temporal\DataConverter\ValuesInterface;
@@ -105,9 +104,8 @@ class WorkflowContext implements NexusWorkflowContextInterface, HeaderCarrier, D
     protected array $awaits = [];
 
     protected array $trace = [];
-    protected bool $continueAsNew = false;
     protected bool $readonly = true;
-    protected ?string $currentDetails = null;
+    protected WorkflowContextState $state;
     private ?WorkflowSerializationContext $serializationContext = null;
 
     /** @var Pipeline<WorkflowOutboundRequestInterceptor, PromiseInterface> */
@@ -134,6 +132,7 @@ class WorkflowContext implements NexusWorkflowContextInterface, HeaderCarrier, D
         protected ?ValuesInterface $lastCompletionResult = null,
         protected HandlerState $handlers = new HandlerState(),
     ) {
+        $this->state = new WorkflowContextState();
         $this->queryDispatcher = $this->workflowInstance->getQueryDispatcher();
         $this->signalDispatcher = $this->workflowInstance->getSignalDispatcher();
         $this->updateDispatcher = $this->workflowInstance->getUpdateDispatcher();
@@ -353,8 +352,6 @@ class WorkflowContext implements NexusWorkflowContextInterface, HeaderCarrier, D
     ): PromiseInterface {
         return $this->callsInterceptor->with(
             function (ContinueAsNewInput $input): PromiseInterface {
-                $this->continueAsNew = true;
-
                 $arguments = EncodedValues::fromValues($input->args);
                 $arguments = $arguments->withSerializationContext($this->getSerializationContext());
 
@@ -366,25 +363,58 @@ class WorkflowContext implements NexusWorkflowContextInterface, HeaderCarrier, D
                 );
 
                 // must not be captured
-                return $this->request($request, false);
+                try {
+                    $result = $this->request($request, false);
+                } catch (\Throwable $error) {
+                    // An outbound interceptor may stage the command and throw
+                    // afterwards. Roll the staged terminal command back so the
+                    // workflow can fail normally instead of emitting two
+                    // competing terminal commands.
+                    if ($this->client->isQueued($request)) {
+                        try {
+                            $this->client->cancel($request);
+                        } catch (\Throwable) {
+                            // Preserve the original staging failure.
+                        }
+                    }
+
+                    throw $error;
+                }
+
+                $this->state->continueAsNew = true;
+
+                return $result->then(
+                    null,
+                    function (\Throwable $error): never {
+                        $this->state->continueAsNew = false;
+                        throw $error;
+                    },
+                );
             },
             /** @see WorkflowOutboundCallsInterceptor::continueAsNew() */
             'continueAsNew',
         )(new ContinueAsNewInput($type, $args, $options));
     }
 
+    /**
+     * @template T of object
+     * @param class-string<T> $class
+     * @return ContinueAsNewProxy<T>
+     */
     public function newContinueAsNewStub(string $class, ?ContinueAsNewOptions $options = null): object
     {
         $options ??= new ContinueAsNewOptions();
 
         $workflow = $this->services->workflowsReader->fromClass($class);
 
-        return new ContinueAsNewProxy($class, $workflow, $options, $this);
+        /** @var ContinueAsNewProxy<T> $proxy */
+        $proxy = new ContinueAsNewProxy($class, $workflow, $options);
+        return $proxy;
     }
 
     public function isContinuedAsNew(): bool
     {
-        return $this->continueAsNew;
+        return $this->state->continueAsNew;
     }
 
     public function executeChildWorkflow(
@@ -396,7 +426,7 @@ class WorkflowContext implements NexusWorkflowContextInterface, HeaderCarrier, D
         return $this->callsInterceptor->with(
             fn(ExecuteChildWorkflowInput $input): PromiseInterface => $this
                 ->newUntypedChildWorkflowStub($input->type, $input->options)
-                ->execute($input->args, $input->returnType),
+                ->executeAsync($input->args, $input->returnType),
             /** @see WorkflowOutboundCallsInterceptor::executeChildWorkflow() */
             'executeChildWorkflow',
         )(new ExecuteChildWorkflowInput($type, $args, $options, $returnType));
@@ -453,14 +483,14 @@ class WorkflowContext implements NexusWorkflowContextInterface, HeaderCarrier, D
             ? $this->callsInterceptor->with(
                 fn(ExecuteLocalActivityInput $input): PromiseInterface => $this
                     ->newUntypedActivityStub($input->options)
-                    ->execute($input->type, $input->args, $input->returnType, true),
+                    ->executeAsync($input->type, $input->args, $input->returnType, true),
                 /** @see WorkflowOutboundCallsInterceptor::executeLocalActivity() */
                 'executeLocalActivity',
             )(new ExecuteLocalActivityInput($type, $args, $options, $returnType))
             : $this->callsInterceptor->with(
                 fn(ExecuteActivityInput $input): PromiseInterface => $this
                     ->newUntypedActivityStub($input->options)
-                    ->execute($input->type, $input->args, $input->returnType),
+                    ->executeAsync($input->type, $input->args, $input->returnType),
                 /** @see WorkflowOutboundCallsInterceptor::executeActivity() */
                 'executeActivity',
             )(new ExecuteActivityInput($type, $args, $options, $returnType));
@@ -544,7 +574,7 @@ class WorkflowContext implements NexusWorkflowContextInterface, HeaderCarrier, D
         return $this->nexusCallsInterceptor->with(
             fn(ExecuteNexusOperationInput $input): PromiseInterface => $this
                 ->newUntypedNexusOperationStub(self::effectiveNexusOptions($input))
-                ->execute($input->operation, $input->args, $input->returnType, $input->nexusHeaders),
+                ->executeAsync($input->operation, $input->args, $input->returnType, $input->nexusHeaders),
             /** @see NexusWorkflowOutboundCallsInterceptor::executeNexusOperation() */
             'executeNexusOperation',
         )(new ExecuteNexusOperationInput(
@@ -576,7 +606,7 @@ class WorkflowContext implements NexusWorkflowContextInterface, HeaderCarrier, D
         bool $cancellable = true,
         bool $waitResponse = true,
     ): PromiseInterface {
-        $this->readonly and throw new \RuntimeException('Workflow is not initialized.');
+        $this->assertWritable();
         $this->recordTrace();
 
         // Intercept workflow outbound calls
@@ -726,7 +756,7 @@ class WorkflowContext implements NexusWorkflowContextInterface, HeaderCarrier, D
                         $isCompleted = $timer->isComplete();
                         if (!$isCompleted) {
                             // If internal timer was not completed then cancel it
-                            $this->request(new Cancel($requestId));
+                            $this->request(new Cancel($requestId), waitResponse: false);
                         }
                         return !$isCompleted;
                     });
@@ -743,7 +773,18 @@ class WorkflowContext implements NexusWorkflowContextInterface, HeaderCarrier, D
     {
         foreach ($this->awaits as $awaitsGroupId => $awaitsGroup) {
             foreach ($awaitsGroup as $i => [$condition, $deferred]) {
-                if ($condition()) {
+                try {
+                    $resolved = $condition();
+                } catch (\Throwable $error) {
+                    unset($this->awaits[$awaitsGroupId][$i]);
+                    if ($this->awaits[$awaitsGroupId] === []) {
+                        unset($this->awaits[$awaitsGroupId]);
+                    }
+                    $deferred->reject($error);
+                    continue;
+                }
+
+                if ($resolved) {
                     unset($this->awaits[$awaitsGroupId][$i]);
                     $deferred->resolve(null);
                     $this->resolveConditionGroup($awaitsGroupId);
@@ -825,7 +866,7 @@ class WorkflowContext implements NexusWorkflowContextInterface, HeaderCarrier, D
      */
     public function getCurrentDetails(): ?string
     {
-        return $this->currentDetails;
+        return $this->state->currentDetails;
     }
 
     /**
@@ -833,36 +874,44 @@ class WorkflowContext implements NexusWorkflowContextInterface, HeaderCarrier, D
      */
     public function setCurrentDetails(?string $details): void
     {
-        $this->currentDetails = $details;
+        $this->state->currentDetails = $details;
     }
 
     protected function awaitRequest(callable|Mutex|PromiseInterface ...$conditions): PromiseInterface
     {
         $result = [];
-        $conditionGroupId = Uuid::v4();
+        $conditionGroupId = 'condition-' . ++$this->state->conditionGroupSequence;
         $this->recordTrace();
 
         foreach ($conditions as $condition) {
             // Wrap Mutex into callable
             $condition instanceof Mutex and $condition = static fn(): bool => !$condition->isLocked();
 
-            if ($condition instanceof \Closure) {
-                $callableResult = $condition($conditionGroupId);
-                if ($callableResult === true) {
-                    $this->resolveConditionGroup($conditionGroupId);
-                    return resolve(true);
-                }
-                $result[] = $this->addCondition($conditionGroupId, $condition);
+            if ($condition instanceof PromiseInterface) {
+                $result[] = $condition;
                 continue;
             }
 
-            if ($condition instanceof PromiseInterface) {
-                $result[] = $condition;
+            $predicate = $condition instanceof \Closure ? $condition : $condition(...);
+            $callableResult = $predicate();
+            if ($callableResult === true) {
+                $this->resolveConditionGroup($conditionGroupId);
+                return resolve(true);
             }
+            $result[] = $this->addCondition($conditionGroupId, $predicate);
         }
 
         if (\count($result) === 1) {
-            return $result[0];
+            return $result[0]->then(
+                function (mixed $value) use ($conditionGroupId): mixed {
+                    $this->resolveConditionGroup($conditionGroupId);
+                    return $value;
+                },
+                function (\Throwable $reason) use ($conditionGroupId): never {
+                    $this->rejectConditionGroup($conditionGroupId);
+                    throw $reason;
+                },
+            );
         }
 
         return Promise::any($result)->then(
@@ -904,6 +953,13 @@ class WorkflowContext implements NexusWorkflowContextInterface, HeaderCarrier, D
         $this->readonly or $this->trace = \debug_backtrace(\DEBUG_BACKTRACE_IGNORE_ARGS);
     }
 
+    protected function assertWritable(): void
+    {
+        $this->readonly and throw new \RuntimeException(
+            'Workflow commands are not allowed in a read-only context.',
+        );
+    }
+
     private static function effectiveNexusOptions(ExecuteNexusOperationInput $input): NexusOperationOptions
     {
         $options = $input->options;
@@ -923,4 +979,17 @@ class WorkflowContext implements NexusWorkflowContextInterface, HeaderCarrier, D
             $this->getInfo()->execution->getID(),
         );
     }
+}
+
+/**
+ * Mutable state shared by the root context, scoped contexts, and input-specific
+ * context clones.
+ *
+ * @internal
+ */
+final class WorkflowContextState
+{
+    public int $conditionGroupSequence = 0;
+    public bool $continueAsNew = false;
+    public ?string $currentDetails = null;
 }

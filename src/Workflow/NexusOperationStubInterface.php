@@ -33,28 +33,42 @@ interface NexusOperationStubInterface
         array $args = [],
         Type|string|\ReflectionClass|\ReflectionType|null $returnType = null,
         array $nexusHeaders = [],
+    ): mixed;
+
+    /**
+     * @internal
+     */
+    public function executeAsync(
+        string $operation,
+        array $args = [],
+        Type|string|\ReflectionClass|\ReflectionType|null $returnType = null,
+        array $nexusHeaders = [],
     ): PromiseInterface;
 
     /**
-     * Start a Nexus operation. The returned promise resolves with a
-     * {@see NexusOperationHandle} once the start response arrives — by that
-     * point the discriminator is known, so the handle's `operationToken` is
-     * fully populated (string for async, null for sync) and its result-promise
-     * is wired (already-resolved for sync, pending-poll for async).
-     *
-     * Workflow code yields the returned promise:
+     * Start a Nexus operation and suspend until its handle is available.
      *
      * ```php
-     * $handle = yield $stub->start('order.place', [$order]);
+     * $handle = $stub->start('order.place', [$order]);
      * $token  = $handle->getOperationToken();
-     * $result = yield $handle->getResult();
+     * $result = $handle->getResult();
      * ```
      *
      * @param non-empty-string $operation
      * @param array<string, string> $nexusHeaders
-     * @return PromiseInterface<NexusOperationHandle>
      */
     public function start(
+        string $operation,
+        array $args = [],
+        Type|string|\ReflectionClass|\ReflectionType|null $returnType = null,
+        array $nexusHeaders = [],
+    ): NexusOperationHandle;
+
+    /**
+     * @internal
+     * @return PromiseInterface<NexusOperationHandle>
+     */
+    public function startAsync(
         string $operation,
         array $args = [],
         Type|string|\ReflectionClass|\ReflectionType|null $returnType = null,

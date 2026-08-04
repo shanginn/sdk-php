@@ -27,7 +27,9 @@ use Temporal\Workflow\NexusOperationOptions;
 use Temporal\Workflow\WorkflowInterface;
 use Temporal\Workflow\WorkflowMethod;
 
-/** Caller cancels an in-flight async op; cancel propagation lands in caller history. */
+/**
+ * Caller cancels an in-flight async op; cancel propagation lands in caller history.
+ */
 #[Worker(options: [self::class, 'workerOptions'])]
 class AsyncCompletionTest extends TestCase
 {
@@ -98,7 +100,7 @@ class LongRunningHandlerWorkflow
     public function handle(string $input)
     {
         try {
-            yield Workflow::timer(CarbonInterval::seconds(AsyncCompletionTest::HANDLER_DURATION_SECONDS));
+            Workflow::timer(CarbonInterval::seconds(AsyncCompletionTest::HANDLER_DURATION_SECONDS));
             return "ok:{$input}";
         } catch (CanceledFailure) {
             return "cancelled:{$input}";
@@ -124,17 +126,14 @@ class CancelCallerWorkflow
                 ->withCancellationType(NexusOperationCancellationType::WaitRequested),
         );
 
-        $promise = null;
-        $scope = Workflow::async(static function () use ($stub, $input, &$promise): void {
-            $promise = $stub->longRunning($input);
-        });
+        $scope = Workflow::async(static fn() => $stub->longRunning($input));
 
         // One task boundary so the schedule command is flushed before the cancel.
-        yield Workflow::timer(CarbonInterval::seconds(NexusWorkerOptions::PRE_CANCEL_TIMER_SECONDS));
+        Workflow::timer(CarbonInterval::seconds(NexusWorkerOptions::PRE_CANCEL_TIMER_SECONDS));
         $scope->cancel();
 
         try {
-            yield $promise;
+            $scope->await();
         } catch (NexusOperationFailure $e) {
             if ($e->getPrevious() instanceof CanceledFailure) {
                 return 'cancelled';

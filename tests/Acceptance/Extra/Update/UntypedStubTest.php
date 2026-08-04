@@ -22,8 +22,7 @@ class UntypedStubTest extends TestCase
     #[Test]
     public function fetchResolvedResultAfterWorkflowCompleted(
         #[Stub('Extra_Update_UntypedStub')] WorkflowStubInterface $stub,
-    ): void
-    {
+    ): void {
         /** @see TestWorkflow::add */
         $handle = $stub->startUpdate('await', 'key');
 
@@ -35,7 +34,7 @@ class UntypedStubTest extends TestCase
         $stub->signal('exit');
         $result = $stub->getResult();
 
-        $this->assertSame(['key' => 'resolved'], (array)$result, 'Workflow result contains resolved value');
+        $this->assertSame(['key' => 'resolved'], (array) $result, 'Workflow result contains resolved value');
         $this->assertFalse($handle->hasResult());
 
         // Since Temporal CLI 1.2.0, the result is available immediately after the operation
@@ -69,7 +68,7 @@ class UntypedStubTest extends TestCase
         /** @see TestWorkflow::exit */
         $stub->signal('exit');
         $result = $stub->getResult();
-        $this->assertSame(['key' => null], (array)$result, 'Workflow result contains resolved value');
+        $this->assertSame(['key' => null], (array) $result, 'Workflow result contains resolved value');
     }
 
     #[Test]
@@ -122,7 +121,7 @@ class UntypedStubTest extends TestCase
         $stub->signal('exit');
         $result = $stub->getResult();
 
-        $this->assertSame(['key' => 'resolved'], (array)$result);
+        $this->assertSame(['key' => 'resolved'], (array) $result);
     }
 
     #[Test]
@@ -157,7 +156,7 @@ class UntypedStubTest extends TestCase
             'key3' => 'resolved3',
             'key4' => 'resolved4',
             'key5' => 'resolved5',
-        ], (array)$result);
+        ], (array) $result);
     }
 
     #[Test]
@@ -185,7 +184,7 @@ class UntypedStubTest extends TestCase
             'key3' => 'resolved3',
             'key4' => 'resolved4',
             'key5' => 'resolved5',
-        ], (array)$result);
+        ], (array) $result);
     }
 
     #[Test]
@@ -243,7 +242,7 @@ class UntypedStubTest extends TestCase
         /** @see TestWorkflow::resolve */
         $stub->update('resolveValue', "key", ['foo' => 'bar']);
 
-        self::assertEquals((object)['foo' => 'bar'], $newHandle->getResult(1.2));
+        self::assertEquals((object) ['foo' => 'bar'], $newHandle->getResult(1.2));
         self::assertSame(['foo' => 'bar'], $newHandleArr->getResult(1.2));
         self::assertTrue($newHandle->hasResult());
 
@@ -263,19 +262,18 @@ class TestWorkflow
     #[WorkflowMethod(name: "Extra_Update_UntypedStub")]
     public function handle()
     {
-        yield Workflow::await(fn() => $this->exit);
+        Workflow::await(fn() => $this->exit);
         return $this->awaits;
     }
 
     /**
      * @param non-empty-string $name
-     * @return mixed
      */
     #[Workflow\UpdateMethod(name: 'await')]
     public function add(string $name): mixed
     {
         $this->awaits[$name] ??= null;
-        yield Workflow::await(fn() => $this->awaits[$name] !== null);
+        Workflow::await(fn() => $this->awaits[$name] !== null);
         return $this->awaits[$name];
     }
 
@@ -297,7 +295,7 @@ class TestWorkflow
             return $this->awaits[$name];
         }
 
-        $notTimeout = yield Workflow::awaitWithTimeout(
+        $notTimeout =  Workflow::awaitWithTimeout(
             $timeout,
             fn() => $this->awaits[$name] !== null,
         );
@@ -315,13 +313,12 @@ class TestWorkflow
         $value === null and throw new \InvalidArgumentException('Value must not be null');
         empty($name) and throw new \InvalidArgumentException('Name must not be empty');
         DateInterval::parse($timeout, DateInterval::FORMAT_SECONDS)->isEmpty() and throw new \InvalidArgumentException(
-            'Timeout must not be empty'
+            'Timeout must not be empty',
         );
     }
 
     /**
      * @param non-empty-string $name
-     * @return mixed
      */
     #[Workflow\UpdateMethod(name: 'resolveValue')]
     public function resolve(string $name, mixed $value): mixed
@@ -339,7 +336,6 @@ class TestWorkflow
 
     /**
      * @param non-empty-string $name
-     * @return mixed
      */
     #[Workflow\QueryMethod(name: 'getValue')]
     public function get(string $name): mixed

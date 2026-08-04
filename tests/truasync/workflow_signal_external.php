@@ -42,9 +42,9 @@ class TrueAsyncSignalReceiverWorkflow
     }
 
     #[WorkflowMethod(name: 'TrueAsyncSignalReceiverWorkflow')]
-    public function handler(): iterable
+    public function handler()
     {
-        yield Workflow::await(fn() => $this->done);
+        Workflow::await(fn() => $this->done);
 
         return 'signal: ' . $this->received;
     }
@@ -54,11 +54,11 @@ class TrueAsyncSignalReceiverWorkflow
 class TrueAsyncSignalSenderWorkflow
 {
     #[WorkflowMethod(name: 'TrueAsyncSignalSenderWorkflow')]
-    public function handler(string $targetWorkflowId): iterable
+    public function handler(string $targetWorkflowId)
     {
         $stub = Workflow::newUntypedExternalWorkflowStub(new WorkflowExecution($targetWorkflowId));
 
-        yield $stub->signal('setValue', ['from-external']);
+        $stub->signal('setValue', ['from-external']);
 
         return 'sent';
     }

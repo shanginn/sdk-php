@@ -117,10 +117,10 @@ class AsyncFailingService
 class FailingHandlerWorkflow
 {
     #[WorkflowMethod(name: 'Extra_Nexus_AsyncFailure_FailingHandler')]
-    public function handle(string $input)
+    public function handle(string $input): void
     {
-        // Yield once so the workflow takes a real task before failing.
-        yield Workflow::timer(CarbonInterval::milliseconds(50));
+        // Wait for one timer so the workflow takes a real task before failing.
+        Workflow::timer(CarbonInterval::milliseconds(50));
         throw new ApplicationFailure(
             'handler-workflow-failed',
             'BusinessError',
@@ -143,7 +143,7 @@ class HandlerFailsCallerWorkflow
         );
 
         try {
-            yield $stub->run('payload');
+            $stub->run('payload');
         } catch (NexusOperationFailure $e) {
             $cause = $e->getPrevious();
             if ($cause === null) {
@@ -191,7 +191,7 @@ class HandlerWorkflowToTerminate
     #[WorkflowMethod(name: 'Extra_Nexus_AsyncFailure_HandlerToTerminate')]
     public function handle(string $input)
     {
-        yield Workflow::timer(CarbonInterval::seconds(30));
+        Workflow::timer(CarbonInterval::seconds(30));
         return "should-never-reach:{$input}";
     }
 }
@@ -210,7 +210,7 @@ class TerminateCallerWorkflow
         );
 
         try {
-            yield $stub->run('payload');
+            $stub->run('payload');
         } catch (NexusOperationFailure $e) {
             $cause = $e->getPrevious();
             if ($cause === null) {

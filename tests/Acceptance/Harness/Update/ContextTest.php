@@ -41,7 +41,7 @@ class FeatureWorkflow
     #[WorkflowMethod('Harness_WorkflowUpdate_Context')]
     public function run()
     {
-        yield Workflow::await(fn(): bool => $this->done);
+        Workflow::await(fn(): bool => $this->done);
         return Workflow::getUpdateContext()?->getUpdateId();
     }
 
@@ -52,10 +52,10 @@ class FeatureWorkflow
 
         $updateId = Workflow::getUpdateContext()->getUpdateID();
 
-        yield Workflow::await(fn() => $this->upd2);
+        Workflow::await(fn() => $this->upd2);
         Workflow::getUpdateContext() === null and throw new \RuntimeException('Update context should not be null.');
         $updateId !== Workflow::getUpdateContext()->getUpdateID() and throw new \RuntimeException(
-            'Update ID should not change.'
+            'Update ID should not change.',
         );
 
         $this->done = true;

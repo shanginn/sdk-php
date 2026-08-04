@@ -56,20 +56,23 @@ class ScopeContext extends WorkflowContext implements ScopedContextInterface
         $ctx->onRequest = $onRequest;
         $ctx->updateContext = $updateContext;
         $ctx->readonly = $context->readonly;
-        $ctx->continueAsNew = $context->continueAsNew;
+        $ctx->state = $context->state;
+        // Continue-As-New is terminal for the whole Workflow execution, not
+        // only for the signal/update/async scope that requested it.
         $ctx->trace = &$context->trace;
-        $ctx->currentDetails = &$context->currentDetails;
 
         return $ctx;
     }
 
     public function async(callable $handler): CancellationScopeInterface
     {
+        $this->assertWritable();
         return $this->scope->startScope($handler, false);
     }
 
     public function asyncDetached(callable $handler): CancellationScopeInterface
     {
+        $this->assertWritable();
         return $this->scope->startScope($handler, true);
     }
 
@@ -79,6 +82,8 @@ class ScopeContext extends WorkflowContext implements ScopedContextInterface
         bool $cancellable = true,
         bool $waitResponse = true,
     ): PromiseInterface {
+        $this->assertWritable();
+
         if (
             $this->scope->isCancelled()
             && ($cancellable || $request instanceof RejectedOnCancelInterface)
@@ -106,6 +111,17 @@ class ScopeContext extends WorkflowContext implements ScopedContextInterface
         return $this->updateContext;
     }
 
+    /**
+     * Release the completed scope without destroying workflow-wide resources
+     * shared with the parent context.
+     *
+     * @internal
+     */
+    public function releaseScope(): void
+    {
+        unset($this->scope, $this->onRequest);
+    }
+
     public function resolveConditions(): void
     {
         $this->parent->resolveConditions();
@@ -125,7 +141,8 @@ class ScopeContext extends WorkflowContext implements ScopedContextInterface
     public function destroy(): void
     {
         parent::destroy();
-        unset($this->scope, $this->parent, $this->onRequest);
+        $this->releaseScope();
+        unset($this->parent);
     }
 
     protected function addCondition(string $conditionGroupId, callable $condition): PromiseInterface

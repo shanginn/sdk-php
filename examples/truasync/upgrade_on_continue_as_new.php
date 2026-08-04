@@ -26,9 +26,9 @@ final class UpgradeableBillingWorkflow
 
     #[WorkflowMethod(name: 'BillingWorkflow')]
     #[WorkflowVersioningBehavior(VersioningBehavior::Pinned)]
-    public function run(int $generation = 1): iterable
+    public function run(int $generation = 1)
     {
-        yield Workflow::await(fn(): bool => $this->upgradeRequested);
+        Workflow::await(fn(): bool => $this->upgradeRequested);
 
         if (!Workflow::getInfo()->targetWorkerDeploymentVersionChanged) {
             return "generation={$generation}: target version unchanged";

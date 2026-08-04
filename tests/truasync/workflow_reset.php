@@ -39,11 +39,11 @@ use function Async\spawn;
 class TrueAsyncResetWorkflow
 {
     #[WorkflowMethod(name: 'TrueAsyncResetWorkflow')]
-    public function handler(): iterable
+    public function handler()
     {
         // A timer gives the run a workflow task to reset to, and makes the reset
         // run re-execute (and so receive update_random_seed) before completing.
-        yield Workflow::timer(1);
+        Workflow::timer(1);
 
         return 'done';
     }

@@ -75,7 +75,7 @@ class FeatureWorkflow
     #[WorkflowMethod('Extra_Client_WorkflowClient')]
     public function run()
     {
-        yield Workflow::await(fn(): bool => $this->value !== '');
+        Workflow::await(fn(): bool => $this->value !== '');
         return $this->value;
     }
 

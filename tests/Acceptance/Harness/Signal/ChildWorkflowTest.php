@@ -33,12 +33,12 @@ class FeatureWorkflow
             ChildWorkflow::class,
             Workflow\ChildWorkflowOptions::new()
                 // TODO: remove after https://github.com/temporalio/sdk-php/issues/451 is fixed
-                ->withTaskQueue(Workflow::getInfo()->taskQueue)
+                ->withTaskQueue(Workflow::getInfo()->taskQueue),
         );
-        $handle = $wf->run();
+        $handle = Workflow::async(static fn() => $wf->run());
 
-        yield $wf->mySignal('child-wf-arg');
-        return yield $handle;
+        $wf->mySignal('child-wf-arg');
+        return $handle->await();
     }
 }
 
@@ -50,12 +50,12 @@ class ChildWorkflow
     #[WorkflowMethod('Harness_Signal_ChildWorkflow_Child')]
     public function run()
     {
-        yield Workflow::await(fn(): bool => $this->value !== '');
+        Workflow::await(fn(): bool => $this->value !== '');
         return $this->value;
     }
 
     #[SignalMethod('my_signal')]
-    public function mySignal(string $arg)
+    public function mySignal(string $arg): void
     {
         $this->value = $arg;
     }

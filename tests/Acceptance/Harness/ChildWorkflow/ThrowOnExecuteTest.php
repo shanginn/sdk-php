@@ -77,7 +77,7 @@ class MainWorkflow
     #[WorkflowMethod('Harness_ChildWorkflow_ThrowsOnExecute')]
     public function run(bool $onInit = false)
     {
-        return yield Workflow::newChildWorkflowStub(
+        return  Workflow::newChildWorkflowStub(
             $onInit ? ChildWorkflowThrowOnInit::class : ChildWorkflow::class,
         )->run();
     }
@@ -87,9 +87,9 @@ class MainWorkflow
 class ChildWorkflow
 {
     #[WorkflowMethod('Harness_ChildWorkflow_ThrowsOnExecute_Child')]
-    public function run()
+    public function run(): void
     {
-        yield 1;
+        1;
         throw new ApplicationFailure('Test message', 'TestError', true, EncodedValues::fromValues([['foo' => 'bar']]));
     }
 }
@@ -99,7 +99,7 @@ class ChildWorkflow
 class ChildWorkflowThrowOnInit
 {
     #[WorkflowMethod('Harness_ChildWorkflow_ThrowsOnExecute_ChildThrowOnInit')]
-    public function run()
+    public function run(): void
     {
         throw new ApplicationFailure('Test message', 'TestError', true, EncodedValues::fromValues([['foo' => 'bar']]));
     }

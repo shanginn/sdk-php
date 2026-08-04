@@ -28,8 +28,8 @@ use Temporal\Workflow\WorkflowMethod;
  * Smoke test for the workflow → Nexus path with a SYNC handler.
  *
  * Distinct from the Cancel/Async suite (which only exercises HTTP-side
- * Nexus invocation): here a workflow yields a Nexus stub call and waits
- * for the result over the SDK wire.
+ * Nexus invocation): here a workflow calls a Nexus stub directly and waits for
+ * the result over the SDK wire.
  */
 #[Worker(options: [self::class, 'workerOptions'])]
 class SyncFromWorkflowTest extends TestCase
@@ -108,6 +108,6 @@ class SyncFromWorkflowCaller
                 ->withSummary('Greet the customer')
                 ->withScheduleToCloseTimeout(CarbonInterval::seconds(20)),
         );
-        return yield $stub->greet($name);
+        return  $stub->greet($name);
     }
 }

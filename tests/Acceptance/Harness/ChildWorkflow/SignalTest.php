@@ -37,9 +37,9 @@ class MainWorkflow
             // TODO: remove after https://github.com/temporalio/sdk-php/issues/451 is fixed
             Workflow\ChildWorkflowOptions::new()->withTaskQueue(Workflow::getInfo()->taskQueue),
         );
-        $handle = $workflow->run();
-        yield $workflow->signal('unblock');
-        return yield $handle;
+        $handle = Workflow::async(static fn() => $workflow->run());
+        $workflow->signal('unblock');
+        return $handle->await();
     }
 }
 
@@ -54,7 +54,7 @@ class ChildWorkflow
     #[WorkflowMethod('Harness_ChildWorkflow_Signal_Child')]
     public function run()
     {
-        yield Workflow::await(fn(): bool => $this->message !== null);
+        Workflow::await(fn(): bool => $this->message !== null);
         return $this->message;
     }
 

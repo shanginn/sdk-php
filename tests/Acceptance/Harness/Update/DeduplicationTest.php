@@ -64,12 +64,12 @@ class FeatureWorkflow
     #[WorkflowMethod('Harness_Update_Deduplication')]
     public function run()
     {
-        yield Workflow::await(fn(): bool => $this->counter >= 2 && Workflow::allHandlersFinished());
+        Workflow::await(fn(): bool => $this->counter >= 2 && Workflow::allHandlersFinished());
         return $this->counter;
     }
 
     #[Workflow\SignalMethod('unblock')]
-    public function unblock()
+    public function unblock(): void
     {
         $this->blocked = false;
     }
@@ -79,7 +79,7 @@ class FeatureWorkflow
     {
         ++$this->counter;
         # Verify that dedupe works pre-update-completion
-        yield Workflow::await(fn(): bool => !$this->blocked);
+        Workflow::await(fn(): bool => !$this->blocked);
         $this->blocked = true;
         return $this->counter;
     }

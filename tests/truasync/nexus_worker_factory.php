@@ -97,9 +97,9 @@ final class TrueAsyncNexusE2EService
 final class TrueAsyncNexusE2EAsyncWorkflow
 {
     #[WorkflowMethod(name: 'TrueAsyncNexusE2EAsyncWorkflow')]
-    public function run(string $input): \Generator
+    public function run(string $input)
     {
-        yield Workflow::timer(CarbonInterval::milliseconds(100));
+        Workflow::timer(CarbonInterval::milliseconds(100));
 
         return "async:{$input}";
     }
@@ -109,9 +109,9 @@ final class TrueAsyncNexusE2EAsyncWorkflow
 final class TrueAsyncNexusE2ELongWorkflow
 {
     #[WorkflowMethod(name: 'TrueAsyncNexusE2ELongWorkflow')]
-    public function run(string $input): \Generator
+    public function run(string $input)
     {
-        yield Workflow::timer(CarbonInterval::seconds(30));
+        Workflow::timer(CarbonInterval::seconds(30));
 
         return "unexpected-long-completion:{$input}";
     }
@@ -121,7 +121,7 @@ final class TrueAsyncNexusE2ELongWorkflow
 final class TrueAsyncNexusE2ECallerWorkflow
 {
     #[WorkflowMethod(name: 'TrueAsyncNexusE2ECallerWorkflow')]
-    public function run(string $endpoint): \Generator
+    public function run(string $endpoint)
     {
         $stub = Workflow::newNexusServiceStub(
             TrueAsyncNexusE2EService::class,
@@ -131,12 +131,12 @@ final class TrueAsyncNexusE2ECallerWorkflow
         );
 
         $result = [
-            'sync' => yield $stub->sync('payload'),
-            'async' => yield $stub->async('payload'),
+            'sync' => $stub->sync('payload'),
+            'async' => $stub->async('payload'),
         ];
 
         try {
-            yield $stub->handlerError('payload');
+            $stub->handlerError('payload');
             $result['handlerError'] = 'unexpected-completion';
         } catch (NexusOperationFailure $failure) {
             $cause = $failure->getPrevious();
@@ -146,7 +146,7 @@ final class TrueAsyncNexusE2ECallerWorkflow
         }
 
         try {
-            yield $stub->terminalFailed('payload');
+            $stub->terminalFailed('payload');
             $result['terminalFailed'] = 'unexpected-completion';
         } catch (NexusOperationFailure $failure) {
             $result['terminalFailed'] = self::failureChainContains($failure, 'terminal-failed')
@@ -155,7 +155,7 @@ final class TrueAsyncNexusE2ECallerWorkflow
         }
 
         try {
-            yield $stub->terminalCanceled('payload');
+            $stub->terminalCanceled('payload');
             $result['terminalCanceled'] = 'unexpected-completion';
         } catch (NexusOperationFailure $failure) {
             $result['terminalCanceled'] = $failure->getPrevious() instanceof CanceledFailure
@@ -170,17 +170,16 @@ final class TrueAsyncNexusE2ECallerWorkflow
                 ->withScheduleToCloseTimeout(CarbonInterval::seconds(20))
                 ->withCancellationType(NexusOperationCancellationType::WaitCompleted),
         );
-        $cancelPromise = null;
-        $scope = Workflow::async(static function () use ($cancelStub, &$cancelPromise): void {
-            $cancelPromise = $cancelStub->longRunning('cancel');
-        });
+        $scope = Workflow::async(
+            static fn(): string => $cancelStub->longRunning('cancel'),
+        );
 
         // Flush the schedule/start before requesting cancellation.
-        yield Workflow::timer(CarbonInterval::milliseconds(500));
+        Workflow::timer(CarbonInterval::milliseconds(500));
         $scope->cancel();
 
         try {
-            yield $cancelPromise;
+            $scope->await();
             $result['cancelRequest'] = 'unexpected-completion';
         } catch (NexusOperationFailure $failure) {
             $result['cancelRequest'] = $failure->getPrevious() instanceof CanceledFailure
@@ -197,7 +196,7 @@ final class TrueAsyncNexusE2ECallerWorkflow
         );
 
         try {
-            yield $timeoutStub->longRunning('timeout');
+            $timeoutStub->longRunning('timeout');
             $result['timeout'] = -1;
         } catch (NexusOperationFailure $failure) {
             $cause = $failure->getPrevious();

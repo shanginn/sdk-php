@@ -32,7 +32,7 @@ class DynamicUpdateTest extends TestCase
         $id = Uuid::uuid4()->toString();
         $idResult = $stub->startUpdate(
             UpdateOptions::new(TestWorkflow::UPDATE_METHOD, LifecycleStage::StageCompleted)
-                ->withUpdateId($id)
+                ->withUpdateId($id),
         )->getResult();
         self::assertSame($id, $idResult);
     }
@@ -66,7 +66,8 @@ class TestWorkflow
     private array $result = [];
     private bool $exit = false;
 
-    public function __construct() {
+    public function __construct()
+    {
         // Register update methods in constructor
         Workflow::registerUpdate(self::UPDATE_METHOD, function () {
             // Also Update context is tested
@@ -81,10 +82,10 @@ class TestWorkflow
         // Update method with validation
         Workflow::registerUpdate(
             self::UPDATE_METHOD_WV,
-            fn(int $value): int => $value,
-            fn(int $value) => $value > 0 or throw new \InvalidArgumentException('Value must be positive'),
+            static fn(int $value): int => $value,
+            static fn(int $value) => $value > 0 or throw new \InvalidArgumentException('Value must be positive'),
         );
-        yield Workflow::await(fn() => $this->exit);
+        Workflow::await(fn() => $this->exit);
         return $this->result;
     }
 

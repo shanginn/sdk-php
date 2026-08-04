@@ -33,10 +33,10 @@ use function Async\spawn;
 class TrueAsyncCancelVictimWorkflow
 {
     #[WorkflowMethod(name: 'TrueAsyncCancelVictimWorkflow')]
-    public function handler(): iterable
+    public function handler()
     {
         try {
-            yield Workflow::timer(3600);
+            Workflow::timer(3600);
 
             return 'completed-normally';
         } catch (CanceledFailure $e) {
@@ -51,11 +51,11 @@ class TrueAsyncCancelVictimWorkflow
 class TrueAsyncCancelSenderWorkflow
 {
     #[WorkflowMethod(name: 'TrueAsyncCancelSenderWorkflow')]
-    public function handler(string $targetWorkflowId): iterable
+    public function handler(string $targetWorkflowId)
     {
         $stub = Workflow::newUntypedExternalWorkflowStub(new WorkflowExecution($targetWorkflowId));
 
-        yield $stub->cancel();
+        $stub->cancel();
 
         return 'cancel-sent';
     }

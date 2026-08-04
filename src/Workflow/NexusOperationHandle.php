@@ -14,6 +14,7 @@ namespace Temporal\Workflow;
 use React\Promise\PromiseInterface;
 use Temporal\DataConverter\EncodedValues;
 use Temporal\DataConverter\Type;
+use Temporal\Internal\Workflow\Process\Awaiter;
 
 /**
  * Handle to an in-flight Nexus operation started from a workflow. Fully populated
@@ -40,9 +41,23 @@ final class NexusOperationHandle
     }
 
     /**
+     * @return T
+     */
+    public function getResult(): mixed
+    {
+        Awaiter::assertManaged();
+        return Awaiter::await(
+            $this->resultPromise,
+            interruptOnCancel: false,
+            preserveCancellationFailure: true,
+        );
+    }
+
+    /**
+     * @internal
      * @return PromiseInterface<T>
      */
-    public function getResult(): PromiseInterface
+    public function getResultAsync(): PromiseInterface
     {
         return $this->resultPromise;
     }

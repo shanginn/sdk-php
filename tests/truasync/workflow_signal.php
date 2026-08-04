@@ -41,9 +41,9 @@ class TrueAsyncSignalWorkflow
     }
 
     #[WorkflowMethod(name: 'TrueAsyncSignalWorkflow')]
-    public function handler(): iterable
+    public function handler()
     {
-        yield Workflow::await(fn() => $this->done);
+        Workflow::await(fn() => $this->done);
 
         return 'signal: ' . $this->received;
     }

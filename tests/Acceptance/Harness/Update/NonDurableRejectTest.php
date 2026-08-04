@@ -3,6 +3,7 @@
 declare(strict_types=1);
 
 namespace Temporal\Tests\Acceptance\Harness\Update\NonDurableReject;
+
 use PHPUnit\Framework\Attributes\Test;
 use Temporal\Client\WorkflowClientInterface;
 use Temporal\Client\WorkflowStubInterface;
@@ -48,7 +49,7 @@ class FeatureWorkflow
     #[WorkflowMethod('Harness_Update_NonDurableReject')]
     public function run()
     {
-        yield Workflow::await(fn(): bool => $this->counter === 5);
+        Workflow::await(fn(): bool => $this->counter === 5);
         return $this->counter;
     }
 

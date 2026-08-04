@@ -23,7 +23,9 @@ use Temporal\Workflow\NexusOperationOptions;
 use Temporal\Workflow\WorkflowInterface;
 use Temporal\Workflow\WorkflowMethod;
 
-/** End-to-end async Nexus operation: caller → WorkflowRunOperation → handler workflow → completion. */
+/**
+ * End-to-end async Nexus operation: caller → WorkflowRunOperation → handler workflow → completion.
+ */
 #[Worker(options: [self::class, 'workerOptions'])]
 class WorkflowRunOperationTest extends TestCase
 {
@@ -52,7 +54,9 @@ class WorkflowRunOperationTest extends TestCase
         self::assertSame('HELLO, WORLD!', $stub->getResult('string'));
     }
 
-    /** Proves the requestId really becomes the handler workflow id (file marker carries it across processes). */
+    /**
+     * Proves the requestId really becomes the handler workflow id (file marker carries it across processes).
+     */
     #[Test]
     public function requestIdIsPropagatedToHandlerWorkflowId(
         State $state,
@@ -88,7 +92,9 @@ class WorkflowRunOperationTest extends TestCase
     }
 }
 
-/** File-backed marker: handler runs in a RR worker process separate from PHPUnit. */
+/**
+ * File-backed marker: handler runs in a RR worker process separate from PHPUnit.
+ */
 final class RequestIdMarker
 {
     public const FILE = '/tmp/nexus-async-wf-request-id-marker-nexus-async-wf-rid';
@@ -141,8 +147,8 @@ class AsyncHandlerWorkflow
     #[WorkflowMethod(name: 'Extra_Nexus_AsyncWorkflow_Handler')]
     public function handle(string $input)
     {
-        // Yield once so the operation goes async instead of collapsing into a sync result.
-        yield Workflow::timer(CarbonInterval::milliseconds(50));
+        // Wait for one timer so the operation goes async instead of collapsing into a sync result.
+        Workflow::timer(CarbonInterval::milliseconds(50));
         return 'HELLO, ' . \strtoupper($input) . '!';
     }
 }
@@ -161,6 +167,6 @@ class AsyncCallerWorkflow
                 ->withEndpoint($endpoint)
                 ->withScheduleToCloseTimeout(CarbonInterval::seconds(30)),
         );
-        return yield $stub->hello($input);
+        return  $stub->hello($input);
     }
 }

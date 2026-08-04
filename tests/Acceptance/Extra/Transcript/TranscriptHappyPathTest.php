@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace Temporal\Tests\Acceptance\Extra\Transcript\TranscriptHappyPath;
 
-use Temporal\Activity;
 use Temporal\Activity\ActivityInterface;
 use Temporal\Activity\ActivityMethod;
 use Temporal\Activity\ActivityOptions;
@@ -64,13 +63,13 @@ final class TranscriptHappyPathTest extends TestCase
 class HappyPathWorkflow
 {
     #[WorkflowMethod(name: 'Extra_Transcript_TranscriptHappyPath_run')]
-    public function run(): \Generator
+    public function run(): string
     {
         $activity = Workflow::newActivityStub(
             HappyPathActivity::class,
             ActivityOptions::new()->withScheduleToCloseTimeout(10),
         );
-        return yield $activity->greet();
+        return  $activity->greet();
     }
 }
 

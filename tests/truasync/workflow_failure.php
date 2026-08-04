@@ -3,7 +3,7 @@
 declare(strict_types=1);
 
 /**
- * Offline check: a workflow task that throws while being applied yields a failed
+ * Offline check: a workflow task that throws while being applied produces a failed
  * WorkflowActivationCompletion rather than an uncaught exception out of the poll
  * loop, so the core can retry the task. No server required.
  *

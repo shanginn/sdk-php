@@ -40,7 +40,7 @@ class TrueAsyncPanicWorkflow
     public static int $attempts = 0;
 
     #[WorkflowMethod(name: 'TrueAsyncPanicWorkflow')]
-    public function handler(): iterable
+    public function handler()
     {
         self::$attempts++;
 
@@ -49,8 +49,8 @@ class TrueAsyncPanicWorkflow
             throw new \Error('boom: first workflow task panics on purpose');
         }
 
-        // A no-op yield keeps this method a generator (coroutine workflow).
-        yield Workflow::timer(1);
+        // The recovered attempt waits at a deterministic workflow suspension point.
+        Workflow::timer(1);
 
         return 'recovered';
     }

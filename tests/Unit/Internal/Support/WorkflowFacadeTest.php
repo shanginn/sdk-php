@@ -9,6 +9,7 @@ use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;
 use Temporal\Exception\OutOfContextException;
 use Temporal\Workflow;
+use Temporal\Workflow\WorkflowContextInterface;
 
 class WorkflowFacadeTest extends TestCase
 {
@@ -70,11 +71,11 @@ class WorkflowFacadeTest extends TestCase
         ];
 
         yield 'async' => [
-            static fn() => Workflow::async(static fn() => yield),
+            static fn() => Workflow::async(static fn() => null),
         ];
 
         yield 'asyncDetached' => [
-            static fn() => Workflow::asyncDetached(static fn() => yield),
+            static fn() => Workflow::asyncDetached(static fn() => null),
         ];
 
         yield 'newActivityStub' => [
@@ -118,7 +119,7 @@ class WorkflowFacadeTest extends TestCase
         ];
 
         yield 'runLocked' => [
-            static fn() => Workflow::runLocked(new \Temporal\Workflow\Mutex('test'), static fn() => yield),
+            static fn() => Workflow::runLocked(new \Temporal\Workflow\Mutex('test'), static fn() => null),
         ];
 
         yield 'getLogger' => [
@@ -189,5 +190,20 @@ class WorkflowFacadeTest extends TestCase
         $this->expectExceptionMessage('The Workflow facade can be used only inside workflow code.');
 
         $method();
+    }
+
+    public function testDirectCommandFailsBeforeSchedulingOutsideManagedFiber(): void
+    {
+        $context = $this->createMock(WorkflowContextInterface::class);
+        $context->expects(self::never())->method('executeActivity');
+        Workflow::setCurrentContext($context);
+
+        try {
+            $this->expectException(\LogicException::class);
+            $this->expectExceptionMessage('inside a managed workflow Fiber');
+            Workflow::executeActivity('must-not-be-scheduled');
+        } finally {
+            Workflow::setCurrentContext(null);
+        }
     }
 }

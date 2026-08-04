@@ -32,7 +32,7 @@ class FeatureWorkflow
     #[WorkflowMethod('Harness_Update_Basic')]
     public function run()
     {
-        yield Workflow::await(fn(): bool => $this->done);
+        Workflow::await(fn(): bool => $this->done);
         return 'Hello, world!';
     }
 
